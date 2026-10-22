@@ -1,0 +1,12 @@
+{
+  "mode": "tinyfish",
+  "headless": true,
+  "tinyfish_api_key": "sk-tinyfish-RkM3NnLk3yILJ78i0BJBzg4-wBUgZcaZ",
+  "tinyfish_browser_api_url": "https://api.browser.tinyfish.ai",
+  "tinyfish_agent_api_url": "https://agent.tinyfish.ai/v1",
+  "browser_profile": "stealth",
+  "proxy_type": "tetra",
+  "proxy_region": "in",
+  "adaptive_delay_ms": 500,
+  "ntfy_topic": "bharatpilot_otp"
+}

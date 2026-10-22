@@ -1,0 +1,41 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+*.log
+
+# Node dependencies
+node_modules/
+frontend/node_modules/
+.npm
+npm-debug.log*
+
+# Large media & scratch video assets
+CyberBhaiya.pdf
+*.mp4
+*.jpg
+!frontend/src/assets/*
+
+# Scratch generator scripts & slide debug images
+generate_*.py
+enhance_slide1.py
+add_print_button.py
+update_deck.py
+page_*.png
+audit_page_*.png
+slide_*_preview.png
+PITCH_DECK_SPECIFICATION.md
+cyberbhaiya_pitch_deck.*
+
+# Uploaded test files
+uploads/*
+!uploads/.gitkeep
+
+# Operating System & IDEs
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
