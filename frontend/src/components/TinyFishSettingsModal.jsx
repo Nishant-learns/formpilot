@@ -1,37 +1,70 @@
 import React, { useState, useEffect } from 'react';
-import { X, Cloud, Server, Key, Globe2, ShieldCheck, CheckCircle2, AlertTriangle, Activity, ArrowRight, ExternalLink } from 'lucide-react';
+import {
+  X,
+  Cloud,
+  Server,
+  Key,
+  ShieldCheck,
+  CheckCircle2,
+  AlertTriangle,
+  Activity,
+  ExternalLink,
+  Wallet,
+  Globe2,
+  Sparkles,
+} from 'lucide-react';
 
-export default function TinyFishSettingsModal({ isOpen, onClose, onConfigSaved }) {
-  if (!isOpen) return null;
+const DEFAULTS = {
+  mode: 'auto',
+  headless: true,
+  tinyfish_api_key: '',
+  proxy_region: 'in',
+  timeout_seconds: 90,
+  ntfy_topic: 'formpilot-demo-otp',
+};
 
-  const [config, setConfig] = useState({
-    mode: 'local',
-    headless: true,
-    tinyfish_api_key: '',
-    tinyfish_endpoint: 'https://api.tinyfish.ai/v1',
-    tinyfish_cdp_url: 'wss://connect.tinyfish.ai/cdp',
-    proxy_region: 'in',
-    stealth_mode: true
-  });
+export default function TinyFishSettingsModal(props) {
+  if (!props.isOpen) return null;
+  return <SettingsContent {...props} />;
+}
 
+function SettingsContent({ onClose, onConfigSaved }) {
+  const [config, setConfig] = useState(DEFAULTS);
+  const [keyConfigured, setKeyConfigured] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
   const [saving, setSaving] = useState(false);
   const [showKey, setShowKey] = useState(false);
+  const [wallet, setWallet] = useState(null);
+  const [loadError, setLoadError] = useState('');
 
   useEffect(() => {
     fetchConfig();
+    fetchWallet();
   }, []);
 
   const fetchConfig = async () => {
     try {
       const res = await fetch('/api/engine/config');
-      if (res.ok) {
-        const data = await res.json();
-        setConfig(data);
-      }
+      if (!res.ok) throw new Error('Could not load settings');
+      const data = await res.json();
+      setConfig({
+        ...DEFAULTS,
+        ...data,
+        tinyfish_api_key: data.tinyfish_api_key === '***' ? '' : data.tinyfish_api_key || '',
+      });
+      setKeyConfigured(Boolean(data.tinyfish_key_configured));
     } catch (err) {
-      console.error('Error fetching engine config:', err);
+      setLoadError('Could not load settings. You can still try the connection test.');
+    }
+  };
+
+  const fetchWallet = async () => {
+    try {
+      const res = await fetch('/api/engine/wallet');
+      if (res.ok) setWallet(await res.json());
+    } catch (err) {
+      // Wallet display is optional.
     }
   };
 
@@ -42,14 +75,15 @@ export default function TinyFishSettingsModal({ isOpen, onClose, onConfigSaved }
       const res = await fetch('/api/engine/test-tinyfish', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ api_key: config.tinyfish_api_key })
+        body: JSON.stringify({ api_key: config.tinyfish_api_key || '***' }),
       });
       const data = await res.json();
       setTestResult(data);
+      if (data.success) fetchWallet();
     } catch (err) {
       setTestResult({
         success: false,
-        message: 'Network error communicating with TinyFish test service.'
+        message: 'Could not reach the connection test. Check your network and try again.',
       });
     } finally {
       setTesting(false);
@@ -59,115 +93,126 @@ export default function TinyFishSettingsModal({ isOpen, onClose, onConfigSaved }
   const handleSave = async () => {
     setSaving(true);
     try {
+      const payload = {
+        mode: config.mode,
+        headless: Boolean(config.headless),
+        tinyfish_api_key: config.tinyfish_api_key || '***',
+        proxy_region: config.proxy_region,
+        timeout_seconds: Number(config.timeout_seconds) || DEFAULTS.timeout_seconds,
+        ntfy_topic: config.ntfy_topic || DEFAULTS.ntfy_topic,
+      };
       const res = await fetch('/api/engine/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config)
+        body: JSON.stringify(payload),
       });
-      if (res.ok) {
-        const data = await res.json();
-        if (onConfigSaved) onConfigSaved(data.config);
-        onClose();
-      }
+      if (!res.ok) throw new Error('Save failed');
+      const data = await res.json();
+      if (onConfigSaved) onConfigSaved(data.config);
+      onClose();
     } catch (err) {
-      console.error('Error saving engine config:', err);
+      setTestResult({
+        success: false,
+        message: 'Could not save the settings. Please try again.',
+      });
     } finally {
       setSaving(false);
     }
   };
 
+  const modes = [
+    {
+      id: 'auto',
+      title: 'Automatic',
+      icon: Sparkles,
+      color: 'text-amber-400',
+      description: 'Use TinyFish cloud when a key is available, otherwise use this device. This is the recommended default.',
+    },
+    {
+      id: 'local',
+      title: 'This device',
+      icon: Server,
+      color: 'text-emerald-400',
+      description: 'Run the browser locally. Page data stays on this device, and no cloud session is created.',
+    },
+    {
+      id: 'cloud',
+      title: 'TinyFish cloud',
+      icon: Cloud,
+      color: 'text-cyan-400',
+      description: 'Run the browser on TinyFish infrastructure. Useful for slow portals or networks with regional restrictions.',
+    },
+  ];
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-fadeIn">
       <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-2xl w-full shadow-2xl overflow-hidden flex flex-col">
-        
-        {/* Header */}
         <div className="px-6 py-4 bg-slate-950 border-b border-slate-800 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-cyan-500/20 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
               <Cloud className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base font-extrabold text-white flex items-center gap-2">
-                <span>Engine Architecture & TinyFish Cloud Browser</span>
-              </h2>
+              <h2 className="text-base font-extrabold text-white">Connection settings</h2>
               <p className="text-xs text-slate-400">
-                Configure browser execution, residential proxy routing, and cloud agent infrastructure
+                Choose where the browser runs and manage the TinyFish connection.
               </p>
             </div>
           </div>
           <button
             onClick={onClose}
             className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200"
+            title="Close settings"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Body */}
         <div className="p-6 space-y-5 overflow-y-auto max-h-[75vh]">
-          
-          {/* Engine Mode Selection */}
+          {loadError && (
+            <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-300">
+              {loadError}
+            </div>
+          )}
+
           <div className="space-y-2">
             <label className="text-xs font-bold text-slate-300 uppercase tracking-wider block">
-              Execution Runtime Engine
+              Browser mode
             </label>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              
-              {/* Option 1: Local Autonomous Playwright */}
-              <div
-                onClick={() => setConfig({ ...config, mode: 'local' })}
-                className={`p-4 rounded-2xl border-2 cursor-pointer transition-all ${
-                  config.mode === 'local'
-                    ? 'bg-emerald-500/10 border-emerald-500/80 shadow-md shadow-emerald-500/10'
-                    : 'bg-slate-950/80 border-slate-800 hover:border-slate-700'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <Server className={`w-4 h-4 ${config.mode === 'local' ? 'text-emerald-400' : 'text-slate-400'}`} />
-                    <span className="text-sm font-bold text-white">Local Playwright</span>
-                  </div>
-                  {config.mode === 'local' && (
-                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-400" />
-                  )}
-                </div>
-                <p className="text-xs text-slate-400 leading-relaxed">
-                  Direct Chromium browser running natively on your local machine. Zero cloud dependency, instant execution, 100% private.
-                </p>
-              </div>
-
-              {/* Option 2: TinyFish Cloud Browser */}
-              <div
-                onClick={() => setConfig({ ...config, mode: 'tinyfish' })}
-                className={`p-4 rounded-2xl border-2 cursor-pointer transition-all ${
-                  config.mode === 'tinyfish'
-                    ? 'bg-cyan-500/10 border-cyan-500/80 shadow-md shadow-cyan-500/10'
-                    : 'bg-slate-950/80 border-slate-800 hover:border-slate-700'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <Cloud className={`w-4 h-4 ${config.mode === 'tinyfish' ? 'text-cyan-400' : 'text-slate-400'}`} />
-                    <span className="text-sm font-bold text-white">TinyFish Cloud Agent</span>
-                  </div>
-                  {config.mode === 'tinyfish' && (
-                    <span className="w-2.5 h-2.5 rounded-full bg-cyan-400" />
-                  )}
-                </div>
-                <p className="text-xs text-slate-400 leading-relaxed">
-                  Cloud managed browser infrastructure with rotating residential IP proxy for hostile state portals, geo-blocks, and anti-bot bypass.
-                </p>
-              </div>
-
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              {modes.map((mode) => {
+                const Icon = mode.icon;
+                const selected = config.mode === mode.id;
+                return (
+                  <button
+                    key={mode.id}
+                    type="button"
+                    onClick={() => setConfig({ ...config, mode: mode.id })}
+                    className={`p-4 rounded-2xl border-2 text-left transition-all ${
+                      selected
+                        ? 'bg-cyan-500/10 border-cyan-500/80 shadow-md shadow-cyan-500/10'
+                        : 'bg-slate-950/80 border-slate-800 hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <Icon className={`w-4 h-4 ${selected ? mode.color : 'text-slate-400'}`} />
+                        <span className="text-sm font-bold text-white">{mode.title}</span>
+                      </div>
+                      {selected && <span className="w-2.5 h-2.5 rounded-full bg-cyan-400" />}
+                    </div>
+                    <p className="text-[11px] text-slate-400 leading-relaxed">{mode.description}</p>
+                  </button>
+                );
+              })}
             </div>
           </div>
 
-          {/* TinyFish Cloud Credentials & Proxy Settings */}
           <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-4">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold text-cyan-300 uppercase tracking-wider flex items-center gap-1.5">
                 <Key className="w-3.5 h-3.5" />
-                <span>TinyFish API Credentials & Proxy Lock</span>
+                <span>TinyFish connection</span>
               </span>
               <a
                 href="https://tinyfish.ai"
@@ -175,20 +220,20 @@ export default function TinyFishSettingsModal({ isOpen, onClose, onConfigSaved }
                 rel="noopener noreferrer"
                 className="text-[11px] text-cyan-400 hover:underline flex items-center gap-1"
               >
-                <span>Get API Key from tinyfish.ai</span>
+                <span>Get an API key</span>
                 <ExternalLink className="w-3 h-3" />
               </a>
             </div>
 
             <div className="space-y-3 text-xs">
               <div>
-                <label className="text-slate-400 font-semibold block mb-1">TinyFish API Key</label>
+                <label className="text-slate-400 font-semibold block mb-1">API key</label>
                 <div className="relative">
                   <input
                     type={showKey ? 'text' : 'password'}
                     value={config.tinyfish_api_key || ''}
                     onChange={(e) => setConfig({ ...config, tinyfish_api_key: e.target.value })}
-                    placeholder="tf_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                    placeholder={keyConfigured ? 'A key is already saved. Leave blank to keep it.' : 'Paste your TinyFish API key'}
                     className="w-full pl-3 pr-20 py-2.5 rounded-xl bg-slate-900 border border-slate-700 focus:border-cyan-500 text-white font-mono outline-none"
                   />
                   <button
@@ -199,33 +244,47 @@ export default function TinyFishSettingsModal({ isOpen, onClose, onConfigSaved }
                     {showKey ? 'Hide' : 'Show'}
                   </button>
                 </div>
+                <p className="text-[11px] text-slate-500 mt-1">
+                  {keyConfigured
+                    ? 'A key is saved on this device. It is never shown in the browser after saving.'
+                    : 'The key is stored on this device and is never included in status messages.'}
+                </p>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div>
-                  <label className="text-slate-400 font-semibold block mb-1">Residential Proxy Region</label>
+                  <label className="text-slate-400 font-semibold block mb-1">Browser region</label>
                   <select
-                    value={config.proxy_region}
+                    value={config.proxy_region || 'in'}
                     onChange={(e) => setConfig({ ...config, proxy_region: e.target.value })}
                     className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-medium"
                   >
-                    <option value="in">🇮🇳 India Residential Proxy (Delhi/Mumbai - Required for State PSCs)</option>
-                    <option value="auto">🌐 Auto Geo-Routing</option>
-                    <option value="us">🇺🇸 US Cloud Node</option>
+                    <option value="in">India</option>
+                    <option value="us">United States</option>
                   </select>
                 </div>
                 <div>
-                  <label className="text-slate-400 font-semibold block mb-1">Cloud CDP WebSocket URL</label>
+                  <label className="text-slate-400 font-semibold block mb-1">Timeout (seconds)</label>
+                  <input
+                    type="number"
+                    min={30}
+                    max={300}
+                    value={config.timeout_seconds || DEFAULTS.timeout_seconds}
+                    onChange={(e) => setConfig({ ...config, timeout_seconds: e.target.value })}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-medium"
+                  />
+                </div>
+                <div>
+                  <label className="text-slate-400 font-semibold block mb-1">Alert topic</label>
                   <input
                     type="text"
-                    value={config.tinyfish_cdp_url}
-                    onChange={(e) => setConfig({ ...config, tinyfish_cdp_url: e.target.value })}
+                    value={config.ntfy_topic || ''}
+                    onChange={(e) => setConfig({ ...config, ntfy_topic: e.target.value })}
                     className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-slate-300 font-mono text-[11px]"
                   />
                 </div>
               </div>
 
-              {/* Test Connection Button & Status */}
               <div className="pt-2 flex flex-col sm:flex-row items-center justify-between gap-3">
                 <button
                   type="button"
@@ -234,37 +293,55 @@ export default function TinyFishSettingsModal({ isOpen, onClose, onConfigSaved }
                   className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 font-semibold text-xs border border-cyan-500/30 flex items-center gap-1.5 transition-all"
                 >
                   <Activity className={`w-3.5 h-3.5 ${testing ? 'animate-spin' : ''}`} />
-                  <span>{testing ? 'Testing Ping...' : 'Test TinyFish Connection'}</span>
+                  <span>{testing ? 'Testing…' : 'Test connection'}</span>
                 </button>
 
                 {testResult && (
-                  <div className={`text-xs font-semibold px-3 py-1.5 rounded-lg border flex items-center gap-1.5 ${
-                    testResult.success
-                      ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
-                      : 'bg-amber-500/10 text-amber-300 border-amber-500/30'
-                  }`}>
-                    {testResult.success ? <CheckCircle2 className="w-3.5 h-3.5" /> : <AlertTriangle className="w-3.5 h-3.5" />}
+                  <div
+                    className={`text-xs font-semibold px-3 py-1.5 rounded-lg border flex items-center gap-1.5 ${
+                      testResult.success
+                        ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                        : 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                    }`}
+                  >
+                    {testResult.success ? (
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                    ) : (
+                      <AlertTriangle className="w-3.5 h-3.5" />
+                    )}
                     <span>{testResult.message}</span>
                   </div>
                 )}
               </div>
+
+              {wallet?.available_balance != null && (
+                <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                  <Wallet className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>
+                    TinyFish balance: {wallet.available_balance} {wallet.currency || 'USD'}
+                  </span>
+                </div>
+              )}
             </div>
           </div>
 
-          {/* Practical Workflows & Government Portals Info */}
           <div className="p-3.5 rounded-xl bg-amber-500/5 border border-amber-500/20 text-xs text-amber-200/90 space-y-1">
             <span className="font-bold flex items-center gap-1 text-amber-300">
               <ShieldCheck className="w-4 h-4" />
-              <span>Production Invariant Note:</span>
+              <span>If the cloud browser cannot start</span>
             </span>
             <p className="leading-relaxed">
-              If no TinyFish API key is provided or cloud proxy is unreachable, FormPilot automatically defaults to the Local Autonomous Playwright Engine. Both modes execute the exact same universal DOM sensing and human-in-the-loop security gates without compromise.
+              FormPilot will use this device's browser and show that clearly in the activity log.
+              It will never pretend a cloud session is running when it isn't.
             </p>
           </div>
 
+          <div className="flex items-center gap-2 text-[11px] text-slate-500">
+            <Globe2 className="w-3.5 h-3.5" />
+            <span>Search results and portal checks use TinyFish Search. Cloud browser sessions are optional.</span>
+          </div>
         </div>
 
-        {/* Footer */}
         <div className="px-6 py-4 bg-slate-950 border-t border-slate-800 flex justify-end gap-3 shrink-0">
           <button
             onClick={onClose}
@@ -275,12 +352,11 @@ export default function TinyFishSettingsModal({ isOpen, onClose, onConfigSaved }
           <button
             onClick={handleSave}
             disabled={saving}
-            className="px-6 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-400 hover:to-blue-400 text-slate-950 text-xs font-extrabold shadow-lg shadow-cyan-500/20"
+            className="px-6 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-400 hover:to-blue-400 text-slate-950 text-xs font-extrabold shadow-lg shadow-cyan-500/20 disabled:opacity-50"
           >
-            {saving ? 'Applying Settings...' : 'Save Configuration'}
+            {saving ? 'Saving…' : 'Save settings'}
           </button>
         </div>
-
       </div>
     </div>
   );

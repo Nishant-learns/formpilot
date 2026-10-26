@@ -1,9 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { X, Image as ImageIcon, CheckCircle2, Upload, AlertCircle, Sparkles, Sliders } from 'lucide-react';
 
-export default function BiometricsStudio({ isOpen, onClose }) {
-  if (!isOpen) return null;
+export default function BiometricsStudio(props) {
+  if (!props.isOpen) return null;
+  return <BiometricsContent {...props} />;
+}
 
+function BiometricsContent({ onClose }) {
   const [previews, setPreviews] = useState(null);
   const [photoCompressResult, setPhotoCompressResult] = useState(null);
   const [sigCompressResult, setSigCompressResult] = useState(null);
@@ -84,13 +87,13 @@ export default function BiometricsStudio({ isOpen, onClose }) {
             </div>
             <div>
               <h2 className="text-base font-extrabold text-white flex items-center gap-2">
-                <span>Deterministic Biometric Compression Pipeline</span>
+                <span>Photo and signature sizing</span>
                 <span className="text-[10px] bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded-full border border-purple-500/30 uppercase tracking-wider">
-                  Pillow Binary Search
+                  Automatic resizing
                 </span>
               </h2>
               <p className="text-xs text-slate-400">
-                Guarantees exact portal dimension and byte limits (10KB–20KB Signatures, 20KB–50KB Photos)
+                Resize files to common portal limits. Always check the portal's own requirements.
               </p>
             </div>
           </div>
@@ -110,16 +113,16 @@ export default function BiometricsStudio({ isOpen, onClose }) {
             <div className="flex items-center justify-between">
               <div>
                 <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
-                  <span>Candidate Passport Photograph</span>
+                  <span>Passport photograph</span>
                   <span className="text-xs text-amber-400 font-mono font-semibold">(20KB - 50KB JPEG • 350x350 px)</span>
                 </h3>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  EXIF stripped, aspect-ratio preserved center crop, binary search quality compression.
+                  Removes camera metadata, keeps the photo centered, and reduces the file size.
                 </p>
               </div>
               <label className="cursor-pointer px-3.5 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-md transition-all">
                 <Upload className="w-3.5 h-3.5" />
-                <span>{uploadingPhoto ? 'Compressing...' : 'Upload Raw Photo'}</span>
+                <span>{uploadingPhoto ? 'Compressing...' : 'Upload photo'}</span>
                 <input type="file" accept="image/*" onChange={handlePhotoUpload} className="hidden" />
               </label>
             </div>
@@ -152,7 +155,7 @@ export default function BiometricsStudio({ isOpen, onClose }) {
                 </div>
                 <div className="flex items-center gap-1.5 text-emerald-400 font-sans font-bold pt-1">
                   <CheckCircle2 className="w-4 h-4" />
-                  <span>Portal Specification Verified & Ready for Upload</span>
+                  <span>Ready to download and upload</span>
                 </div>
               </div>
             </div>
@@ -163,16 +166,16 @@ export default function BiometricsStudio({ isOpen, onClose }) {
             <div className="flex items-center justify-between">
               <div>
                 <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
-                  <span>Candidate Digital Signature</span>
+                  <span>Digital signature</span>
                   <span className="text-xs text-amber-400 font-mono font-semibold">(10KB - 20KB JPEG • 140x60 px)</span>
                 </h3>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  White background flattened, ink contrast enhanced, deterministic quality convergence.
+                  Flattens the background and improves contrast so the signature is easy to read.
                 </p>
               </div>
               <label className="cursor-pointer px-3.5 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-md transition-all">
                 <Upload className="w-3.5 h-3.5" />
-                <span>{uploadingSig ? 'Compressing...' : 'Upload Raw Signature'}</span>
+                <span>{uploadingSig ? 'Compressing...' : 'Upload signature'}</span>
                 <input type="file" accept="image/*" onChange={handleSigUpload} className="hidden" />
               </label>
             </div>
@@ -205,7 +208,7 @@ export default function BiometricsStudio({ isOpen, onClose }) {
                 </div>
                 <div className="flex items-center gap-1.5 text-emerald-400 font-sans font-bold pt-1">
                   <CheckCircle2 className="w-4 h-4" />
-                  <span>Strict Portal Compliance Enforced</span>
+                  <span>Ready to download and upload</span>
                 </div>
               </div>
             </div>

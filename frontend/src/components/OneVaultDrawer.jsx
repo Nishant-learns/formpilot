@@ -1,9 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { X, Save, RotateCcw, User, Phone, GraduationCap, Sparkles, Check, Download, Upload } from 'lucide-react';
 
-export default function OneVaultDrawer({ isOpen, onClose }) {
-  if (!isOpen) return null;
+export default function OneVaultDrawer(props) {
+  if (!props.isOpen) return null;
+  return <VaultContent {...props} />;
+}
 
+function VaultContent({ onClose }) {
   const [vault, setVault] = useState(null);
   const [activeTab, setActiveTab] = useState('personal');
   const [saving, setSaving] = useState(false);
@@ -48,7 +51,7 @@ export default function OneVaultDrawer({ isOpen, onClose }) {
   };
 
   const handleReset = async () => {
-    if (!confirm('Reset One-Vault to high-fidelity default profile?')) return;
+    if (!confirm('Replace your saved details with the demo profile? This cannot be undone.')) return;
     try {
       const res = await fetch('/api/vault/reset', { method: 'POST' });
       if (res.ok) {
@@ -82,17 +85,17 @@ export default function OneVaultDrawer({ isOpen, onClose }) {
           <div>
             <h2 className="text-base font-extrabold text-white flex items-center gap-2">
               <Sparkles className="w-4 h-4 text-amber-400" />
-              <span>Persistent Candidate One-Vault</span>
+              <span>Your saved details</span>
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              Verified single-source of truth for millions of government forms
+              Reuse your details safely across applications
             </p>
           </div>
           <div className="flex items-center gap-2">
             <button
               onClick={handleReset}
               className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs flex items-center gap-1 border border-slate-700"
-              title="Reset to default candidate"
+              title="Reset to the demo profile"
             >
               <RotateCcw className="w-3.5 h-3.5" />
             </button>
@@ -108,10 +111,10 @@ export default function OneVaultDrawer({ isOpen, onClose }) {
         {/* Tab Navigation */}
         <div className="flex px-6 pt-3 border-b border-slate-800 bg-slate-950/50 gap-4 text-xs font-semibold">
           {[
-            { id: 'personal', label: '1. Personal & Caste', icon: <User className="w-3.5 h-3.5" /> },
-            { id: 'contact', label: '2. Contact & Address', icon: <Phone className="w-3.5 h-3.5" /> },
-            { id: 'academic', label: '3. Academic Records', icon: <GraduationCap className="w-3.5 h-3.5" /> },
-            { id: 'custom', label: '4. Dynamic Custom IDs', icon: <Sparkles className="w-3.5 h-3.5" /> },
+            { id: 'personal', label: '1. Personal', icon: <User className="w-3.5 h-3.5" /> },
+            { id: 'contact', label: '2. Contact & address', icon: <Phone className="w-3.5 h-3.5" /> },
+            { id: 'academic', label: '3. Education', icon: <GraduationCap className="w-3.5 h-3.5" /> },
+            { id: 'custom', label: '4. Other details', icon: <Sparkles className="w-3.5 h-3.5" /> },
           ].map(tab => (
             <button
               key={tab.id}
@@ -132,7 +135,7 @@ export default function OneVaultDrawer({ isOpen, onClose }) {
         {vault && (
           <div className="flex-1 overflow-y-auto p-6 space-y-4">
             
-            {/* TAB 1: PERSONAL & CASTE */}
+            {/* TAB 1: PERSONAL */}
             {activeTab === 'personal' && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
                 <div>
@@ -207,7 +210,7 @@ export default function OneVaultDrawer({ isOpen, onClose }) {
                   />
                 </div>
                 <div>
-                  <label className="text-slate-400 font-semibold block mb-1">Aadhaar Card (12 Digits)</label>
+                  <label className="text-slate-400 font-semibold block mb-1">Aadhaar number (12 digits)</label>
                   <input
                     type="text"
                     value={vault.aadhaar_number || ''}
@@ -329,7 +332,7 @@ export default function OneVaultDrawer({ isOpen, onClose }) {
             {activeTab === 'custom' && (
               <div className="space-y-4 text-xs">
                 <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-amber-300">
-                  Dynamic fields automatically captured when government portals demand custom IDs (e.g. APAAR ID, DigiLocker ID, Height, Chest, etc.).
+                  Keep additional details here when a form asks for them, such as an APAAR ID, DigiLocker ID, height, or chest measurement.
                 </div>
 
                 <div className="space-y-2">
@@ -351,11 +354,11 @@ export default function OneVaultDrawer({ isOpen, onClose }) {
 
                 {/* Add New Custom Field */}
                 <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
-                  <span className="font-bold text-slate-300 block">Add New Extensible Field:</span>
+                  <span className="font-bold text-slate-300 block">Add another detail:</span>
                   <div className="flex gap-2">
                     <input
                       type="text"
-                      placeholder="Field Name (e.g. typing_wpm)"
+                      placeholder="Detail name (e.g. typing_speed)"
                       value={newCustomKey}
                       onChange={(e) => setNewCustomKey(e.target.value)}
                       className="w-1/2 px-3 py-1.5 rounded bg-slate-900 border border-slate-700 text-white font-medium"
@@ -385,7 +388,7 @@ export default function OneVaultDrawer({ isOpen, onClose }) {
         {/* Drawer Footer */}
         <div className="px-6 py-4 bg-slate-950 border-t border-slate-800 flex items-center justify-between shrink-0">
           <span className="text-xs text-slate-500 font-mono">
-            Encrypted JSON Vault on Disk
+            Saved on this device
           </span>
           <button
             onClick={handleSave}
@@ -395,12 +398,12 @@ export default function OneVaultDrawer({ isOpen, onClose }) {
             {saveSuccess ? (
               <>
                 <Check className="w-4 h-4 text-emerald-950" />
-                <span>Saved Permanently!</span>
+                <span>Saved!</span>
               </>
             ) : (
               <>
                 <Save className="w-4 h-4" />
-                <span>{saving ? 'Saving...' : 'Save to One-Vault'}</span>
+                <span>{saving ? 'Saving...' : 'Save details'}</span>
               </>
             )}
           </button>

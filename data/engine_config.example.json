@@ -1,0 +1,13 @@
+{
+  "mode": "auto",
+  "headless": true,
+  "tinyfish_api_key": "",
+  "tinyfish_browser_api_url": "https://api.browser.tinyfish.ai",
+  "tinyfish_search_api_url": "https://api.search.tinyfish.ai",
+  "tinyfish_fetch_api_url": "https://api.fetch.tinyfish.ai",
+  "tinyfish_agent_api_url": "https://agent.tinyfish.ai/v1",
+  "proxy_region": "in",
+  "adaptive_delay_ms": 500,
+  "ntfy_topic": "formpilot_demo_otp",
+  "timeout_seconds": 90
+}

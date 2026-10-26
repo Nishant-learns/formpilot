@@ -1,7 +1,19 @@
-import re
+"""Official portal resolution and domain-safety checks.
+
+The registry is a fast, auditable allow-list.  Unknown queries are resolved
+with TinyFish Search and only accepted when the result is an official
+government / academic domain.  There is no silent default to a random portal.
+"""
+
+from __future__ import annotations
+
 import urllib.parse
-from typing import Dict, Any, List, Optional
-from pydantic import BaseModel
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, Field
+
+from .tinyfish_client import TinyFishClient, TinyFishError
+
 
 class OracleResult(BaseModel):
     query: str
@@ -9,12 +21,16 @@ class OracleResult(BaseModel):
     target_url: str
     is_gov_domain: bool
     domain_trust_score: int
-    authority_type: str  # "Central Ministry", "State PSC", "National Agency", "University"
+    authority_type: str
     domain_suffix: str
     advisory: str
     hindi_advisory: str
     source_citation: str
-    gazette_verified: bool
+    official_verified: bool
+    confidence: int = 100
+    resolved_via: str = "registry"
+    candidates: List[Dict[str, Any]] = Field(default_factory=list)
+
 
 OFFICIAL_PORTAL_REGISTRY = [
     {
@@ -24,8 +40,8 @@ OFFICIAL_PORTAL_REGISTRY = [
         "authority": "Ministry of Railways, Govt of India",
         "tld": "gov.in",
         "trust": 100,
-        "advisory": "Official Central Railway Gateway verified (.gov.in locked). Avoid unofficial aggregator ads.",
-        "hindi_advisory": "Railway ka official portal (rrbapply.gov.in) verify ho chuka hai. Yeh direct authentic gateway hai."
+        "advisory": "Official Railway application portal verified. Apply only through rrbapply.gov.in.",
+        "hindi_advisory": "Railway ka official portal verify ho gaya hai. Sirf rrbapply.gov.in se apply karein.",
     },
     {
         "keywords": ["ssc", "ssc cgl", "ssc chsl", "ssc gd", "staff selection commission", "ssc mts", "cpo"],
@@ -34,8 +50,8 @@ OFFICIAL_PORTAL_REGISTRY = [
         "authority": "Staff Selection Commission, Govt of India",
         "tld": "gov.in",
         "trust": 100,
-        "advisory": "New official SSC One-Time Registration (OTR) portal verified.",
-        "hindi_advisory": "SSC ka naya official portal (ssc.gov.in) verify ho gaya hai. Yahan OTR aur live photo capture hota hai."
+        "advisory": "Official SSC portal verified. Use the official OTR link to begin.",
+        "hindi_advisory": "SSC ka official portal verify ho gaya hai. OTR ke liye official link use karein.",
     },
     {
         "keywords": ["bpsc", "bihar psc", "bihar public service commission", "bpsc teacher", "tre", "70th bpsc"],
@@ -44,8 +60,8 @@ OFFICIAL_PORTAL_REGISTRY = [
         "authority": "Government of Bihar",
         "tld": "gov.in",
         "trust": 100,
-        "advisory": "BPSC Deep Application Gateway locked. Handles uncompressed JS bundles adaptively.",
-        "hindi_advisory": "BPSC Bihar ka official portal (onlinebpsc.bihar.gov.in) lock kiya gaya hai. Slow server par adaptive hydration chalegi."
+        "advisory": "Official BPSC portal verified. The page may load slowly; we will wait for it.",
+        "hindi_advisory": "BPSC ka official portal verify ho gaya hai. Page dheere khul sakta hai, hum wait karenge.",
     },
     {
         "keywords": ["upsc", "civil services", "ias", "ips", "nda", "cds", "union public service commission"],
@@ -54,8 +70,8 @@ OFFICIAL_PORTAL_REGISTRY = [
         "authority": "UPSC / National Informatics Centre (NIC)",
         "tld": "nic.in",
         "trust": 100,
-        "advisory": "Official UPSC Online OTR gateway verified under NIC security perimeter.",
-        "hindi_advisory": "UPSC ka official NIC portal (upsconline.nic.in) confirm ho chuka hai. OTR system ready hai."
+        "advisory": "Official UPSC portal verified. Use the official OTR link.",
+        "hindi_advisory": "UPSC ka official portal verify ho gaya hai. OTR ke liye official link use karein.",
     },
     {
         "keywords": ["csbc", "bihar police", "constable", "bihar police constable"],
@@ -64,8 +80,8 @@ OFFICIAL_PORTAL_REGISTRY = [
         "authority": "CSBC Bihar / NIC",
         "tld": "nic.in",
         "trust": 98,
-        "advisory": "CSBC Bihar official NIC gateway locked.",
-        "hindi_advisory": "Bihar Police Constable ka official NIC server verify ho gaya hai."
+        "advisory": "Official CSBC Bihar portal verified.",
+        "hindi_advisory": "Bihar Police Constable ka official portal verify ho gaya hai.",
     },
     {
         "keywords": ["uppsc", "up psc", "uttar pradesh psc", "ro aro", "up pcs"],
@@ -74,8 +90,8 @@ OFFICIAL_PORTAL_REGISTRY = [
         "authority": "Govt of Uttar Pradesh / NIC",
         "tld": "nic.in",
         "trust": 99,
-        "advisory": "Official UPPSC OTR and application system verified.",
-        "hindi_advisory": "UPPSC ka official portal verify ho gaya hai."
+        "advisory": "Official UPPSC portal verified.",
+        "hindi_advisory": "UPPSC ka official portal verify ho gaya hai.",
     },
     {
         "keywords": ["cuet", "nta", "neet", "jee main", "national testing agency"],
@@ -85,131 +101,245 @@ OFFICIAL_PORTAL_REGISTRY = [
         "tld": "ac.in / gov.in",
         "trust": 99,
         "advisory": "Official National Testing Agency exam portal verified.",
-        "hindi_advisory": "NTA ka official portal lock kar diya gaya hai."
+        "hindi_advisory": "NTA ka official portal verify ho gaya hai.",
     },
     {
-        "keywords": ["simulator", "test", "demo", "sandbox", "gov demo", "mock portal"],
-        "name": "ApplyOS Cyber Cafe High-Fidelity Gov Portal Sandbox",
+        "keywords": ["simulator", "test", "demo", "sandbox", "gov demo", "mock portal", "formpilot demo"],
+        "name": "FormPilot Practice Portal (Demo)",
         "url": "http://127.0.0.1:8000/gov-portal-demo",
-        "authority": "BharatPilot High-Fidelity Realistic Examination Simulator",
+        "authority": "FormPilot demo environment",
         "tld": "local",
         "trust": 100,
-        "advisory": "High-fidelity simulation environment matching RRB/SSC/BPSC multi-step mechanics & security gates.",
-        "hindi_advisory": "Cyber Cafe Testing Sandbox loaded! Bilkul real sarkari portal jaisa multi-step flow aur security locks."
-    }
+        "advisory": "A safe practice portal for trying the full application flow. No real application is submitted.",
+        "hindi_advisory": "Yeh ek practice portal hai. Yahan koi asli application submit nahi hoti.",
+    },
 ]
 
-class SarkariOracle:
-    """Multi-source consensus oracle cross-referencing authoritative gazettes & gov domains."""
+OFFICIAL_SUFFIXES = (".gov.in", ".nic.in", ".ac.in", ".edu.in", ".gov", ".nic")
+
+
+def _hostname(url: str) -> str:
+    try:
+        parsed = urllib.parse.urlparse(url)
+        return (parsed.hostname or "").lower()
+    except Exception:
+        return ""
+
+
+def is_official_host(hostname: str) -> bool:
+    hostname = (hostname or "").lower()
+    return hostname in {"localhost", "127.0.0.1"} or hostname.endswith(OFFICIAL_SUFFIXES)
+
+
+class PortalOracle:
+    """Resolve a natural-language request or URL into a verified portal."""
 
     @staticmethod
     def audit_url(url: str) -> Dict[str, Any]:
-        """Performs deep forensic audit on any given URL."""
-        try:
-            parsed = urllib.parse.urlparse(url)
-            hostname = parsed.hostname.lower() if parsed.hostname else ""
-        except Exception:
-            hostname = ""
+        hostname = _hostname(url)
+        is_local = hostname in {"localhost", "127.0.0.1"} or hostname.endswith(".local")
+        is_gov = is_official_host(hostname)
+        third_party = bool(hostname) and not is_gov and not is_local
 
-        # Check official gov / nic / ac / edu domains
-        is_gov = any(hostname.endswith(s) for s in [".gov.in", ".nic.in", ".ac.in", ".edu.in", ".gov", ".nic"])
-        is_local = hostname in ["localhost", "127.0.0.1"] or hostname.endswith(".local")
-        
-        # Check aggregator domains
-        is_aggregator = any(agg in hostname for agg in ["sarkariresult", "freejobalert", "rojgarresult", "fastjobsearchers"])
-        
-        trust_score = 50
         if is_gov:
             trust_score = 99
         elif is_local:
             trust_score = 100
-        elif is_aggregator:
-            trust_score = 65  # Reputable aggregator, but NOT direct official gateway!
-        elif hostname.endswith(".org") or hostname.endswith(".in"):
-            trust_score = 70
+        elif third_party:
+            trust_score = 60
+        else:
+            trust_score = 40
 
         return {
             "hostname": hostname,
-            "is_gov": is_gov or is_local,
-            "is_aggregator": is_aggregator,
+            "is_gov": is_gov,
+            "is_aggregator": third_party,
             "is_local": is_local,
             "trust_score": trust_score,
-            "scheme": parsed.scheme if parsed.scheme else "https"
+            "scheme": urllib.parse.urlparse(url).scheme or "https",
         }
 
     @classmethod
-    def resolve_target(cls, user_input: str) -> OracleResult:
-        """Resolves natural language wish or custom link into verified deep application link."""
-        cleaned = user_input.strip()
-        lower = cleaned.lower()
+    def _registry_match(cls, text: str) -> Optional[Dict[str, Any]]:
+        lower = text.lower()
+        for entry in OFFICIAL_PORTAL_REGISTRY:
+            for keyword in entry["keywords"]:
+                if keyword in lower:
+                    return entry
+        return None
 
-        # Check if direct URL
-        if cleaned.startswith("http://") or cleaned.startswith("https://"):
+    @classmethod
+    def _result_from_entry(
+        cls,
+        query: str,
+        entry: Dict[str, Any],
+        *,
+        advisory: Optional[str] = None,
+        hindi_advisory: Optional[str] = None,
+        source_citation: str = "Verified official portal registry",
+        resolved_via: str = "registry",
+        confidence: int = 100,
+    ) -> OracleResult:
+        return OracleResult(
+            query=query,
+            official_name=entry["name"],
+            target_url=entry["url"],
+            is_gov_domain=True,
+            domain_trust_score=int(entry["trust"]),
+            authority_type=entry["authority"],
+            domain_suffix=entry["tld"],
+            advisory=advisory or entry["advisory"],
+            hindi_advisory=hindi_advisory or entry["hindi_advisory"],
+            source_citation=source_citation,
+            official_verified=True,
+            confidence=confidence,
+            resolved_via=resolved_via,
+        )
+
+    @classmethod
+    def resolve_target(cls, user_input: str) -> OracleResult:
+        """Synchronous registry/direct-URL resolution (used by tests and UI)."""
+        cleaned = (user_input or "").strip()
+        if not cleaned:
+            return cls._no_match(cleaned, "Enter a portal name or official URL.")
+
+        if cleaned.startswith(("http://", "https://")):
             audit = cls.audit_url(cleaned)
             hostname = audit["hostname"]
-            
-            # If candidate provided a third-party aggregator URL, warn and resolve to official
+
+            # A third-party link that clearly references a known recruitment
+            # body is redirected to the authoritative registry entry.
             if audit["is_aggregator"]:
-                for entry in OFFICIAL_PORTAL_REGISTRY:
-                    for kw in entry["keywords"]:
-                        if kw in lower:
-                            return OracleResult(
-                                query=cleaned,
-                                official_name=entry["name"],
-                                target_url=entry["url"],
-                                is_gov_domain=True,
-                                domain_trust_score=entry["trust"],
-                                authority_type=entry["authority"],
-                                domain_suffix=entry["tld"],
-                                advisory=f"Aggregator link filtered. Bypassed ads and locked onto authentic deep gateway: {entry['url']}",
-                                hindi_advisory=f"SarkariResult/Ads ko bypass karke seedhe official government link ({entry['url']}) par lock kar diya hai.",
-                                source_citation="Official Central/State Gazette Lock",
-                                gazette_verified=True
-                            )
-            
+                entry = cls._registry_match(cleaned)
+                if entry:
+                    return cls._result_from_entry(
+                        cleaned,
+                        entry,
+                        advisory=f"Third-party link replaced with the official government link: {entry['url']}",
+                        hindi_advisory=f"Third-party link hata kar official government link ({entry['url']}) use karein.",
+                        source_citation="Domain check + government portal registry",
+                        resolved_via="domain_guard",
+                        confidence=98,
+                    )
+
             return OracleResult(
                 query=cleaned,
-                official_name=f"Custom Portal ({hostname})",
+                official_name=f"Custom Portal ({hostname or 'unknown host'})",
                 target_url=cleaned,
                 is_gov_domain=audit["is_gov"],
                 domain_trust_score=audit["trust_score"],
                 authority_type="Government / Public Portal" if audit["is_gov"] else "Third-Party / Web Form",
                 domain_suffix=hostname.split(".")[-1] if "." in hostname else "",
-                advisory="Authoritative domain lock active." if audit["is_gov"] else "Warning: Not a verified .gov.in/.nic.in domain. Exercise caution.",
-                hindi_advisory="Official domain verify ho gaya hai." if audit["is_gov"] else "Dhyan dein: Yeh .gov.in portal nahi hai, par form fill ho sakta hai.",
-                source_citation="Direct URL Input & Domain Audit",
-                gazette_verified=audit["is_gov"]
+                advisory="Official government domain verified." if audit["is_gov"] else "This link is not a verified government domain. Continue only if you trust it.",
+                hindi_advisory="Official government domain verify ho gaya hai." if audit["is_gov"] else "Yeh verified government domain nahi hai. Sirf tab continue karein jab aap is link par bharosa karte hain.",
+                source_citation="Direct URL input and domain check",
+                official_verified=audit["is_gov"],
+                confidence=100 if audit["is_gov"] else 55,
+                resolved_via="direct_url",
             )
 
-        # Natural language query matching
-        for entry in OFFICIAL_PORTAL_REGISTRY:
-            for kw in entry["keywords"]:
-                if kw in lower:
-                    return OracleResult(
-                        query=cleaned,
-                        official_name=entry["name"],
-                        target_url=entry["url"],
-                        is_gov_domain=True,
-                        domain_trust_score=entry["trust"],
-                        authority_type=entry["authority"],
-                        domain_suffix=entry["tld"],
-                        advisory=entry["advisory"],
-                        hindi_advisory=entry["hindi_advisory"],
-                        source_citation="Authoritative Govt Notification Gazette",
-                        gazette_verified=True
-                    )
+        entry = cls._registry_match(cleaned)
+        if entry:
+            return cls._result_from_entry(cleaned, entry)
 
-        # Fallback default: Railway or Demo Sandbox
+        return cls._no_match(
+            cleaned,
+            "No official portal was found for this request. Paste the official notification link.",
+        )
+
+    @classmethod
+    async def resolve_target_live(
+        cls,
+        user_input: str,
+        client: Optional[TinyFishClient] = None,
+    ) -> OracleResult:
+        """Resolve with the registry first, then TinyFish Search for unknowns."""
+        cleaned = (user_input or "").strip()
+        base = cls.resolve_target(cleaned)
+        if base.target_url or not client or not client.is_configured:
+            return base
+
+        query = f"{cleaned} official recruitment notification"
+        try:
+            results = await client.search(
+                query,
+                location="IN",
+                limit=8,
+                purpose="Find the official government application portal for a candidate",
+            )
+        except TinyFishError as exc:
+            return cls._no_match(cleaned, "Live search is unavailable right now. Paste the official notification link.")
+        except Exception as exc:  # defensive: search must never break the run
+            return cls._no_match(cleaned, "Live search is unavailable right now. Paste the official notification link.")
+
+        official: list[dict[str, Any]] = []
+        for result in results:
+            url = str(result.get("url") or "")
+            hostname = _hostname(url)
+            if is_official_host(hostname):
+                official.append(result)
+
+        if not official:
+            return cls._no_match(
+                cleaned,
+                "Live search found no official government link. Paste the official notification link.",
+                candidates=results,
+            )
+
+        first = official[0]
+        url = str(first.get("url") or "")
+        title = str(first.get("title") or "Official government portal")
+        hostname = _hostname(url)
         return OracleResult(
             query=cleaned,
-            official_name="Railway Recruitment Boards (RRB Central Gateway)",
-            target_url="https://www.rrbapply.gov.in/#/auth/home",
+            official_name=title,
+            target_url=url,
             is_gov_domain=True,
             domain_trust_score=95,
-            authority_type="Ministry of Railways",
-            domain_suffix="gov.in",
-            advisory="Defaulting to authentic RRB national gateway (.gov.in).",
-            hindi_advisory="RRB official national portal par lock kar rahe hain.",
-            source_citation="Ministry Gazette Registry",
-            gazette_verified=True
+            authority_type="Official government / academic domain",
+            domain_suffix=hostname.split(".")[-1] if "." in hostname else "",
+            advisory="Live web search found this official government domain. Confirm the notification and eligibility before applying.",
+            hindi_advisory="Live search se official government domain mila hai. Apply karne se pehle notification aur eligibility check karein.",
+            source_citation=f"Official web result: {title} — {url}",
+            official_verified=False,
+            confidence=85,
+            resolved_via="tinyfish_search",
+            candidates=official[:5],
         )
+
+    @classmethod
+    def _no_match(
+        cls,
+        query: str,
+        advisory: str,
+        *,
+        candidates: Optional[list[dict[str, Any]]] = None,
+    ) -> OracleResult:
+        return OracleResult(
+            query=query,
+            official_name="Unverified portal",
+            target_url="",
+            is_gov_domain=False,
+            domain_trust_score=0,
+            authority_type="Unverified",
+            domain_suffix="",
+            advisory=advisory,
+            hindi_advisory="Portal verify nahi ho paya. Official notification ka link paste karein.",
+            source_citation="No official source matched",
+            official_verified=False,
+            confidence=0,
+            resolved_via="unverified",
+            candidates=candidates or [],
+        )
+
+    @staticmethod
+    def directory() -> List[Dict[str, Any]]:
+        return [
+            {
+                "name": entry["name"],
+                "url": entry["url"],
+                "authority": entry["authority"],
+                "keywords": entry["keywords"],
+            }
+            for entry in OFFICIAL_PORTAL_REGISTRY
+        ]

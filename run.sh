@@ -1,19 +1,27 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
-echo "=========================================================="
-echo " Starting FormPilot — AI Cyber Bhaiya "
-echo "=========================================================="
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+cd "$ROOT_DIR"
 
-DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
-cd "$DIR"
+# Load local configuration if present. `.env` is git-ignored.
+if [ -f .env ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . ./.env
+  set +a
+fi
 
-# Ensure uploads and data directories exist
+PYTHON_BIN="${PYTHON:-python3}"
+if [ -x .venv/bin/python ]; then
+  PYTHON_BIN=".venv/bin/python"
+fi
+
 mkdir -p data uploads frontend/dist
+export PYTHONPATH="$ROOT_DIR${PYTHONPATH:+:$PYTHONPATH}"
 
-# Set PYTHONPATH
-export PYTHONPATH=.
+HOST="${FORMPILOT_HOST:-127.0.0.1}"
+PORT="${FORMPILOT_PORT:-8000}"
 
-# Start FastAPI backend (serving API, WebSockets, Gov Simulator, and Built Frontend UI)
-echo "Launching FastAPI Unified Server on http://127.0.0.1:8000..."
-python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+echo "Starting FormPilot on http://${HOST}:${PORT}"
+exec "$PYTHON_BIN" -m uvicorn backend.main:app --host "$HOST" --port "$PORT"

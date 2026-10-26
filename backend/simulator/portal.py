@@ -1,29 +1,30 @@
-import os
 import json
+import secrets
 import time
-import random
-from fastapi import APIRouter, Response, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from pathlib import Path
+
+from fastapi import APIRouter, Response
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
+from ..core import settings
 from ..core.otp_service import RealOTPService
 
 router = APIRouter()
 
-REGISTRATIONS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "portal_registrations.json")
+REGISTRATIONS_FILE = settings.DATA_DIR / "portal_registrations.json"
 
 def load_registrations() -> dict:
-    if os.path.exists(REGISTRATIONS_FILE):
+    if REGISTRATIONS_FILE.exists():
         try:
-            with open(REGISTRATIONS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+            return json.loads(REGISTRATIONS_FILE.read_text(encoding="utf-8"))
         except Exception:
             pass
     # Default pre-seeded demo record for immediate test login
     default_rec = {
-        "CREB-2026-881902": {
-            "registration_id": "CREB-2026-881902",
-            "password": "Password@123",
+        "FP-2026-881902": {
+            "registration_id": "FP-2026-881902",
+            "password": "Practice@123",
             "full_name": "Aman Kumar Sharma",
             "father_name": "Rajesh Kumar Sharma",
             "mother_name": "Sunita Devi",
@@ -31,11 +32,11 @@ def load_registrations() -> dict:
             "gender": "Male",
             "category": "OBC-NCL",
             "mobile": "9876543210",
-            "email": "aman.sharma.exams2026@gmail.com",
-            "aadhaar": "784512963014",
+            "email": "demo.candidate@example.com",
+            "aadhaar": "123456789012",
             "matric_board": "CBSE",
             "matric_roll": "24108842",
-            "status": "OTR Complete • Biometrics Archived • Fee Pending",
+            "status": "Practice registration • demo only",
             "created_at": "2026-10-15 14:00:00"
         }
     }
@@ -43,24 +44,22 @@ def load_registrations() -> dict:
     return default_rec
 
 def save_registrations(data: dict):
-    os.makedirs(os.path.dirname(REGISTRATIONS_FILE), exist_ok=True)
-    with open(REGISTRATIONS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    REGISTRATIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    REGISTRATIONS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 class SendOTPRequest(BaseModel):
     mobile: str
     email: str = ""
-    topic: str = "bharatpilot_otp"
+    topic: str = settings.NTFY_TOPIC
 
 @router.post("/api/portal/send-otp")
 async def portal_send_otp(req: SendOTPRequest):
-    """Dispatches real phone OTP via ntfy.sh and email forwarding."""
-    res = await RealOTPService.dispatch_real_otp(
+    """Sends a demo verification code over the configured notification channel."""
+    return await RealOTPService.dispatch_real_otp(
         recipient=req.mobile,
-        topic=req.topic,
-        email=req.email
+        topic=req.topic or settings.NTFY_TOPIC,
+        email=req.email,
     )
-    return res
 
 class VerifyOTPRequest(BaseModel):
     mobile: str
@@ -70,10 +69,7 @@ class VerifyOTPRequest(BaseModel):
 def portal_verify_otp(req: VerifyOTPRequest):
     """Validates submitted real OTP."""
     valid = RealOTPService.verify_otp(req.mobile, req.otp)
-    # For convenient hackathon demo fallback, also accept 492015 or 123456
-    if not valid and req.otp in ("492015", "123456", "778899"):
-        valid = True
-    return {"success": valid, "message": "OTP Verified Successfully" if valid else "Invalid or expired OTP"}
+    return {"success": valid, "message": "Verification code accepted." if valid else "That code is invalid or expired."}
 
 class OTRRegisterRequest(BaseModel):
     full_name: str
@@ -92,8 +88,8 @@ class OTRRegisterRequest(BaseModel):
 def portal_register(req: OTRRegisterRequest):
     """Generates official permanent OTR Registration ID and archives dossier."""
     regs = load_registrations()
-    reg_id = f"CREB-2026-{random.randint(100000, 999999)}"
-    password = f"Pass@{req.mobile[-4:]}"
+    reg_id = f"FP-2026-{secrets.randbelow(900000) + 100000}"
+    password = f"Practice@{req.mobile[-4:]}"
 
     record = {
         "registration_id": reg_id,
@@ -109,7 +105,7 @@ def portal_register(req: OTRRegisterRequest):
         "aadhaar": req.aadhaar,
         "matric_board": req.matric_board,
         "matric_roll": req.matric_roll,
-        "status": "OTR Complete • Biometrics Verified • Ready for Payment",
+        "status": "Practice registration created • demo only",
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
     }
     regs[reg_id] = record
@@ -125,7 +121,7 @@ def portal_login(req: PortalLoginRequest):
     """Logs into Candidate Dashboard using generated permanent OTR ID."""
     regs = load_registrations()
     rec = regs.get(req.registration_id.strip())
-    if rec and (rec.get("password") == req.password.strip() or req.password.strip() == "Password@123"):
+    if rec and rec.get("password") == req.password.strip():
         return {"success": True, "record": rec}
     return {"success": False, "message": "Invalid OTR Registration Number or Password."}
 
@@ -134,7 +130,7 @@ PORTAL_HTML = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Central Recruitment & Examination Board (CREB) — Govt of Bharat</title>
+  <title>FormPilot Practice Portal — Demo Application</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif; background-color: #f0f2f5; color: #222; }
@@ -219,29 +215,33 @@ PORTAL_HTML = """<!DOCTYPE html>
   <div class="emblem-title">
     <div class="emblem">🏛️</div>
     <div>
-      <h1 style="font-size: 18px; letter-spacing: 0.5px;">CENTRAL RECRUITMENT & EXAMINATION BOARD (CREB)</h1>
-      <p style="font-size: 12px; opacity: 0.85;">Ministry of Personnel, Public Grievances & Pensions • Govt. of Bharat</p>
+      <h1 style="font-size: 18px; letter-spacing: 0.5px;">FORMPILOT PRACTICE PORTAL</h1>
+      <p style="font-size: 12px; opacity: 0.85;">A safe demo for multi-step application forms • Not a government website</p>
     </div>
   </div>
   <div style="font-size: 12px; text-align: right;">
-    <div>Official Portal: <strong>creb.gov.in</strong></div>
-    <div style="color: #2ecc71;">🔒 Secure 256-Bit SSL Enforced</div>
+    <div>Demo environment</div>
+    <div style="color: #2ecc71;">No real submission or payment</div>
   </div>
 </header>
 
 <div class="nav-bar">
   <span style="cursor: pointer;" onclick="showGateway()">Home</span>
-  <span>Notifications (Advt. No. 04/2026)</span>
-  <span style="cursor: pointer;" onclick="openForm('new_reg')">One-Time Registration (OTR)</span>
-  <span style="cursor: pointer;" onclick="openForm('login')">Candidate Login</span>
-  <span>Helpdesk</span>
+  <span>Practice scenario 04/2026</span>
+  <span style="cursor: pointer;" onclick="openForm('new_reg')">New registration</span>
+  <span style="cursor: pointer;" onclick="openForm('login')">Returning candidate</span>
+  <span>Help</span>
+</div>
+
+<div style="max-width:1000px;margin:16px auto 0;background:#fff7ed;border:1px solid #fdba74;color:#9a3412;border-radius:6px;padding:10px 14px;font-size:13px;">
+  <strong>Practice portal:</strong> This is a demo, not a government website. Use dummy details only. Never enter a real Aadhaar number, password, or payment information here.
 </div>
 
 <div class="container">
   <div class="portal-banner">
     <div>
-      <h2>National Combined Graduate & Technical Recruitment Examination 2026</h2>
-      <p>Official Online Application Gateway • Reference: Advt. 04/CREB/2026</p>
+      <h2>Practice Application Flow 2026</h2>
+      <p>Use dummy details only • Demo reference: 04/FP/2026</p>
     </div>
     <div id="otr-badge-pill" style="display: none;" class="badge-ok">
       OTR Active
@@ -250,19 +250,19 @@ PORTAL_HTML = """<!DOCTYPE html>
 
   <!-- Gateway Selection Stage -->
   <div id="gateway-view">
-    <h2 style="color: #002b49;">Welcome to the Unified Candidate Application Portal</h2>
-    <p style="margin-top: 8px; color: #555; font-size: 14px;">Select your application route to proceed with Advt. 04/2026:</p>
+    <h2 style="color: #002b49;">Welcome to the practice application portal</h2>
+    <p style="margin-top: 8px; color: #555; font-size: 14px;">Choose a route to try. This is a demo; no real application is submitted.</p>
     
     <div class="gateway-cards">
       <div class="g-card" id="card-new-reg" onclick="openForm('new_reg')">
-        <h3>New Registration / OTR</h3>
-        <p>For fresh candidates who have not yet generated a permanent One-Time Registration ID.</p>
+        <h3>New practice registration</h3>
+        <p>Try the full multi-step form as a first-time applicant.</p>
         <button type="button" class="g-btn reg" id="btn-new-registration" onclick="openForm('new_reg')">New Registration / OTR</button>
       </div>
 
       <div class="g-card" id="card-login" onclick="openForm('login')">
-        <h3>Candidate Login</h3>
-        <p>For candidates who already possess an OTR Registration Number & Password.</p>
+        <h3>Returning candidate</h3>
+        <p>Use the demo registration ID and password to view the dashboard.</p>
         <button type="button" class="g-btn" id="btn-candidate-login" onclick="openForm('login')">Candidate Login</button>
       </div>
     </div>
@@ -270,13 +270,13 @@ PORTAL_HTML = """<!DOCTYPE html>
 
   <!-- Candidate Login Stage -->
   <div id="login-view">
-    <h3 style="color: #002b49; margin-bottom: 6px;">Candidate Login (Existing OTR)</h3>
-    <p style="font-size: 13px; color: #666; margin-bottom: 20px;">Enter your CREB OTR Registration ID and Password to view application status:</p>
+    <h3 style="color: #002b49; margin-bottom: 6px;">Returning candidate login</h3>
+    <p style="font-size: 13px; color: #666; margin-bottom: 20px;">Use the demo registration ID and password. This is a practice environment.</p>
     
     <div class="login-box">
       <div class="form-group" style="margin-bottom: 14px;">
-        <label for="login_reg_id">OTR Registration Number<span class="req">*</span></label>
-        <input type="text" id="login_reg_id" name="login_reg_id" placeholder="e.g. CREB-2026-881902" required>
+        <label for="login_reg_id">Practice registration number<span class="req">*</span></label>
+        <input type="text" id="login_reg_id" name="login_reg_id" placeholder="e.g. FP-2026-881902" required>
       </div>
 
       <div class="form-group" style="margin-bottom: 14px;">
@@ -286,8 +286,9 @@ PORTAL_HTML = """<!DOCTYPE html>
 
       <div class="captcha-box" style="margin-bottom: 16px;">
         <canvas id="loginCaptchaCanvas" class="captcha-canvas" width="140" height="40"></canvas>
-        <input type="text" id="login_captcha" name="login_captcha" placeholder="CAPTCHA" style="width: 120px; font-weight: bold;">
+        <input type="text" id="login_captcha" name="login_captcha" placeholder="Demo code" style="width: 120px; font-weight: bold;">
       </div>
+      <div style="font-size: 11px; color: #666; margin-bottom: 12px;">Demo login: <strong>FP-2026-881902</strong> / <strong>Practice@123</strong> · Security code: <strong>4X9K</strong></div>
 
       <button type="button" class="btn-action btn-next" style="width: 100%;" onclick="submitLogin()">Log In to Dashboard →</button>
       
@@ -300,19 +301,19 @@ PORTAL_HTML = """<!DOCTYPE html>
   <!-- Candidate Dashboard Stage -->
   <div id="dashboard-view">
     <div class="otr-success-banner">
-      <h3 style="color: #15803d; font-size: 20px;">Candidate Dashboard (Active OTR Session)</h3>
-      <p style="font-size: 13px; color: #166534; margin-top: 4px;">Verified Citizen Profile on Central Government Recruitment Registry</p>
+      <h3 style="color: #15803d; font-size: 20px;">Practice candidate dashboard</h3>
+      <p style="font-size: 13px; color: #166534; margin-top: 4px;">Demo profile • no real government record</p>
     </div>
 
     <div style="background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; padding: 20px; margin-bottom: 20px;">
       <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #e2e8f0; padding-bottom: 12px; margin-bottom: 12px;">
         <div>
           <span style="font-size: 12px; color: #64748b; font-weight: bold;">REGISTRATION ID</span>
-          <div id="dash-reg-id" style="font-size: 18px; font-weight: bold; color: #002b49;">CREB-2026-881902</div>
+          <div id="dash-reg-id" style="font-size: 18px; font-weight: bold; color: #002b49;">FP-2026-881902</div>
         </div>
         <div style="text-align: right;">
           <span style="font-size: 12px; color: #64748b; font-weight: bold;">APPLICATION STATUS</span>
-          <div id="dash-status" class="badge-ok">OTR Profile Verified</div>
+          <div id="dash-status" class="badge-ok">Practice profile</div>
         </div>
       </div>
 
@@ -348,7 +349,7 @@ PORTAL_HTML = """<!DOCTYPE html>
     <div class="form-section active" id="sec-1">
       <div class="section-title">
         <span>Stage 1: Basic Identity & Personal Particulars</span>
-        <span style="font-size: 11px; font-weight: normal; color: #004b7a;">Real Phone OTP Verification Enforced</span>
+        <span style="font-size: 11px; font-weight: normal; color: #004b7a;">Demo phone verification</span>
       </div>
       <div class="form-grid">
         
@@ -434,19 +435,19 @@ PORTAL_HTML = """<!DOCTYPE html>
         <div class="otp-verify-card" id="otp-section">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
             <div style="font-size: 13px; font-weight: bold; color: #166534;">
-              📱 Real Phone/Email Security Verification (Live Push Notification via ntfy.sh)
+              📱 Phone verification (demo code)
             </div>
             <button type="button" class="btn-otp" id="btn-send-otp" onclick="requestRealOtp()">
-              📲 Dispatch Real OTP to Phone
+              Send demo code
             </button>
           </div>
           <div id="otp-status-msg" style="font-size: 12px; color: #15803d; margin-bottom: 8px;">
-            Click button above to send real OTP. Your phone will receive instant push notification via ntfy.sh/bharatpilot_otp.
+            Click to send a demo code to the notification channel. In a real portal this would be an SMS.
           </div>
           <div style="display: flex; gap: 10px; align-items: center;">
             <input type="text" id="mobileOtp" name="mobileOtp" maxlength="6" placeholder="Enter 6-digit OTP" style="width: 180px; font-weight: bold; font-family: monospace; letter-spacing: 2px;">
             <button type="button" class="btn-verify-otp" id="btn-verify-otp" onclick="verifyRealOtp()">Verify OTP</button>
-            <span id="otp-verified-pill" style="display: none;" class="badge-ok">✓ Phone & Email Verified</span>
+            <span id="otp-verified-pill" style="display: none;" class="badge-ok">✓ Demo verification complete</span>
           </div>
         </div>
 
@@ -459,7 +460,7 @@ PORTAL_HTML = """<!DOCTYPE html>
 
     <!-- Step 2: Academic Qualifications -->
     <div class="form-section" id="sec-2">
-      <div class="section-title">Stage 2: High School (Matriculation) & Higher Qualifications</div>
+      <div class="section-title">Stage 2: Academic details (demo)</div>
       <div class="form-grid">
         <div class="form-group">
           <label for="matric_board">10th / Matric Board Examination<span class="req">*</span></label>
@@ -496,18 +497,18 @@ PORTAL_HTML = """<!DOCTYPE html>
 
     <!-- Step 3: Biometrics & Uploads -->
     <div class="form-section" id="sec-3">
-      <div class="section-title">Stage 3: Photograph, Signature & Biometrics Upload</div>
+      <div class="section-title">Stage 3: Photo, signature and demo security check</div>
       <div class="form-grid">
         <div class="form-group">
           <label for="photo_file">Recent Passport Photograph (20KB - 50KB, JPEG)<span class="req">*</span></label>
           <input type="file" id="photo_file" name="photo_file" accept=".jpg,.jpeg">
-          <span style="font-size: 11px; color: #666; margin-top: 4px;">Strict specification: 350x350 px, crisp background.</span>
+          <span style="font-size: 11px; color: #666; margin-top: 4px;">Practice file field. The demo accepts a normal JPEG.</span>
         </div>
 
         <div class="form-group">
           <label for="sig_file">Candidate Digital Signature (10KB - 20KB, JPEG)<span class="req">*</span></label>
           <input type="file" id="sig_file" name="sig_file" accept=".jpg,.jpeg">
-          <span style="font-size: 11px; color: #666; margin-top: 4px;">Strict specification: 140x60 px, blue/black ink on white paper.</span>
+          <span style="font-size: 11px; color: #666; margin-top: 4px;">Practice file field. No real signature is stored.</span>
         </div>
 
         <!-- Captcha & Security Box -->
@@ -515,9 +516,10 @@ PORTAL_HTML = """<!DOCTYPE html>
           <label>Visual Security Verification (Enter Text Shown Below)<span class="req">*</span></label>
           <div class="captcha-box">
             <canvas id="captchaCanvas" class="captcha-canvas" width="180" height="50"></canvas>
-            <button type="button" style="padding: 6px 12px; font-size: 12px; cursor: pointer;" onclick="drawCaptcha()">↻ Refresh CAPTCHA</button>
-            <input type="text" id="captchaInput" name="captchaInput" placeholder="Enter CAPTCHA Code" style="width: 180px; font-weight: bold; letter-spacing: 2px;">
+            <button type="button" style="padding: 6px 12px; font-size: 12px; cursor: pointer;" onclick="drawCaptcha()">↻ Refresh demo code</button>
+            <input type="text" id="captchaInput" name="captchaInput" placeholder="Enter code shown here" style="width: 180px; font-weight: bold; letter-spacing: 2px;">
           </div>
+          <div style="font-size: 11px; color: #666; margin-top: 6px;">Demo security code: <strong>7X9KP</strong> (shown here so you can test the flow).</div>
         </div>
       </div>
 
@@ -529,21 +531,21 @@ PORTAL_HTML = """<!DOCTYPE html>
 
     <!-- Step 4: Irreversible Payment Gate (PRE-PAYMENT SAFETY LOCK TEST) -->
     <div class="form-section" id="sec-4">
-      <div class="section-title">Stage 4: Declaration & Application Fee Gateway</div>
+      <div class="section-title">Stage 4: Review and demo fee step</div>
       
       <!-- OTR Registration Slip Acknowledgement -->
       <div id="otr-slip-container" class="otr-success-banner" style="text-align: left; padding: 16px;">
         <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #86efac; padding-bottom: 8px;">
-          <h4 style="color: #166534; font-size: 16px;">Official One-Time Registration (OTR) Generated</h4>
-          <span id="permanent-reg-id" style="font-family: monospace; font-size: 16px; font-weight: bold; color: #002b49;">CREB-2026-PENDING</span>
+          <h4 style="color: #166534; font-size: 16px;">Practice registration created</h4>
+          <span id="permanent-reg-id" style="font-family: monospace; font-size: 16px; font-weight: bold; color: #002b49;">FP-2026-PENDING</span>
         </div>
         <p style="font-size: 12px; color: #15803d; margin-top: 6px;">
-          Your candidate dossier has been permanently archived in the official CREB Government Registry. You can use this registration ID anytime to log in.
+          This practice portal saved a demo registration. No real government record was created.
         </p>
       </div>
 
       <div style="background: #f8fafc; padding: 16px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 13px; line-height: 1.6;">
-        <p><strong>Declaration:</strong> I hereby certify that the information furnished by me in this application is true and correct to the best of my knowledge. I understand that submission of false data shall result in immediate disqualification under Advt. 04/CREB/2026.</p>
+        <p><strong>Practice declaration:</strong> This is a demo form. In a real application, you would confirm that the information is true and correct.</p>
         <div style="margin-top: 12px;">
           <input type="checkbox" id="chkDeclaration" checked>
           <label for="chkDeclaration">I Accept and Confirm all above statements.</label>
@@ -551,11 +553,11 @@ PORTAL_HTML = """<!DOCTYPE html>
       </div>
 
       <div class="payment-box">
-        <h3>Application Fee Checkout: ₹ 500.00</h3>
+        <h3>Demo fee step: ₹ 500.00</h3>
         <p style="font-size: 13px; color: #78350f; margin-bottom: 16px;">
-          ⚠️ <strong>WARNING:</strong> Clicking below triggers the irreversible Payment Gateway. Under BharatPilot Invariant #9, automated agents are strictly locked from clicking this action.
+          This is a practice page. FormPilot stops before payment, and the demo never charges money. In a real portal, you would review the details and pay yourself.
         </p>
-        <button type="button" class="pay-btn" id="btn-proceed-payment" onclick="alert('Payment processing initiated!')">Proceed to Irreversible Payment (₹500)</button>
+        <button type="button" class="pay-btn" id="btn-proceed-payment" onclick="alert('Demo only — no payment was taken.')">Demo payment button (no charge)</button>
       </div>
 
       <div class="action-row">
@@ -567,7 +569,10 @@ PORTAL_HTML = """<!DOCTYPE html>
 </div>
 
 <script>
-  let currentCaptchaText = "7X9KP";
+  const NTFY_TOPIC = "__NTFY_TOPIC__";
+  const DEMO_OTP = "__DEMO_OTP__";
+  const currentCaptchaText = "7X9KP";
+  const LOGIN_CAPTCHA = "4X9K";
   let otpVerified = false;
 
   function drawCaptcha() {
@@ -577,17 +582,11 @@ PORTAL_HTML = """<!DOCTYPE html>
     ctx.fillStyle = "#1e293b";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-    currentCaptchaText = "";
-    for (let i = 0; i < 5; i++) {
-      currentCaptchaText += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-
     ctx.strokeStyle = "#475569";
     for (let i = 0; i < 4; i++) {
       ctx.beginPath();
-      ctx.moveTo(Math.random() * canvas.width, Math.random() * canvas.height);
-      ctx.lineTo(Math.random() * canvas.width, Math.random() * canvas.height);
+      ctx.moveTo((i * 37) % canvas.width, (i * 19) % canvas.height);
+      ctx.lineTo((i * 53 + 20) % canvas.width, (i * 29 + 10) % canvas.height);
       ctx.stroke();
     }
 
@@ -595,7 +594,7 @@ PORTAL_HTML = """<!DOCTYPE html>
     ctx.fillStyle = "#38bdf8";
     for (let i = 0; i < currentCaptchaText.length; i++) {
       const x = 20 + i * 30;
-      const y = 35 + (Math.random() * 6 - 3);
+      const y = 35 + ((i % 3) - 1) * 3;
       ctx.fillText(currentCaptchaText[i], x, y);
     }
   }
@@ -608,7 +607,7 @@ PORTAL_HTML = """<!DOCTYPE html>
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.font = "bold 20px monospace";
     ctx.fillStyle = "#38bdf8";
-    ctx.fillText("4X9K", 25, 28);
+    ctx.fillText(LOGIN_CAPTCHA, 25, 28);
   }
 
   function showGateway() {
@@ -636,22 +635,23 @@ PORTAL_HTML = """<!DOCTYPE html>
     const mobile = document.getElementById("mobile").value.trim() || "9876543210";
     const email = document.getElementById("email").value.trim();
     const statusMsg = document.getElementById("otp-status-msg");
-    statusMsg.innerText = "Dispatching real OTP to phone via ntfy.sh/bharatpilot_otp...";
+    statusMsg.innerText = "Sending the demo code...";
 
     try {
       const res = await fetch("/api/portal/send-otp", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mobile: mobile, email: email, topic: "bharatpilot_otp" })
+        body: JSON.stringify({ mobile: mobile, email: email, topic: NTFY_TOPIC })
       });
       const data = await res.json();
+      const codeText = data.demo_otp ? ` Demo code: <strong>${data.demo_otp}</strong>.` : "";
       if (data.success) {
-        statusMsg.innerHTML = "✅ <strong>Real OTP dispatched!</strong> Ringing alert sent to: <a href='https://ntfy.sh/bharatpilot_otp' target='_blank'>ntfy.sh/bharatpilot_otp</a>";
+        statusMsg.innerHTML = `✅ Demo code sent. <a href="https://ntfy.sh/${NTFY_TOPIC}" target="_blank" rel="noreferrer">Open the notification channel</a>.${codeText}`;
       } else {
-        statusMsg.innerText = "OTP dispatched (Demo code: " + data.otp + ")";
+        statusMsg.innerHTML = `The notification channel is unavailable.${codeText}`;
       }
     } catch (e) {
-      statusMsg.innerText = "OTP dispatched. Check notification on ntfy.sh/bharatpilot_otp";
+      statusMsg.innerText = "Could not send the demo code. Please try again.";
     }
   }
 
@@ -675,20 +675,21 @@ PORTAL_HTML = """<!DOCTYPE html>
       if (data.success) {
         otpVerified = true;
         document.getElementById("otp-verified-pill").style.display = "inline-block";
-        statusMsg.innerHTML = "🔒 <strong>Phone & Email Cleared!</strong> Candidate identity cryptographically verified.";
+        statusMsg.innerHTML = "✅ <strong>Demo verification complete.</strong> You can continue.";
       } else {
-        alert("Incorrect OTP. Please check the notification received on your phone.");
+        alert("That demo code is incorrect. Please check it and try again.");
       }
     } catch (e) {
-      otpVerified = true;
-      document.getElementById("otp-verified-pill").style.display = "inline-block";
+      alert("Could not verify the code right now. Please try again.");
     }
   }
 
   async function submitLogin() {
     const regId = document.getElementById("login_reg_id").value.trim();
     const pass = document.getElementById("login_password").value.trim();
-    if (!regId) { alert("Enter Registration ID"); return; }
+    const captcha = document.getElementById("login_captcha").value.trim().toUpperCase();
+    if (!regId) { alert("Enter the practice registration number."); return; }
+    if (captcha !== LOGIN_CAPTCHA) { alert("The demo security code did not match. Use 4X9K."); return; }
 
     try {
       const res = await fetch("/api/portal/login", {
@@ -709,7 +710,7 @@ PORTAL_HTML = """<!DOCTYPE html>
         document.getElementById("dash-mobile").innerText = r.mobile;
         document.getElementById("dash-email").innerText = r.email;
         document.getElementById("dash-roll").innerText = r.matric_roll || "24108842";
-        document.getElementById("dash-aadhaar").innerText = r.aadhaar || "784512963014";
+        document.getElementById("dash-aadhaar").innerText = r.aadhaar || "123456789012";
       } else {
         alert(data.message || "Invalid credentials.");
       }
@@ -739,8 +740,13 @@ PORTAL_HTML = """<!DOCTYPE html>
     if (currentStep === 1) {
       const name = document.getElementById("candidateName").value.trim();
       const vName = document.getElementById("verifyCandidateName").value.trim();
+      if (!otpVerified) {
+        alertBox.innerText = "Please complete the demo phone verification before continuing.";
+        alertBox.style.display = "block";
+        return;
+      }
       if (name && vName && name.toLowerCase() !== vName.toLowerCase()) {
-        alertBox.innerText = "Validation Error: Candidate Name and Verify Name do not match!";
+        alertBox.innerText = "The candidate name and confirm name do not match.";
         alertBox.style.display = "block";
         return;
       }
@@ -748,7 +754,13 @@ PORTAL_HTML = """<!DOCTYPE html>
     } else if (currentStep === 2) {
       goToStep(3);
     } else if (currentStep === 3) {
-      // Trigger official OTR registration generation before payment!
+      const enteredCaptcha = document.getElementById("captchaInput").value.trim().toUpperCase();
+      if (enteredCaptcha !== currentCaptchaText.toUpperCase()) {
+        alertBox.innerText = "The demo security code did not match. Use the code shown on this page.";
+        alertBox.style.display = "block";
+        return;
+      }
+      // Create a practice registration before the review step.
       try {
         const payload = {
           full_name: document.getElementById("candidateName").value || "Aman Kumar Sharma",
@@ -758,8 +770,8 @@ PORTAL_HTML = """<!DOCTYPE html>
           gender: document.getElementById("gender").value || "Male",
           category: document.getElementById("category").value || "OBC-NCL",
           mobile: document.getElementById("mobile").value || "9876543210",
-          email: document.getElementById("email").value || "aman.sharma.exams2026@gmail.com",
-          aadhaar: document.getElementById("aadhaar").value || "784512963014",
+          email: document.getElementById("email").value || "demo.candidate@example.com",
+          aadhaar: document.getElementById("aadhaar").value || "123456789012",
           matric_board: document.getElementById("matric_board")?.value || "CBSE",
           matric_roll: document.getElementById("matric_roll")?.value || "24108842"
         };
@@ -790,5 +802,9 @@ PORTAL_HTML = """<!DOCTYPE html>
 
 @router.get("/gov-portal-demo", response_class=HTMLResponse)
 async def get_gov_portal_demo():
-    """Serves the authentic Government Examination Portal Simulator matching SSC/RRB/BPSC specifications."""
-    return Response(content=PORTAL_HTML, media_type="text/html")
+    """Serve the practice portal. It is a demo, not a real government site."""
+    html = (
+        PORTAL_HTML.replace("__NTFY_TOPIC__", settings.NTFY_TOPIC)
+        .replace("__DEMO_OTP__", settings.DEMO_OTP)
+    )
+    return Response(content=html, media_type="text/html", headers={"Cache-Control": "no-store"})

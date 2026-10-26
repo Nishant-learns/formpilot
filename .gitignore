@@ -12,26 +12,44 @@ frontend/node_modules/
 .npm
 npm-debug.log*
 
-# Large media & scratch video assets
-CyberBhaiya.pdf
+# Large media and local scratch assets
+/*.pdf
 *.mp4
 *.jpg
 !frontend/src/assets/*
-
-# Scratch generator scripts & slide debug images
 generate_*.py
+!scripts/generate_vault_key.py
 enhance_slide1.py
 add_print_button.py
 update_deck.py
 page_*.png
 audit_page_*.png
 slide_*_preview.png
+*_pitch_deck.*
 PITCH_DECK_SPECIFICATION.md
-cyberbhaiya_pitch_deck.*
 
 # Uploaded test files
 uploads/*
 !uploads/.gitkeep
+
+# Runtime state and personal data (created on first run)
+data/candidate_vault.json
+data/engine_config.json
+data/portal_registrations.json
+data/runs/
+data/*.tmp
+.env
+.env.*
+!.env.example
+
+# Test and coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build caches
+frontend/.vite/
+frontend/dist/.vite/
 
 # Operating System & IDEs
 .DS_Store

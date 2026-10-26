@@ -75,7 +75,7 @@ export default function App() {
     wsRef.current = ws;
 
     ws.onopen = () => {
-      console.log('[Cockpit WS] Connected to CyberBhaiya engine.');
+      console.log('[Cockpit WS] Connected to FormPilot.');
     };
 
     ws.onmessage = (e) => {
@@ -102,12 +102,12 @@ export default function App() {
           setCurrentSection(data.current_section);
         }
 
-        // Handle Live Chat message from CyberBhaiya
+        // Handle a chat reply from FormPilot
         if (data.type === 'CHAT_MESSAGE') {
           setChatMessages((prev) => [
             ...prev,
             {
-              sender: data.sender || 'CyberBhaiya',
+              sender: data.sender || 'FormPilot',
               text: data.message,
               time: data.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
               action_taken: data.action_taken,
@@ -180,7 +180,7 @@ export default function App() {
     }
   };
 
-  // Handle Chat Message to CyberBhaiya
+  // Send a chat message
   const handleSendChatMessage = async (msgText) => {
     try {
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -199,7 +199,7 @@ export default function App() {
           setChatMessages((prev) => [
             ...prev,
             {
-              sender: 'CyberBhaiya',
+              sender: 'FormPilot',
               text: data.reply,
               time: data.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
               action_taken: data.action_taken,
@@ -216,7 +216,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-['Plus_Jakarta_Sans',sans-serif]">
-      {/* Top Navbar */}
+      {/* Top navigation */}
       <Header
         agentRunning={agentRunning}
         engineConfig={engineConfig}
@@ -228,10 +228,10 @@ export default function App() {
         currentGate={currentGate}
       />
 
-      {/* Main Workspace Container */}
+      {/* Main workspace */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 space-y-6">
         
-        {/* Top: Portal & Sarkari Oracle Dispatcher */}
+        {/* Portal lookup */}
         <PortalLauncher
           onLaunch={handleLaunch}
           agentRunning={agentRunning}
@@ -247,9 +247,9 @@ export default function App() {
             onStop={handleStop}
           />
 
-          {/* Right Column: Tabbed Companion Panel (Live Chat vs Cognitive Stream) */}
+          {/* Right column: chat and activity */}
           <div className="space-y-3">
-            {/* Companion Tab Selector */}
+            {/* Panel tabs */}
             <div className="flex items-center justify-between p-1 rounded-xl bg-slate-900 border border-slate-800">
               <div className="flex items-center gap-1">
                 <button
@@ -262,7 +262,7 @@ export default function App() {
                   }`}
                 >
                   <MessageSquare className="w-3.5 h-3.5" />
-                  <span>Chat with AI Cyber Bhaiya</span>
+                  <span>Ask FormPilot</span>
                   <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
                 </button>
 
@@ -276,7 +276,7 @@ export default function App() {
                   }`}
                 >
                   <Terminal className="w-3.5 h-3.5" />
-                  <span>Cognitive Stream</span>
+                  <span>Activity</span>
                   <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 font-mono">
                     {events.length}
                   </span>
@@ -284,11 +284,11 @@ export default function App() {
               </div>
 
               <div className="text-[11px] font-medium text-slate-500 pr-2 hidden sm:block">
-                {rightTab === 'chat' ? 'Live Conversational AI' : 'Low-level DOM Engine'}
+                {rightTab === 'chat' ? 'Questions and saved details' : 'Step-by-step updates'}
               </div>
             </div>
 
-            {/* Active Companion Card */}
+            {/* Active panel */}
             {rightTab === 'chat' ? (
               <LiveChat
                 onSendMessage={handleSendChatMessage}
@@ -306,7 +306,7 @@ export default function App() {
 
       </main>
 
-      {/* Modals & Checkpoints */}
+      {/* Modals and review checkpoints */}
       <HumanCheckpointModal
         activeGate={currentGate}
         onSubmitResponse={handleSubmitUserResponse}
@@ -330,10 +330,11 @@ export default function App() {
         onConfigSaved={(newCfg) => setEngineConfig(newCfg)}
       />
 
-      {/* Footer Notice */}
+      {/* Footer */}
       <footer className="border-t border-slate-900 bg-slate-950/80 px-6 py-4 text-center text-xs text-slate-500">
         <p>
-          FormPilot — AI Cyber Bhaiya • Built for millions of aspirants across Bharat • Enforcing Zero Fake Automation, Pre-Flight Gazette Oracle, and Pre-Payment Absolute Quarantine.
+          FormPilot is an independent application assistant. It is not a government website and
+          does not submit applications or make payments on your behalf.
         </p>
       </footer>
     </div>

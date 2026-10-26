@@ -1,87 +1,97 @@
 import React, { useState } from 'react';
-import { 
-  ShieldAlert, 
-  ShieldCheck, 
-  Key, 
-  HelpCircle, 
-  CheckCircle2, 
-  Lock, 
-  AlertOctagon, 
-  FileCheck2, 
-  Send, 
-  ArrowRight, 
+import {
+  ShieldAlert,
+  Key,
+  HelpCircle,
+  CheckCircle2,
+  Lock,
+  AlertOctagon,
+  FileCheck2,
+  ArrowRight,
   Sparkles,
   Smartphone,
   BellRing,
   ExternalLink,
-  X
+  X,
+  Download,
 } from 'lucide-react';
 
-export default function HumanCheckpointModal({ activeGate, onSubmitResponse, onClose, screenshot }) {
-  if (!activeGate) return null;
+export default function HumanCheckpointModal(props) {
+  if (!props.activeGate) return null;
+  return <CheckpointContent {...props} />;
+}
 
+function statusLabel(status) {
+  if (status === 'MATCH') return 'Matches';
+  if (status === 'EMPTY') return 'Empty on form';
+  if (status === 'MISMATCH') return 'Check this';
+  return status || 'Checked';
+}
+
+function statusClass(status) {
+  if (status === 'MATCH') return 'text-emerald-400';
+  if (status === 'EMPTY' || status === 'MISMATCH') return 'text-amber-400';
+  return 'text-slate-300';
+}
+
+function CheckpointContent({ activeGate, onSubmitResponse, onClose }) {
   const [inputVal, setInputVal] = useState('');
   const [captchaVal, setCaptchaVal] = useState('');
   const [otpVal, setOtpVal] = useState('');
 
-  // Handle Gateway Selection
   const handleGatewayChoice = (opt) => {
     onSubmitResponse({
       action: 'GATEWAY_CHOICE',
       id: opt.id,
       text: opt.text,
-      type: opt.type
+      type: opt.type,
     });
   };
 
-  // Handle Missing Field Submission
   const handleMissingFieldSubmit = (e) => {
     e.preventDefault();
     if (!inputVal.trim()) return;
     onSubmitResponse({
       action: 'MISSING_FIELD_SUBMIT',
       key: activeGate.field_key,
-      value: inputVal.trim()
+      value: inputVal.trim(),
     });
     setInputVal('');
   };
 
-  // Handle CAPTCHA Submission
   const handleCaptchaSubmit = (e) => {
     e.preventDefault();
     if (!captchaVal.trim()) return;
-    onSubmitResponse({
-      action: 'CAPTCHA_SUBMIT',
-      code: captchaVal.trim()
-    });
+    onSubmitResponse({ action: 'CAPTCHA_SUBMIT', code: captchaVal.trim() });
     setCaptchaVal('');
   };
 
-  // Handle Real OTP Submission
   const handleOtpSubmit = (e) => {
     e.preventDefault();
     if (!otpVal.trim()) return;
     onSubmitResponse({
       action: 'OTP_SUBMIT',
       otp: otpVal.trim(),
-      code: otpVal.trim()
+      code: otpVal.trim(),
     });
     setOtpVal('');
   };
 
-  // Handle Section Approval ("Bhaiya, Screen Check Kar Lo")
   const handleSectionApproval = (approved) => {
-    onSubmitResponse({
-      action: 'SECTION_APPROVAL',
-      approved: approved
-    });
+    onSubmitResponse({ action: 'SECTION_APPROVAL', approved });
   };
+
+  const dismiss = () => {
+    if (onClose) onClose();
+    fetch('/api/agent/dismiss-gate', { method: 'POST' }).catch(() => {});
+  };
+
+  const demoOtp = activeGate.demo_otp || (activeGate.description?.match(/\b(\d{6})\b/)?.[1] ?? '');
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md animate-fadeIn">
       <div className="bg-slate-900 border-2 border-amber-500/60 rounded-3xl max-w-2xl w-full shadow-2xl shadow-amber-500/10 overflow-hidden">
-        
-        {/* Top Header Banner */}
+        {/* Header */}
         <div className="bg-gradient-to-r from-amber-600/30 via-orange-600/20 to-slate-900 px-6 py-4 border-b border-amber-500/30 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400">
@@ -94,41 +104,32 @@ export default function HumanCheckpointModal({ activeGate, onSubmitResponse, onC
               {activeGate.gate_type === 'ERROR_DIAGNOSIS' && <ShieldAlert className="w-5 h-5 text-red-400" />}
             </div>
             <div>
-              <h3 className="text-base font-extrabold text-white">
-                {activeGate.title}
-              </h3>
-              <p className="text-xs text-amber-300 italic">
-                💬 Bhaiya: "{activeGate.hindi_title || activeGate.hindi_audio_text}"
+              <h3 className="text-base font-extrabold text-white">{activeGate.title}</h3>
+              <p className="text-xs text-amber-300">
+                {activeGate.hindi_title || 'Please review this step'}
               </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
             <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 uppercase tracking-wider">
-              Candidate Checkpoint
+              Your review
             </span>
             <button
               type="button"
-              onClick={() => {
-                if (onClose) onClose();
-                fetch('/api/agent/dismiss-gate', { method: 'POST' }).catch(() => {});
-              }}
+              onClick={dismiss}
               className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
-              title="Close / Dismiss Checkpoint"
+              title="Close this review"
             >
               <X className="w-5 h-5" />
             </button>
           </div>
         </div>
 
-        {/* Modal Body Based on Gate Type */}
         <div className="p-6">
-          
-          {/* 1. GATEWAY DECISION GATE */}
+          {/* Gateway choice */}
           {activeGate.gate_type === 'GATEWAY_DECISION' && (
             <div>
-              <p className="text-sm text-slate-300 mb-4 leading-relaxed">
-                {activeGate.description}
-              </p>
+              <p className="text-sm text-slate-300 mb-4 leading-relaxed">{activeGate.description}</p>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {activeGate.options?.map((opt, i) => (
                   <button
@@ -147,11 +148,13 @@ export default function HumanCheckpointModal({ activeGate, onSubmitResponse, onC
                         {opt.text}
                       </h4>
                       <p className="text-xs text-slate-400 mt-1">
-                        {opt.type === 'NEW_REGISTRATION' ? 'Fresh applicant registration and profile creation' : 'Access existing candidate account with registration number'}
+                        {opt.type === 'NEW_REGISTRATION'
+                          ? 'Create a new application'
+                          : 'Sign in to an existing account'}
                       </p>
                     </div>
                     <span className="mt-4 inline-block text-[11px] font-semibold text-slate-300 bg-slate-800 px-2.5 py-1 rounded-md border border-slate-700">
-                      Select This Route →
+                      Choose this option
                     </span>
                   </button>
                 ))}
@@ -159,12 +162,13 @@ export default function HumanCheckpointModal({ activeGate, onSubmitResponse, onC
             </div>
           )}
 
-          {/* 2. MISSING REQUIRED FIELD GATE */}
+          {/* Missing field */}
           {activeGate.gate_type === 'MISSING_FIELD' && (
             <form onSubmit={handleMissingFieldSubmit} className="space-y-4">
               <div className="p-4 rounded-xl bg-slate-950 border border-slate-800">
                 <p className="text-xs text-slate-400 leading-relaxed">
-                  The portal mandates the following parameter which is currently empty in your One-Vault. Once entered, Bhaiya will permanently persist it into your One-Vault and inject it into the portal.
+                  This form asks for a detail that isn't saved yet. Enter it once and FormPilot
+                  will remember it for future applications.
                 </p>
                 <div className="mt-3">
                   <label className="text-xs font-bold text-amber-300 block mb-1 uppercase tracking-wider">
@@ -175,7 +179,7 @@ export default function HumanCheckpointModal({ activeGate, onSubmitResponse, onC
                     value={inputVal}
                     onChange={(e) => setInputVal(e.target.value)}
                     autoFocus
-                    placeholder={`Enter ${activeGate.field_label}...`}
+                    placeholder={`Enter ${activeGate.field_label}`}
                     className="w-full px-4 py-3 rounded-xl bg-slate-900 border border-slate-700 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 text-white font-medium text-sm outline-none"
                   />
                 </div>
@@ -188,31 +192,29 @@ export default function HumanCheckpointModal({ activeGate, onSubmitResponse, onC
                   className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-extrabold text-sm flex items-center gap-2 shadow-lg disabled:opacity-50"
                 >
                   <Sparkles className="w-4 h-4" />
-                  <span>Save to One-Vault & Inject</span>
+                  <span>Save and fill this field</span>
                 </button>
               </div>
             </form>
           )}
 
-          {/* 3. CAPTCHA SOLVE CHECKPOINT */}
+          {/* CAPTCHA */}
           {activeGate.gate_type === 'CAPTCHA_SOLVE' && (
             <form onSubmit={handleCaptchaSubmit} className="space-y-4">
-              <p className="text-xs text-slate-300">
-                {activeGate.description}
-              </p>
+              <p className="text-xs text-slate-300">{activeGate.description}</p>
 
               <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 flex flex-col md:flex-row items-center gap-5 justify-center">
                 {activeGate.captcha_image ? (
                   <div className="p-2 rounded-lg bg-slate-900 border border-slate-700 shadow-inner">
                     <img
                       src={activeGate.captcha_image}
-                      alt="Portal CAPTCHA"
+                      alt="Security check characters"
                       className="max-h-20 object-contain rounded"
                     />
                   </div>
                 ) : (
                   <div className="text-xs text-slate-500">
-                    CAPTCHA displayed directly on the live viewport screen.
+                    The security check is shown in the live portal view.
                   </div>
                 )}
 
@@ -222,7 +224,7 @@ export default function HumanCheckpointModal({ activeGate, onSubmitResponse, onC
                     value={captchaVal}
                     onChange={(e) => setCaptchaVal(e.target.value)}
                     autoFocus
-                    placeholder="Enter CAPTCHA Code"
+                    placeholder="Enter the characters"
                     className="w-full px-4 py-3 rounded-xl bg-slate-900 border border-slate-700 focus:border-amber-500 text-center text-lg font-mono font-bold tracking-widest text-amber-300 outline-none"
                   />
                 </div>
@@ -235,64 +237,71 @@ export default function HumanCheckpointModal({ activeGate, onSubmitResponse, onC
                   className="px-6 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-sm flex items-center gap-2 disabled:opacity-50"
                 >
                   <CheckCircle2 className="w-4 h-4" />
-                  <span>Submit Code & Continue</span>
+                  <span>Submit and continue</span>
                 </button>
               </div>
             </form>
           )}
 
-          {/* REAL PHONE & EMAIL OTP RELAY CHECKPOINT */}
+          {/* OTP */}
           {activeGate.gate_type === 'OTP_RELAY' && (
             <form onSubmit={handleOtpSubmit} className="space-y-4">
               <div className="p-4 rounded-xl bg-gradient-to-r from-emerald-950/40 via-slate-900 to-slate-950 border border-emerald-500/40 space-y-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <span className="relative flex h-3 w-3">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                      <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                      <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500" />
                     </span>
                     <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider">
-                      Live Phone Alert Dispatched
+                      Verification code sent
                     </span>
                   </div>
-                  <span className="text-[10px] font-mono text-slate-400 bg-slate-800 px-2 py-0.5 rounded border border-slate-700">
-                    Target: {activeGate.recipient || '+91-9876543210'}
-                  </span>
+                  {activeGate.recipient && (
+                    <span className="text-[10px] font-mono text-slate-400 bg-slate-800 px-2 py-0.5 rounded border border-slate-700">
+                      To: {activeGate.recipient}
+                    </span>
+                  )}
                 </div>
 
                 <p className="text-xs text-slate-300">
-                  {activeGate.description || "A real ringing notification has been dispatched to your phone on ntfy.sh. Check your device or the public topic:"}
+                  {activeGate.description || 'Enter the 6-digit code sent to the phone number saved in your details.'}
                 </p>
 
-                {/* Direct Link to ntfy.sh topic for judges */}
-                <div className="p-3 rounded-lg bg-slate-950/80 border border-slate-800 flex items-center justify-between">
-                  <div className="flex items-center gap-2.5">
-                    <BellRing className="w-4 h-4 text-emerald-400 animate-bounce" />
-                    <div>
-                      <div className="text-xs font-semibold text-slate-200">Live Notification Channel</div>
-                      <div className="text-[11px] font-mono text-emerald-400">{activeGate.ntfy_url || "https://ntfy.sh/bharatpilot_otp"}</div>
+                {activeGate.ntfy_url && (
+                  <div className="p-3 rounded-lg bg-slate-950/80 border border-slate-800 flex items-center justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <BellRing className="w-4 h-4 text-emerald-400" />
+                      <div>
+                        <div className="text-xs font-semibold text-slate-200">Phone alert channel</div>
+                        <div className="text-[11px] font-mono text-emerald-400">
+                          {activeGate.ntfy_url}
+                        </div>
+                      </div>
                     </div>
+                    <a
+                      href={activeGate.ntfy_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-3 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-xs font-bold flex items-center gap-1.5 transition-colors"
+                    >
+                      <span>Open alerts</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
                   </div>
-                  <a
-                    href={activeGate.ntfy_url || "https://ntfy.sh/bharatpilot_otp"}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="px-3 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-xs font-bold flex items-center gap-1.5 transition-colors"
-                  >
-                    <span>Open Live Feed</span>
-                    <ExternalLink className="w-3 h-3" />
-                  </a>
-                </div>
+                )}
 
-                <div className="text-[11px] text-slate-400 flex items-center justify-between">
-                  <span>💡 Real OTP sent via ntfy.sh with ringtone alert.</span>
-                  <button
-                    type="button"
-                    onClick={() => setOtpVal('492015')}
-                    className="text-amber-400 font-mono font-bold bg-amber-500/10 hover:bg-amber-500/20 px-2 py-0.5 rounded border border-amber-500/30 text-xs transition-colors"
-                  >
-                    Quick-Fill Test Code: 492015
-                  </button>
+                <div className="text-[11px] text-slate-400 flex items-center justify-between gap-3">
+                  <span>FormPilot never stores this code.</span>
+                  {demoOtp && (
+                    <button
+                      type="button"
+                      onClick={() => setOtpVal(demoOtp)}
+                      className="text-amber-400 font-mono font-bold bg-amber-500/10 hover:bg-amber-500/20 px-2 py-0.5 rounded border border-amber-500/30 text-xs transition-colors"
+                    >
+                      Use demo code: {demoOtp}
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -303,7 +312,7 @@ export default function HumanCheckpointModal({ activeGate, onSubmitResponse, onC
                   value={otpVal}
                   onChange={(e) => setOtpVal(e.target.value)}
                   autoFocus
-                  placeholder="Enter 6-Digit OTP"
+                  placeholder="Enter 6-digit code"
                   className="w-64 px-4 py-3 rounded-xl bg-slate-950 border-2 border-emerald-500/60 focus:border-emerald-400 text-center text-2xl font-mono font-extrabold tracking-widest text-emerald-300 outline-none shadow-lg shadow-emerald-500/10"
                 />
               </div>
@@ -311,13 +320,10 @@ export default function HumanCheckpointModal({ activeGate, onSubmitResponse, onC
               <div className="flex items-center justify-between gap-3 pt-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    if (onClose) onClose();
-                    fetch('/api/agent/dismiss-gate', { method: 'POST' }).catch(() => {});
-                  }}
+                  onClick={dismiss}
                   className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs transition-colors"
                 >
-                  Dismiss / Skip Checkpoint
+                  Close
                 </button>
                 <button
                   type="submit"
@@ -325,28 +331,28 @@ export default function HumanCheckpointModal({ activeGate, onSubmitResponse, onC
                   className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-extrabold text-sm flex items-center gap-2 shadow-lg shadow-emerald-500/20 disabled:opacity-50"
                 >
                   <CheckCircle2 className="w-4 h-4" />
-                  <span>Verify OTP & Continue</span>
+                  <span>Verify and continue</span>
                 </button>
               </div>
             </form>
           )}
 
-          {/* 4. SECTION-BY-SECTION "BHAIYA, SCREEN CHECK KAR LO" APPROVAL GATE */}
+          {/* Section review */}
           {activeGate.gate_type === 'SECTION_APPROVAL' && (
             <div className="space-y-4">
               <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-300 font-medium">
-                📢 "Section {activeGate.section_number} complete ho gaya hai. Bhaiya, screen check kar lo! Sab sahi hai toh confirm karein, agle step par chalenge."
+                Section {activeGate.section_number} is ready. Please check these details against the
+                form before continuing.
               </div>
 
-              {/* Fields Audit Snapshot */}
               {activeGate.fields_filled && activeGate.fields_filled.length > 0 && (
                 <div className="max-h-48 overflow-y-auto rounded-xl border border-slate-800 bg-slate-950 p-3">
                   <table className="w-full text-left text-xs font-mono">
                     <thead>
                       <tr className="border-b border-slate-800 text-slate-400">
                         <th className="pb-2">Field</th>
-                        <th className="pb-2">Injected Value</th>
-                        <th className="pb-2 text-right">Verification</th>
+                        <th className="pb-2">Filled value</th>
+                        <th className="pb-2 text-right">Check</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800/60">
@@ -354,7 +360,9 @@ export default function HumanCheckpointModal({ activeGate, onSubmitResponse, onC
                         <tr key={i} className="hover:bg-slate-900/50">
                           <td className="py-1.5 text-slate-300">{f.field_label}</td>
                           <td className="py-1.5 text-amber-300 font-semibold">{f.injected_value}</td>
-                          <td className="py-1.5 text-right text-emerald-400 font-sans text-[11px]">✓ Verified</td>
+                          <td className="py-1.5 text-right text-emerald-400 font-sans text-[11px]">
+                            Filled
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -368,7 +376,7 @@ export default function HumanCheckpointModal({ activeGate, onSubmitResponse, onC
                   onClick={() => handleSectionApproval(false)}
                   className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
                 >
-                  Wait, Edit Details
+                  I need to edit something
                 </button>
                 <button
                   type="button"
@@ -376,33 +384,32 @@ export default function HumanCheckpointModal({ activeGate, onSubmitResponse, onC
                   className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-extrabold text-sm flex items-center gap-2 shadow-lg"
                 >
                   <CheckCircle2 className="w-4 h-4" />
-                  <span>Confirm & Save Next (Agle Step Par Chalein) →</span>
+                  <span>Confirm and continue</span>
                 </button>
               </div>
             </div>
           )}
 
-          {/* 5. PRE-PAYMENT SAFETY LOCK — ABSOLUTE QUARANTINE */}
+          {/* Safety handover: payment or final submission */}
           {activeGate.gate_type === 'PRE_PAYMENT_SAFETY_LOCK' && (
             <div className="space-y-4">
               <div className="p-4 rounded-2xl bg-red-500/10 border-2 border-red-500/50 text-red-200">
                 <div className="flex items-center gap-2 text-sm font-extrabold text-red-400 uppercase tracking-wide">
                   <ShieldAlert className="w-5 h-5" />
-                  <span>PRE-PAYMENT FORENSIC LOCKOUT ACTIVE</span>
+                  <span>{activeGate.final_action === 'submission' ? 'Nothing submitted' : 'Payment not started'}</span>
                 </div>
-                <p className="text-xs text-red-300/90 mt-2 leading-relaxed font-sans">
+                <p className="text-xs text-red-300/90 mt-2 leading-relaxed">
                   {activeGate.description}
                 </p>
               </div>
 
-              {/* Forensic Audit Diff Table */}
               <div className="rounded-xl border border-slate-800 bg-slate-950 p-4">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">
-                    Forensic Pre-Payment Audit Report
+                    Details check before you continue
                   </span>
                   <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded font-mono">
-                    {activeGate.total_verified_fields} Fields Audited
+                    {activeGate.total_verified_fields} of {activeGate.total_checked_fields || activeGate.total_verified_fields} checked
                   </span>
                 </div>
                 <div className="max-h-56 overflow-y-auto">
@@ -410,8 +417,8 @@ export default function HumanCheckpointModal({ activeGate, onSubmitResponse, onC
                     <thead>
                       <tr className="border-b border-slate-800 text-slate-400">
                         <th className="pb-2">Field</th>
-                        <th className="pb-2">Vault Value</th>
-                        <th className="pb-2 text-right">Integrity Status</th>
+                        <th className="pb-2">Saved value</th>
+                        <th className="pb-2 text-right">Status</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800/60">
@@ -419,7 +426,9 @@ export default function HumanCheckpointModal({ activeGate, onSubmitResponse, onC
                         <tr key={i}>
                           <td className="py-1.5 text-slate-300">{r.field}</td>
                           <td className="py-1.5 text-amber-300 font-semibold">{r.vault_value}</td>
-                          <td className="py-1.5 text-right text-emerald-400 font-bold">{r.status}</td>
+                          <td className={`py-1.5 text-right font-bold ${statusClass(r.status)}`}>
+                            {statusLabel(r.status)}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -428,32 +437,45 @@ export default function HumanCheckpointModal({ activeGate, onSubmitResponse, onC
               </div>
 
               <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-xs text-amber-300">
-                🔒 <strong>Next Step:</strong> Open the live browser window or official portal URL to execute your secure UPI, Netbanking, or Debit Card payment manually.
+                <strong>Next step:</strong>{' '}
+                {activeGate.final_action === 'submission'
+                  ? 'complete the final submission yourself on the official portal.'
+                  : 'complete the payment yourself on the official portal.'}{' '}
+                FormPilot will not click the payment or submit button.
               </div>
 
-              <div className="flex justify-end pt-2">
+              <div className="flex items-center justify-between gap-3 pt-2">
+                {activeGate.run_id && (
+                  <a
+                    href={`/api/runs/${activeGate.run_id}/audit`}
+                    className="px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs font-semibold border border-slate-700 flex items-center gap-1.5"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Download details</span>
+                  </a>
+                )}
                 <button
                   type="button"
                   onClick={() => onSubmitResponse({ action: 'ACKNOWLEDGE_LOCK' })}
                   className="px-6 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold border border-slate-700"
                 >
-                  Understood & Handover Complete
+                  Understood
                 </button>
               </div>
             </div>
           )}
 
-          {/* 6. CLOSED-LOOP ERROR DIAGNOSTIC */}
+          {/* Portal error */}
           {activeGate.gate_type === 'ERROR_DIAGNOSIS' && (
             <div className="space-y-4">
               <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/30 text-xs text-red-300">
-                <span className="font-bold block mb-1">DOM Error Detected on Portal:</span>
+                <span className="font-bold block mb-1">The portal showed this message:</span>
                 <span className="font-mono">{activeGate.error_text}</span>
               </div>
 
               <div className="space-y-2">
                 <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">
-                  AI Recommended Recovery Action:
+                  How would you like to continue?
                 </span>
                 <div className="grid grid-cols-1 gap-2">
                   {activeGate.suggested_actions?.map((act, i) => (
@@ -471,11 +493,11 @@ export default function HumanCheckpointModal({ activeGate, onSubmitResponse, onC
             </div>
           )}
 
-          {/* 7. SAFE FALLBACK CARD (PREVENTS EMPTY MODAL TRAPS) */}
+          {/* Fallback */}
           {!['GATEWAY_DECISION', 'MISSING_FIELD', 'CAPTCHA_SOLVE', 'OTP_RELAY', 'SECTION_APPROVAL', 'PRE_PAYMENT_SAFETY_LOCK', 'ERROR_DIAGNOSIS'].includes(activeGate.gate_type) && (
             <div className="space-y-4 text-center py-4">
               <p className="text-sm text-slate-300">
-                {activeGate.description || "CyberBhaiya is waiting for your confirmation to proceed."}
+                {activeGate.description || 'FormPilot is waiting for your confirmation to continue.'}
               </p>
               <div className="flex justify-center gap-3 pt-2">
                 <button
@@ -487,20 +509,15 @@ export default function HumanCheckpointModal({ activeGate, onSubmitResponse, onC
                 </button>
                 <button
                   type="button"
-                  onClick={() => {
-                    if (onClose) onClose();
-                    fetch('/api/agent/dismiss-gate', { method: 'POST' }).catch(() => {});
-                  }}
+                  onClick={dismiss}
                   className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm"
                 >
-                  Dismiss Checkpoint
+                  Close
                 </button>
               </div>
             </div>
           )}
-
         </div>
-
       </div>
     </div>
   );

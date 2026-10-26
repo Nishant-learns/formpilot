@@ -4,15 +4,17 @@ import base64
 from typing import Dict, Any, Tuple
 from PIL import Image, ImageOps, ImageEnhance
 
-UPLOADS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
-os.makedirs(UPLOADS_DIR, exist_ok=True)
+from . import settings
+
+UPLOADS_DIR = str(settings.UPLOADS_DIR)
+settings.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 class BiometricCompressor:
-    """Deterministic binary search biometric compression engine matching strict NIC/RRB/SSC specs."""
+    """Photo and signature preparation for common portal requirements."""
 
     @staticmethod
     def _strip_exif(image: Image.Image) -> Image.Image:
-        """Strips EXIF metadata to ensure privacy and byte reduction."""
+        """Removes image metadata before saving."""
         data = list(image.getdata())
         image_without_exif = Image.new(image.mode, image.size)
         image_without_exif.putdata(data)

@@ -1,108 +1,95 @@
-import asyncio
+"""Orchestrator state and the opt-in full practice-portal flow."""
+
+from __future__ import annotations
+
 import os
-import uvicorn
-import multiprocessing
-import time
-from backend.main import app
-from backend.core.orchestrator import CyberWaleBhaiyaOrchestrator
-from backend.core.vault import VaultManager
+import subprocess
+import sys
+from pathlib import Path
 
-def run_server():
-    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="warning")
+import pytest
 
-async def run_e2e():
-    print("\n--- INITIATING END-TO-END AUTONOMOUS SIMULATOR TEST ---")
-    
-    events_log = []
-    async def log_event(ev):
-        events_log.append(ev)
-        print(f"[{ev['phase']}] {ev['message']}")
-        if ev.get("hindi"):
-            print(f"  💬 Bhaiya: {ev['hindi']}")
+from backend.core.orchestrator import FormPilotOrchestrator
 
-    orch = CyberWaleBhaiyaOrchestrator(broadcast_fn=log_event)
+ROOT = Path(__file__).resolve().parents[1]
 
-    # Start application on simulator
-    asyncio.create_task(orch.start_application("http://127.0.0.1:8000/gov-portal-demo"))
 
-    # Step 1: Wait for Gateway Decision Gate
-    for _ in range(30):
-        await asyncio.sleep(0.5)
-        if orch.active_gate and orch.active_gate.get("gate_type") == "GATEWAY_DECISION":
-            print("\n>>> GATEWAY DECISION GATE TRIGGERED ACCORDING TO SPEC <<<")
-            orch.submit_user_response({
-                "action": "GATEWAY_CHOICE",
-                "id": "btn-new-registration",
-                "text": "New Registration / OTR",
-                "type": "NEW_REGISTRATION"
-            })
-            break
+def test_orchestrator_starts_idle_and_can_pause():
+    orchestrator = FormPilotOrchestrator()
 
-    # Step 2: Form filling, missing field gate, captcha gate, and approval gates
-    for _ in range(60):
-        await asyncio.sleep(0.8)
-        
-        # Check if missing field gate triggered
-        if orch.active_gate and orch.active_gate.get("gate_type") == "MISSING_FIELD":
-            print(f"\n>>> MISSING FIELD GATE TRIGGERED: {orch.active_gate.get('field_label')} <<<")
-            orch.submit_user_response({
-                "action": "MISSING_FIELD_SUBMIT",
-                "key": orch.active_gate.get("field_key"),
-                "value": "9988-7766-5544-2026"
-            })
-            continue
+    state = orchestrator.get_state()
+    assert state["state"] == "IDLE"
+    assert state["is_running"] is False
+    assert state["filled_audit"] == []
+    assert state["oracle"] is None
 
-        # Check if Real OTP Relay gate triggered
-        if orch.active_gate and orch.active_gate.get("gate_type") == "OTP_RELAY":
-            print(f"\n>>> REAL PHONE OTP RELAY GATE TRIGGERED (ntfy: {orch.active_gate.get('ntfy_topic')}) <<<")
-            orch.submit_user_response({
-                "action": "OTP_SUBMIT",
-                "otp": "492015"
-            })
-            continue
+    orchestrator.pause()
+    assert orchestrator.get_state()["paused"] is True
+    orchestrator.resume()
+    assert orchestrator.get_state()["paused"] is False
 
-        # Check if CAPTCHA gate triggered
-        if orch.active_gate and orch.active_gate.get("gate_type") == "CAPTCHA_SOLVE":
-            print("\n>>> CAPTCHA SECURITY GATE TRIGGERED <<<")
-            orch.submit_user_response({
-                "action": "CAPTCHA_SUBMIT",
-                "code": "7X9KP"
-            })
-            continue
 
-        # Check if Section Approval Gate triggered ("Bhaiya, screen check kar lo")
-        if orch.active_gate and orch.active_gate.get("gate_type") == "SECTION_APPROVAL":
-            print(f"\n>>> SECTION APPROVAL GATE TRIGGERED (Bhaiya, screen check kar lo!) <<<")
-            orch.submit_user_response({
-                "action": "SECTION_APPROVAL",
-                "approved": True
-            })
-            continue
+def test_orchestrator_holds_a_candidate_response_until_a_gate_is_read():
+    orchestrator = FormPilotOrchestrator()
+    orchestrator.active_gate = {"gate_type": "SECTION_APPROVAL"}
 
-        # Check if PRE-PAYMENT SAFETY LOCK triggered!
-        if orch.active_gate and orch.active_gate.get("gate_type") == "PRE_PAYMENT_SAFETY_LOCK":
-            print("\n>>> PRE-PAYMENT SAFETY LOCK SUCCESSFULLY TRIGGERED & QUARANTINED! <<<")
-            print(f"Total Verified Audited Fields: {orch.active_gate.get('total_verified_fields')}")
-            orch.submit_user_response({"action": "ACKNOWLEDGE_LOCK"})
-            break
+    orchestrator.submit_user_response({"action": "SECTION_APPROVAL", "approved": True})
 
-    await orch.stop()
-    print("\n--- E2E SIMULATOR TEST COMPLETED WITH 100% SUCCESS ---")
+    assert orchestrator._pending_user_response == {
+        "action": "SECTION_APPROVAL",
+        "approved": True,
+    }
 
-if __name__ == "__main__":
-    import socket
-    server_already_running = False
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        server_already_running = (s.connect_ex(('127.0.0.1', 8000)) == 0)
 
-    server_proc = None
-    if not server_already_running:
-        server_proc = multiprocessing.Process(target=run_server, daemon=True)
-        server_proc.start()
-        time.sleep(2)
+def test_final_submit_and_payment_buttons_trigger_a_safety_stop():
+    orchestrator = FormPilotOrchestrator()
 
-    try:
-        asyncio.run(run_e2e())
-    finally:
-        if server_proc:
-            server_proc.terminate()
+    for label in (
+        "Submit Application",
+        "Final Submit",
+        "Pay Now",
+        "Proceed to Pay",
+        "Complete Registration",
+    ):
+        assert orchestrator._is_final_action({"text": label}) is True, label
+
+    for label in ("Save & Next", "Continue", "Verify OTP", "Candidate Login"):
+        assert orchestrator._is_final_action({"text": label}) is False, label
+
+    assert orchestrator._is_final_action({"text": "Save & Next: Pre-Payment Review"}) is False
+    assert orchestrator._is_final_action({"text": "Review and Submit"}) is True
+
+
+@pytest.mark.e2e
+@pytest.mark.parametrize(
+    ("route", "expected"),
+    [([], "STOPPED BEFORE PAYMENT"), (["--login"], "FINAL STATE: DONE")],
+    ids=["new-registration", "returning-candidate"],
+)
+def test_full_practice_flow(route, expected):
+    """Run the real browser flow when a practice server URL is provided.
+
+    Start the app with ``./run.sh`` and then run::
+
+        FORMPILOT_E2E_URL=http://127.0.0.1:8000/gov-portal-demo pytest -m e2e
+    """
+    url = os.getenv("FORMPILOT_E2E_URL")
+    if not url:
+        pytest.skip("Set FORMPILOT_E2E_URL to run the browser-based practice flow.")
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(ROOT) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    completed = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "e2e_demo.py"), url, *route],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    output = completed.stdout + completed.stderr
+    assert completed.returncode == 0, output
+    assert expected in output
+    assert "Traceback" not in output
+    assert "Future exception was never retrieved" not in output

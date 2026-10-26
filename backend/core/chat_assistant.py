@@ -1,18 +1,27 @@
-import re
+"""Candidate-facing chat assistant for FormPilot.
+
+The assistant answers common application questions, updates saved details when
+the candidate asks for a correction, and can apply that correction to the form
+that is currently open.  Replies are written for candidates: no internal
+architecture, automation tricks, or implementation details are exposed.
+"""
+
+from __future__ import annotations
+
 import datetime
-import httpx
-from typing import Dict, Any, Optional, Tuple, List
+import re
+from typing import Any, Dict, List, Optional, Tuple
 
-from .vault import VaultManager, CandidateVault
-from .tinyfish_client import TinyFishClient
+from . import field_registry
+from .dom_scanner import DOMScanner
+from .tinyfish_client import TinyFishClient, TinyFishError
+from .vault import VaultManager
 
-class CyberBhaiyaChatAssistant:
-    """
-    Intelligent Conversational Brain for 'CyberBhaiya'.
-    Provides empathetic, street-smart Indian cyber cafe operator dialogue,
-    contextual memory of the candidate and live form, field mutation execution,
-    workflow actions, and live search via TinyFish.
-    """
+
+class FormPilotChatAssistant:
+    """Conversational helper for candidates using the FormPilot cockpit."""
+
+    sender = "FormPilot"
 
     def __init__(self, orchestrator=None, vault_mgr=None, tinyfish_client=None):
         self.orchestrator = orchestrator
@@ -20,367 +29,556 @@ class CyberBhaiyaChatAssistant:
         self.tinyfish_client = tinyfish_client or TinyFishClient()
         self.chat_history: List[Dict[str, str]] = []
 
+    # ------------------------------------------------------------------ entry
+
     async def handle_message(self, user_msg: str) -> Dict[str, Any]:
-        """
-        Processes candidate chat message, executes any required browser/vault mutations,
-        and returns a structured conversational response.
-        """
-        msg_clean = user_msg.strip()
+        text = (user_msg or "").strip()
         timestamp = datetime.datetime.now().strftime("%H:%M")
-        
-        self.chat_history.append({"sender": "Candidate", "text": msg_clean, "time": timestamp})
+        self.chat_history.append({"sender": "Candidate", "text": text, "time": timestamp})
 
-        # 1. Check for Field Edit Intent
-        edit_res = await self._try_field_edit(msg_clean)
-        if edit_res:
-            self.chat_history.append({"sender": "CyberBhaiya", "text": edit_res["reply"], "time": timestamp})
-            return edit_res
+        if not text:
+            return self._reply(
+                "Please type a question or tell me which detail you want to change.",
+                "CONVERSATION",
+                timestamp,
+            )
 
-        # 2. Check for Workflow Actions (Pause, Resume, Next, Dismiss)
-        workflow_res = await self._try_workflow_action(msg_clean)
-        if workflow_res:
-            self.chat_history.append({"sender": "CyberBhaiya", "text": workflow_res["reply"], "time": timestamp})
-            return workflow_res
+        edit = await self._try_field_edit(text)
+        if edit:
+            return self._remember(edit, timestamp)
 
-        # 3. Check for Exam & Recruitment Knowledge / FAQ
-        faq_res = self._try_faq_knowledge(msg_clean)
-        if faq_res:
-            self.chat_history.append({"sender": "CyberBhaiya", "text": faq_res["reply"], "time": timestamp})
-            return faq_res
+        workflow = await self._try_workflow_action(text)
+        if workflow:
+            return self._remember(workflow, timestamp)
 
-        # 4. Check for External Live Information Query (Use TinyFish Search API)
-        search_res = await self._try_tinyfish_search(msg_clean)
-        if search_res:
-            self.chat_history.append({"sender": "CyberBhaiya", "text": search_res["reply"], "time": timestamp})
-            return search_res
+        faq = self._try_faq(text)
+        if faq:
+            return self._remember(faq, timestamp)
 
-        # 5. Default Empathetic Dialogue
-        candidate_name = self.vault_mgr.vault.full_name.split()[0] if self.vault_mgr.vault.full_name else "Bhai"
-        default_reply = (
-            f"Haan {candidate_name}, bolo! Form mein koi dikkat hai ya koi detail badalni hai toh batayein. "
-            f"Aap mujhe bol sakte hain jaise 'father name badal kar Rajesh Sharma karo', 'fees kitni hai', ya 'form pause karo'. "
-            f"Mai yahan aapke saath live baitha hoon!"
+        search = await self._try_live_search(text)
+        if search:
+            return self._remember(search, timestamp)
+
+        name = self._first_name()
+        return self._remember(
+            {
+                "reply": (
+                    f"Hi {name}, I can help with this form. You can ask me to update a saved "
+                    "detail (for example, \"change my father's name to Rajesh Sharma\"), "
+                    "explain a document requirement, pause the application, or show your "
+                    "current status."
+                ),
+                "action_taken": "CONVERSATION",
+                "timestamp": timestamp,
+            },
+            timestamp,
         )
-        resp = {
-            "reply": default_reply,
-            "action_taken": "CONVERSATION",
+
+    # -------------------------------------------------------------- utilities
+
+    def _reply(self, text: str, action: str, timestamp: Optional[str] = None) -> Dict[str, Any]:
+        return {
+            "reply": text,
+            "action_taken": action,
             "field_updated": None,
             "new_value": None,
-            "timestamp": timestamp
+            "timestamp": timestamp or datetime.datetime.now().strftime("%H:%M"),
         }
-        self.chat_history.append({"sender": "CyberBhaiya", "text": default_reply, "time": timestamp})
-        return resp
+
+    def _remember(self, result: Dict[str, Any], timestamp: str) -> Dict[str, Any]:
+        result.setdefault("timestamp", timestamp)
+        self.chat_history.append(
+            {
+                "sender": self.sender,
+                "text": result.get("reply", ""),
+                "time": result.get("timestamp", timestamp),
+            }
+        )
+        return result
+
+    def _first_name(self) -> str:
+        full_name = (getattr(self.vault_mgr.vault, "full_name", "") or "").strip()
+        return full_name.split()[0] if full_name else "there"
+
+    @staticmethod
+    def _portable_value(key: str, value: str) -> str:
+        """Keep dates and categories in the format portals normally expect."""
+        value = re.sub(r"\s+", " ", value).strip(" .,;:-")
+        if key == "dob":
+            return FormPilotChatAssistant._normalise_dob(value)
+        if key == "category":
+            upper = value.upper().replace("_", "-").replace(" ", "-")
+            if upper in {"OBCNCL", "OBC-NCL"}:
+                return "OBC-NCL"
+            if upper in {"GENERAL", "GEN"}:
+                return "UR"
+            return upper
+        if key == "aadhaar_number":
+            digits = re.sub(r"\D", "", value)
+            return digits if len(digits) == 12 else value
+        return value
+
+    @staticmethod
+    def _normalise_dob(raw: str) -> str:
+        parts = re.split(r"[/.-]", raw.strip())
+        if len(parts) == 3 and all(part.isdigit() for part in parts):
+            if len(parts[0]) == 4:
+                return f"{parts[0]}-{parts[1].zfill(2)}-{parts[2].zfill(2)}"
+            return f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
+        return raw.strip()
+
+    @staticmethod
+    def _mask_if_needed(key: str, value: str) -> str:
+        spec = field_registry.spec_for(key)
+        if spec and spec.sensitive:
+            return field_registry.mask_value(key, value)
+        return value
+
+    # ------------------------------------------------------------- field edits
+
+    _EDIT_WORDS = (
+        r"change|update|set|edit|modify|correct|badal(?:o|do|na)?|"
+        r"karo|kardo|kar\s*do|rakho|likho|dal(?:o|do)"
+    )
+
+    _FIELD_TERMS: List[Tuple[str, str]] = [
+        ("verify_full_name", r"(?:verify\s+(?:candidate\s+)?(?:full\s+)?name|confirm\s+(?:candidate\s+)?name)"),
+        ("father_name", r"(?:father(?:'s)?\s*name|father|pitaji|papa)"),
+        ("mother_name", r"(?:mother(?:'s)?\s*name|mother|mataji|mummy)"),
+        ("full_name", r"(?:candidate\s+(?:full\s+)?name|full\s+name|my\s+name|apna\s+naam|naam)"),
+        ("dob", r"(?:date\s+of\s+birth|dob|janam\s*tithi)"),
+        ("mobile", r"(?:mobile(?:\s*(?:no|number))?|phone(?:\s*(?:no|number))?|contact(?:\s*(?:no|number))?)"),
+        ("email", r"(?:e-?mail(?:\s*(?:id|address))?|mail)"),
+        ("category", r"(?:social\s+category|category|caste|jaati|community)"),
+        ("aadhaar_number", r"(?:aadhaar|aadhar)(?:\s*(?:no|number))?"),
+        ("apaar_id", r"(?:apaar)(?:\s*id)?"),
+        ("matric_roll_number", r"(?:(?:10th|matric|high\s*school)\s*(?:roll|roll\s*no|roll\s*number))"),
+        ("intermediate_roll_number", r"(?:(?:12th|intermediate|inter)\s*(?:roll|roll\s*no|roll\s*number))"),
+        ("graduation_roll_number", r"(?:(?:graduation|grad|college)\s*(?:roll|roll\s*no|roll\s*number))"),
+        ("pincode", r"(?:pin\s*code|pincode|postal\s*code)"),
+        ("address_line_1", r"(?:address|permanent\s+address)"),
+        ("registration_id", r"(?:registration\s*(?:id|no|number)|registration|reg\s*(?:id|no|number)|application\s*(?:id|no|number))"),
+        ("gender", r"(?:gender|sex)"),
+        ("nationality", r"(?:nationality|citizenship)"),
+        ("religion", r"(?:religion|dharm)"),
+        ("marital_status", r"(?:marital\s+status|married)"),
+        ("domicile_state", r"(?:domicile|home\s+state)"),
+        ("district", r"(?:district|zila)"),
+        ("state", r"(?:state|rajya)"),
+        ("village_town_city", r"(?:village|town|city|shehar)"),
+        ("matric_board", r"(?:10th|matric)\s*(?:board)"),
+        ("matric_passing_year", r"(?:10th|matric)\s*(?:passing\s*year|year)"),
+        ("matric_percentage", r"(?:10th|matric)\s*(?:percentage|percent|marks)"),
+        ("intermediate_board", r"(?:12th|intermediate|inter)\s*(?:board)"),
+        ("intermediate_passing_year", r"(?:12th|intermediate|inter)\s*(?:passing\s*year|year)"),
+        ("intermediate_percentage", r"(?:12th|intermediate|inter)\s*(?:percentage|percent|marks)"),
+    ]
+
+    _VALUE_PATTERNS: Dict[str, str] = {
+        "full_name": r"[A-Za-z][A-Za-z.'\- ]{2,59}",
+        "verify_full_name": r"[A-Za-z][A-Za-z.'\- ]{2,59}",
+        "father_name": r"[A-Za-z][A-Za-z.'\- ]{2,59}",
+        "mother_name": r"[A-Za-z][A-Za-z.'\- ]{2,59}",
+        "dob": r"\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}",
+        "mobile": r"(?:\+91[\s-]?)?[6-9]\d{9}",
+        "email": r"[A-Za-z0-9_.+\-]+@[A-Za-z0-9\-]+\.[A-Za-z0-9.\-]+",
+        "category": r"(?:OBC[\s-]?NCL|OBC|General|GEN|UR|EWS|SC|ST)",
+        "aadhaar_number": r"\d{4}\s?\d{4}\s?\d{4}",
+        "apaar_id": r"[A-Za-z0-9\-]{8,24}",
+        "matric_roll_number": r"\d{6,12}",
+        "intermediate_roll_number": r"\d{6,12}",
+        "graduation_roll_number": r"[A-Za-z0-9\-/]{4,24}",
+        "pincode": r"\d{6}",
+        "address_line_1": r".{5,160}",
+        "registration_id": r"[A-Za-z0-9][A-Za-z0-9\-/]{3,29}",
+        "gender": r"(?:Male|Female|Other|Transgender)",
+        "nationality": r"[A-Za-z ]{3,30}",
+        "religion": r"[A-Za-z ]{3,30}",
+        "marital_status": r"(?:Unmarried|Married|Divorced|Widowed|Single)",
+        "domicile_state": r"[A-Za-z ]{3,30}",
+        "district": r"[A-Za-z .'\-]{2,40}",
+        "state": r"[A-Za-z .'\-]{2,40}",
+        "village_town_city": r"[A-Za-z .'\-]{2,40}",
+        "matric_board": r"[A-Za-z0-9 .,'\-]{2,60}",
+        "matric_passing_year": r"(?:19|20)\d{2}",
+        "matric_percentage": r"\d{1,3}(?:\.\d{1,2})?\s*%?",
+        "intermediate_board": r"[A-Za-z0-9 .,'\-]{2,60}",
+        "intermediate_passing_year": r"(?:19|20)\d{2}",
+        "intermediate_percentage": r"\d{1,3}(?:\.\d{1,2})?\s*%?",
+    }
+
+    _COMMAND_WORDS = (
+        r"karo|kardo|kar\s*do|kar\s*dena|kar|karke|kar\s*ke|badlo|badal\s*do|"
+        r"rakho|rakh\s*do|please|plz|sir|madam|bhaiya|ji|thanks|thank\s*you"
+    )
+
+    @classmethod
+    def _clean_value(cls, value: str, key: str) -> str:
+        value = value.strip(" \t\r\n.,;:-'\"")
+        value = re.sub(rf"\s+(?:{cls._COMMAND_WORDS})\b.*$", "", value, flags=re.IGNORECASE)
+        value = re.sub(rf"^(?:{cls._COMMAND_WORDS})\b\s*", "", value, flags=re.IGNORECASE)
+        value = re.sub(r"\s+", " ", value).strip(" .,;:-")
+        if not value or re.fullmatch(rf"(?:{cls._COMMAND_WORDS})", value, flags=re.IGNORECASE):
+            return ""
+        return value
+
+    @classmethod
+    def _extract_after_field(cls, text: str, field_match: re.Match, key: str) -> str:
+        tail = text[field_match.end() : field_match.end() + 200]
+        tail = re.sub(r"^[\s,;:'\"\-]+", "", tail)
+        connector = r"(?:ko|ka|ki|ke|mein|me|to|as|is|equals?|=|:)"
+        for _ in range(4):
+            cleaned = re.sub(rf"^(?:{connector})\b[\s,;:'\"\-]*", "", tail, flags=re.IGNORECASE)
+            cleaned = re.sub(
+                rf"^(?:please\s+)?(?:{cls._EDIT_WORDS})\b[\s,;:'\"\-]*",
+                "",
+                cleaned,
+                flags=re.IGNORECASE,
+            )
+            if cleaned == tail:
+                break
+            tail = cleaned
+
+        pattern = cls._VALUE_PATTERNS.get(key)
+        if not pattern:
+            return ""
+        match = re.search(pattern, tail, re.IGNORECASE)
+        if not match:
+            return ""
+        return cls._clean_value(match.group(0), key)
 
     async def _try_field_edit(self, text: str) -> Optional[Dict[str, Any]]:
-        """Detects if candidate wants to update a field in their One-Vault & live portal."""
         text_lower = text.lower()
+        has_edit_word = bool(re.search(rf"\b(?:{self._EDIT_WORDS})\b", text_lower))
+        has_assignment = bool(re.search(r"(?:=|:)", text))
+        if not has_edit_word and not has_assignment:
+            return None
 
-        # Target definitions: (field_pattern, vault_key, field_label, value_pattern)
-        field_targets = [
-            (r"(?:father(?:\s*name)?|pitaji|papa)", "father_name", "Father's Name", r"[a-zA-Z\s\.\']{3,40}"),
-            (r"(?:mother(?:\s*name)?|mataji|mummy)", "mother_name", "Mother's Name", r"[a-zA-Z\s\.\']{3,40}"),
-            (r"(?:candidate(?:\s*name)?|my\s*name|apna\s*naam|naam|full\s*name)", "full_name", "Candidate Full Name", r"[a-zA-Z\s\.\']{3,40}"),
-            (r"(?:dob|date\s*of\s*birth|janam\s*tithi)", "dob", "Date of Birth", r"\d{1,2}[/-]\d{1,2}[/-]\d{4}|\d{4}[/-]\d{1,2}[/-]\d{1,2}"),
-            (r"(?:mobile|phone|contact)(?:\s*(?:no|number))?", "mobile", "Mobile Number", r"[6-9]\d{9}"),
-            (r"(?:email|mail|e-mail)(?:\s*(?:id|address))?", "email", "Email Address", r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"),
-            (r"(?:category|caste|jaati|community)", "category", "Social Category", r"obc-ncl|obc|general|ur|ews|sc|st"),
-            (r"(?:aadhaar|aadhar)(?:\s*(?:no|number))?", "aadhaar_number", "Aadhaar Number", r"\d{12}"),
-            (r"(?:apaar|apaar\s*id)", "apaar_id", "APAAR ID", r"[\w\-]{12,20}"),
-            (r"(?:10th|matric)(?:\s*(?:roll|roll\s*no))?", "matric_roll_number", "Matric Roll Number", r"\d{6,12}")
-        ]
+        for key, term in self._FIELD_TERMS:
+            field_match = re.search(rf"\b(?:{term})\b", text, re.IGNORECASE)
+            if not field_match:
+                continue
 
-        # Check if text contains edit keyword (change, update, badal, kardo, karo, set, make)
-        is_edit_intent = bool(re.search(r"change|update|badal|karo|kardo|rakho|likho|set|modify|edit|make", text_lower))
-        
-        for f_pat, vault_key, field_label, val_pat in field_targets:
-            regex = (
-                rf"(?:(?:change|update|set|badal\s*kar(?:ke)?)\s+)?"
-                rf"{f_pat}"
-                rf"(?:\s*(?:update\s*(?:karke|to)?|badal\s*kar(?:ke)?|change\s*(?:karke|to)?|set\s*to|ko|karke|mein|is|=|:|to))?"
-                rf"\s+({val_pat})"
-            )
-            match = re.search(regex, text, re.IGNORECASE)
-            if match and (is_edit_intent or "=" in text or ":" in text or " to " in text_lower):
-                new_val = match.group(1).strip()
-                # Clean up leading connector particles
-                new_val = re.sub(r"^(badal\s*kar(ke)?|change\s*to|set\s*to|update\s*to|to|ko)\s+", "", new_val, flags=re.IGNORECASE)
-                # Clean up trailing words like 'karo', 'kardo', 'kar do', 'please'
-                new_val = re.sub(r"\b(karo|kardo|kar do|kar dena|rakho|rakh do|please|plz|sir|bhaiya|ji)\b", "", new_val, flags=re.IGNORECASE).strip()
-                
-                # Format Date if needed
-                if vault_key == "dob":
-                    new_val = self._normalize_dob(new_val)
+            value = self._extract_after_field(text, field_match, key)
+            if not value:
+                continue
 
-                # Mutate One-Vault
-                self._update_vault(vault_key, new_val)
+            value = self._portable_value(key, value)
+            if key in {"full_name", "father_name", "mother_name", "email"} and len(value) < 2:
+                continue
+            if key == "email" and "@" not in value:
+                continue
+            if key == "mobile" and len(re.sub(r"\D", "", value)) < 10:
+                continue
 
-                # Mutate Live Portal Page if agent running
-                injected_dom = False
-                if self.orchestrator and getattr(self.orchestrator, "page", None):
-                    injected_dom = await self._inject_field_to_portal(vault_key, new_val)
-
-                reply = (
-                    f"Bilkul! {field_label} ko update karke **'{new_val}'** kar diya hai. "
-                    + ("Portal screen par bhi live inject kar diya hai, screen check karein!" if injected_dom else "One-Vault mein save ho gaya hai.")
-                )
+            try:
+                self.vault_mgr.set_semantic_field(key, value)
+                self._sync_confirmation_field(key, value)
+            except Exception:
                 return {
-                    "reply": reply,
-                    "action_taken": "FIELD_UPDATED",
-                    "field_updated": field_label,
-                    "new_value": new_val,
-                    "injected_in_dom": injected_dom,
-                    "timestamp": datetime.datetime.now().strftime("%H:%M")
+                    "reply": "I couldn't save that change. Please try again in a moment.",
+                    "action_taken": "UPDATE_FAILED",
+                    "field_updated": None,
+                    "new_value": None,
+                    "timestamp": datetime.datetime.now().strftime("%H:%M"),
                 }
 
-        return None
+            updated_on_form = await self._update_open_form(key, value)
+            spec = field_registry.spec_for(key)
+            label = spec.label if spec else key.replace("_", " ").title()
+            display_value = self._mask_if_needed(key, value)
+            shown_value = f"**{value}**" if display_value == value else display_value
 
-    async def _try_workflow_action(self, text: str) -> Optional[Dict[str, Any]]:
-        """Handles agent control commands like pause, resume, screen check, stop."""
-        text_lower = text.lower()
-        now_time = datetime.datetime.now().strftime("%H:%M")
-
-        # Check for Pause Command
-        if re.search(r"\b(pause|rok do|wait|ruko|stop thoda)\b", text_lower):
-            if self.orchestrator:
-                self.orchestrator._is_paused = True
-            return {
-                "reply": "Browser ko pause kar diya hai. Aap tasalli se details check karein ya One-Vault update karein. Jab ready hon toh 'continue' ya 'resume' bolein.",
-                "action_taken": "PAUSED",
-                "timestamp": now_time
-            }
-
-        # Check for Resume / Continue Command
-        if re.search(r"\b(continue|resume|aage badho|chalo|shuru karo|next)\b", text_lower):
-            if self.orchestrator:
-                self.orchestrator._is_paused = False
-                # If there's an active approval gate, approve it!
-                if self.orchestrator.active_gate and self.orchestrator.active_gate.get("gate_type") == "SECTION_APPROVAL":
-                    self.orchestrator.submit_user_response({"action": "SECTION_APPROVAL", "approved": True})
-            return {
-                "reply": "Ji bhaiya! Navigation resume kar diya hai aur agle step par aage badh rahe hain.",
-                "action_taken": "RESUMED",
-                "timestamp": now_time
-            }
-
-        # Check for Screen Status / Audit Check
-        if re.search(r"\b(status|screen check|kya chal raha|kya ho raha|audit|fields)\b", text_lower):
-            section_num = getattr(self.orchestrator, "current_section", 1) if self.orchestrator else 1
-            filled_count = len(getattr(self.orchestrator, "filled_audit", [])) if self.orchestrator else 0
-            active_gate_title = self.orchestrator.active_gate.get("title") if (self.orchestrator and self.orchestrator.active_gate) else "Koi pending gate nahi hai"
+            reply = f"Done — I've updated **{label}** to {shown_value} in your saved details."
+            if updated_on_form:
+                reply += " The open form has also been updated. Please check the field before continuing."
+            elif self.orchestrator and getattr(self.orchestrator, "page", None):
+                reply += " The form is open, but I couldn't find that field on the current page. You can edit it directly if needed."
+            else:
+                reply += " It will be used the next time this detail is filled."
 
             return {
-                "reply": (
-                    f"**Current Status:** Abhi hum Section {section_num} par hain. "
-                    f"One-Vault se ab tak {filled_count} fields safely verify karke fill kiye gaye hain. "
-                    f"Active checkpoint: {active_gate_title}. Pre-payment safety lock active hai."
-                ),
-                "action_taken": "STATUS_REPORT",
-                "timestamp": now_time
+                "reply": reply,
+                "action_taken": "FIELD_UPDATED",
+                "field_updated": label,
+                "new_value": display_value,
+                "updated_on_form": updated_on_form,
+                "timestamp": datetime.datetime.now().strftime("%H:%M"),
             }
 
         return None
 
-    def _try_faq_knowledge(self, text: str) -> Optional[Dict[str, Any]]:
-        """Answers domain questions regarding sarkari forms, fees, photos, eligibility, etc."""
-        text_lower = text.lower()
-        now_time = datetime.datetime.now().strftime("%H:%M")
-
-        # 1. Application Fee
-        if re.search(r"\b(fee|fees|kitne paise|charge|paisa|cost)\b", text_lower):
-            return {
-                "reply": (
-                    "Central Recruitment Board (CREB Advt. 04/2026) aur standard Railway/SSC exams mein: "
-                    "General / EWS / OBC candidates ke liye fee **₹500.00** hoti hai. "
-                    "SC / ST / Ex-Servicemen / PwBD / Female candidates ke liye ₹250.00 hoti hai (jo CBT-1 appear hone par bank account mein refund ho jati hai). "
-                    "Humne Pre-Payment Safety Lock lagaya hai, payment candidate khud UPI/Netbanking se karenge."
-                ),
-                "action_taken": "FAQ_ANSWER",
-                "timestamp": now_time
-            }
-
-        # 2. Biometric & Photo Specifications
-        if re.search(r"\b(photo|photograph|signature|sign|kb|size|dimension|pixel)\b", text_lower):
-            return {
-                "reply": (
-                    "**Official Biometric Specifications:**\n"
-                    "• **Recent Passport Photograph:** 20KB – 50KB JPEG (350x350 px), white/light background, front-facing without caps/spectacles.\n"
-                    "• **Digital Signature:** 10KB – 20KB JPEG (140x60 px) running handwriting in black or blue ink on plain white paper.\n"
-                    "💡 CyberBhaiya ka deterministic Pillow binary-search compressor automatic portal specs ke anuroop compress kar deta hai!"
-                ),
-                "action_taken": "FAQ_ANSWER",
-                "timestamp": now_time
-            }
-
-        # 3. Reservation & OBC-NCL Certificate
-        if re.search(r"\b(obc|ncl|caste|category|reservation|certificate|praman patra|ews)\b", text_lower):
-            return {
-                "reply": (
-                    "**OBC-NCL / EWS Certificate Rule:**\n"
-                    "Sarkari bharti mein OBC Non-Creamy Layer (NCL) certificate Financial Year 2023-2024 ya current year ka hona zaroori hai. "
-                    "Certificate Sub-Divisional Magistrate (SDM), Tehsildar, ya District Magistrate level se issued hona chahiye. "
-                    "Agar certificate ready nahi hai, toh candidate initially General/UR category se apply kar sakte hain."
-                ),
-                "action_taken": "FAQ_ANSWER",
-                "timestamp": now_time
-            }
-
-        # 4. APAAR ID & DigiLocker
-        if re.search(r"\b(apaar|digilocker|abc id|student id)\b", text_lower):
-            return {
-                "reply": (
-                    "**APAAR (Automated Permanent Academic Account Registry):**\n"
-                    "Yeh Bharat Sarkar ka 12-digit One Nation One Student ID hai. "
-                    "Aapke 10th/12th marks aur DigiLocker degrees isme linked rehti hain. "
-                    "One-Vault mein Nishant Kumar ka APAAR ID already archived hai (`9988-7766-5544`)."
-                ),
-                "action_taken": "FAQ_ANSWER",
-                "timestamp": now_time
-            }
-
-        # 5. Documents Checklist
-        if re.search(r"\b(document|kagaz|documents|kya chahiye|checklist)\b", text_lower):
-            return {
-                "reply": (
-                    "**Required Documents Checklist:**\n"
-                    "1. 10th / Matric Marksheet (Roll No & Passing Year proof)\n"
-                    "2. Aadhaar Card (12-digit verified)\n"
-                    "3. Category Certificate (OBC-NCL / EWS / SC / ST)\n"
-                    "4. Domicile / Niwas Praman Patra\n"
-                    "5. Passport Photo (20-50KB) & Signature (10-20KB)\n"
-                    "Sabhi documents One-Vault se automatically verified ho chuke hain!"
-                ),
-                "action_taken": "FAQ_ANSWER",
-                "timestamp": now_time
-            }
-
-        return None
-
-    async def _try_tinyfish_search(self, query: str) -> Optional[Dict[str, Any]]:
-        """If query is asking for external recruitment news/dates, invokes TinyFish Search API."""
-        query_lower = query.lower()
-        now_time = datetime.datetime.now().strftime("%H:%M")
-
-        is_search_query = bool(re.search(r"\b(exam date|kab aayega|kab hoga|syllabus|notification|vacancy|cut off|result)\b", query_lower))
-        if not is_search_query:
-            return None
-
-        api_key = self.tinyfish_client.config.tinyfish_api_key
-        if not api_key:
-            return None
-
+    def _sync_confirmation_field(self, key: str, value: str) -> None:
+        """Keep common confirmation fields in step with the primary value."""
+        confirmation = {
+            "full_name": "verify_full_name",
+            "father_name": "verify_father_name",
+            "mother_name": "verify_mother_name",
+            "email": "confirm_email",
+        }.get(key)
+        if not confirmation:
+            return
         try:
-            headers = {"X-API-Key": api_key.strip()}
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                res = await client.get(
-                    f"https://api.search.tinyfish.ai?query={query.strip()}&location=IN",
-                    headers=headers
-                )
-                if res.status_code == 200:
-                    data = res.json()
-                    results = data.get("results", [])
-                    if len(results) > 0:
-                        top = results[0]
-                        reply = (
-                            f"**TinyFish Live Search Result:**\n"
-                            f"📰 **{top.get('title')}**\n"
-                            f"{top.get('snippet')}\n"
-                            f"🔗 Official Source: [{top.get('site_name')}]({top.get('url')})"
-                        )
-                        return {
-                            "reply": reply,
-                            "action_taken": "TINYFISH_SEARCH",
-                            "source_url": top.get("url"),
-                            "timestamp": now_time
-                        }
-        except Exception as e:
-            print(f"[ChatAssistant] TinyFish search error: {e}")
+            self.vault_mgr.set_semantic_field(confirmation, value)
+        except Exception:
+            pass
 
-        return None
-
-    def _update_vault(self, key: str, value: str):
-        """Mutates candidate vault in-memory and persists to disk."""
-        vault = self.vault_mgr.vault
-        if hasattr(vault, key):
-            setattr(vault, key, value)
-            # Also update verify counterpart if name or email
-            verify_k = f"verify_{key}"
-            if hasattr(vault, verify_k):
-                setattr(vault, verify_k, value)
-        else:
-            self.vault_mgr.add_custom_field(key, value)
-        self.vault_mgr.save(vault)
-
-    async def _inject_field_to_portal(self, field_key: str, value: str) -> bool:
-        """Injects new field value directly into the live Playwright page DOM."""
-        if not self.orchestrator or not self.orchestrator.page:
+    async def _update_open_form(self, key: str, value: str) -> bool:
+        """Apply an edit to the currently open page, when that field is present."""
+        page = getattr(self.orchestrator, "page", None) if self.orchestrator else None
+        if not page:
             return False
+
+        targets = {key}
+        confirmation = {
+            "full_name": "verify_full_name",
+            "father_name": "verify_father_name",
+            "mother_name": "verify_mother_name",
+            "email": "confirm_email",
+        }.get(key)
+        if confirmation:
+            targets.add(confirmation)
+
+        updated = False
         try:
-            js_code = """
-            ([fieldKey, val]) => {
-                const selectors = [
-                    `#${fieldKey}`,
-                    `[name="${fieldKey}"]`,
-                    `input[id*="${fieldKey}" i]`,
-                    `input[name*="${fieldKey}" i]`,
-                    `select[id*="${fieldKey}" i]`,
-                    `select[name*="${fieldKey}" i]`
-                ];
-                let el = null;
-                for (const s of selectors) {
-                    try {
-                        el = document.querySelector(s);
-                        if (el) break;
-                    } catch (e) {}
-                }
-                if (!el) return false;
+            dom = await self.orchestrator._scan_dom()
+            for item in dom.get("inputs") or []:
+                semantic_key, _ = DOMScanner.classify_field(item)
+                if semantic_key not in targets:
+                    continue
+                try:
+                    result = await page.evaluate(DOMScanner.INJECTION_JS, [item, value])
+                    if isinstance(result, dict) and result.get("success"):
+                        updated = True
+                except Exception:
+                    continue
+        except Exception:
+            return False
 
-                if (el.tagName.toLowerCase() === 'select') {
-                    for (let i = 0; i < el.options.length; i++) {
-                        if (el.options[i].text.toLowerCase().includes(val.toLowerCase()) || el.options[i].value.toLowerCase().includes(val.toLowerCase())) {
-                            el.selectedIndex = i;
-                            el.dispatchEvent(new Event('change', { bubbles: true }));
-                            return true;
-                        }
-                    }
-                }
-
-                const proto = window.HTMLInputElement.prototype;
-                const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
-                if (descriptor && descriptor.set) {
-                    descriptor.set.call(el, val);
-                } else {
-                    el.value = val;
-                }
-                el.dispatchEvent(new Event('focus', { bubbles: true }));
-                el.dispatchEvent(new Event('input', { bubbles: true }));
-                el.dispatchEvent(new Event('change', { bubbles: true }));
-                el.dispatchEvent(new Event('blur', { bubbles: true }));
-                return true;
-            }
-            """
-            success = await self.orchestrator.page.evaluate(js_code, [field_key, value])
-            if success and self.orchestrator:
-                # Re-audit and capture screenshot
-                await self.orchestrator._capture_screenshot()
+        if updated:
+            try:
                 await self.orchestrator.emit_event(
                     "ACT",
-                    f"Candidate requested live edit via Chat: Updated '{field_key}' to '{value}' in portal DOM.",
-                    f"Candidate ke kehne par '{field_key}' ko '{value}' update kar diya hai."
+                    "A detail was updated at your request. Please review the field.",
+                    "Aapke kehne par ek detail update ki gayi hai. Field check kar lein.",
+                    force_screenshot=True,
                 )
-            return bool(success)
-        except Exception as e:
-            print(f"[ChatAssistant] DOM Injection error: {e}")
-            return False
+            except Exception:
+                pass
+        return updated
 
-    def _normalize_dob(self, raw: str) -> str:
-        """Converts DD/MM/YYYY or DD-MM-YYYY to YYYY-MM-DD for vault storage."""
+    # --------------------------------------------------------------- workflow
+
+    async def _try_workflow_action(self, text: str) -> Optional[Dict[str, Any]]:
+        text_lower = text.lower()
+        now = datetime.datetime.now().strftime("%H:%M")
+
+        if re.search(r"\b(stop|cancel|band\s*karo|rok\s*do|exit)\b", text_lower):
+            if self.orchestrator:
+                try:
+                    await self.orchestrator.stop()
+                except Exception:
+                    pass
+            return {
+                "reply": "The application has been stopped. Nothing was submitted or paid.",
+                "action_taken": "STOPPED",
+                "timestamp": now,
+            }
+
+        if re.search(r"\b(pause|rok\s*do|ruko|wait|thoda\s*ruk)\b", text_lower):
+            if self.orchestrator:
+                self.orchestrator.pause()
+            return {
+                "reply": "Paused. Take your time to review the details. Say \"resume\" when you're ready to continue.",
+                "action_taken": "PAUSED",
+                "timestamp": now,
+            }
+
+        if re.search(r"\b(continue|resume|aage\s*badho|chalo|shuru\s*karo|next)\b", text_lower):
+            if self.orchestrator:
+                self.orchestrator.resume()
+                gate = getattr(self.orchestrator, "active_gate", None) or {}
+                if gate.get("gate_type") == "SECTION_APPROVAL":
+                    self.orchestrator.submit_user_response(
+                        {"action": "SECTION_APPROVAL", "approved": True}
+                    )
+            return {
+                "reply": "Resumed. I'll continue with the next step and stop again at the next review point.",
+                "action_taken": "RESUMED",
+                "timestamp": now,
+            }
+
+        if re.search(r"\b(status|progress|kya\s*chal\s*raha|kya\s*ho\s*raha|kitna\s*hua|screen\s*check)\b", text_lower):
+            state = self.orchestrator.get_state() if self.orchestrator else {}
+            section = state.get("current_section") or 1
+            filled = len(state.get("filled_audit") or [])
+            gate = state.get("active_gate") or {}
+            gate_title = gate.get("title") or "No review is pending"
+            phase = state.get("state") or "READY"
+            return {
+                "reply": (
+                    f"**Current status**\n"
+                    f"• Stage: {phase.replace('_', ' ').title()}\n"
+                    f"• Section: {section}\n"
+                    f"• Details filled from your saved profile: {filled}\n"
+                    f"• Waiting for you: {gate_title}\n\n"
+                    "FormPilot stops before payment or final submission and never submits an application on your behalf."
+                ),
+                "action_taken": "STATUS_REPORT",
+                "timestamp": now,
+            }
+
+        return None
+
+    # -------------------------------------------------------------------- FAQ
+
+    def _try_faq(self, text: str) -> Optional[Dict[str, Any]]:
+        text_lower = text.lower()
+        now = datetime.datetime.now().strftime("%H:%M")
+
+        if re.search(r"\b(who\s+are\s+you|what\s+is\s+formpilot|are\s+you\s+(a\s+)?government|official\s+(website|portal))\b", text_lower):
+            return {
+                "reply": (
+                    "FormPilot is an independent application assistant. It is not a government "
+                    "website and it does not issue certificates or accept payments. It helps you "
+                    "fill an official portal accurately, then hands control back to you."
+                ),
+                "action_taken": "FAQ_ANSWER",
+                "timestamp": now,
+            }
+
+        if re.search(r"\b(otp|one[- ]time\s*password|verification\s*code)\b", text_lower):
+            return {
+                "reply": (
+                    "OTP codes are used only for the current step. FormPilot does not save them "
+                    "or send them anywhere else. You will always enter the code yourself."
+                ),
+                "action_taken": "FAQ_ANSWER",
+                "timestamp": now,
+            }
+
+        if re.search(r"\b(fee|fees|kitne\s*paise|charge|paisa|cost|payment)\b", text_lower):
+            return {
+                "reply": (
+                    "The fee depends on the portal and your category. The official fee page shows "
+                    "the exact amount before payment. FormPilot stops at that page — you review the "
+                    "details and complete any payment yourself."
+                ),
+                "action_taken": "FAQ_ANSWER",
+                "timestamp": now,
+            }
+
+        if re.search(r"\b(photo|photograph|signature|sign|size|dimension|pixel|kb)\b", text_lower):
+            return {
+                "reply": (
+                    "**Common document sizes**\n"
+                    "• Photograph: recent passport-style JPEG, usually 20–50 KB and about 350×350 px.\n"
+                    "• Signature: JPEG, usually 10–20 KB and about 140×60 px, on a plain background.\n\n"
+                    "These are common ranges, not a guarantee. Always follow the exact specifications "
+                    "shown on the portal you are using."
+                ),
+                "action_taken": "FAQ_ANSWER",
+                "timestamp": now,
+            }
+
+        if re.search(r"\b(obc|ncl|caste|category|reservation|certificate|praman\s*patra|ews)\b", text_lower):
+            return {
+                "reply": (
+                    "**OBC-NCL / EWS certificates**\n"
+                    "Many public recruitment forms ask for an OBC Non-Creamy Layer certificate for "
+                    "the current financial year. It is usually issued by the SDM, Tehsildar, or "
+                    "District Magistrate. Check the portal's notification for the exact validity "
+                    "dates before you apply."
+                ),
+                "action_taken": "FAQ_ANSWER",
+                "timestamp": now,
+            }
+
+        if re.search(r"\b(apaar|digilocker|abc\s*id|student\s*id)\b", text_lower):
+            return {
+                "reply": (
+                    "**APAAR / DigiLocker**\n"
+                    "APAAR is a 12-digit student ID linked to your academic records. DigiLocker "
+                    "stores verified digital documents. If a form asks for either, enter the ID "
+                    "exactly as shown in your account and keep the source document ready for "
+                    "verification."
+                ),
+                "action_taken": "FAQ_ANSWER",
+                "timestamp": now,
+            }
+
+        if re.search(r"\b(document|documents|kagaz|kya\s*chahiye|checklist)\b", text_lower):
+            return {
+                "reply": (
+                    "**Documents to keep ready**\n"
+                    "1. Matric / 10th marksheet and certificate\n"
+                    "2. Aadhaar or another accepted photo ID\n"
+                    "3. Category certificate, if applicable\n"
+                    "4. Domicile certificate, if the portal asks for it\n"
+                    "5. Passport photograph and signature in the required size\n\n"
+                    "The official portal always has the final checklist. Upload only documents "
+                    "that belong to you and match your details."
+                ),
+                "action_taken": "FAQ_ANSWER",
+                "timestamp": now,
+            }
+
+        return None
+
+    # ----------------------------------------------------------------- search
+
+    async def _try_live_search(self, text: str) -> Optional[Dict[str, Any]]:
+        text_lower = text.lower()
+        if not re.search(
+            r"\b(exam\s*date|last\s*date|kab\s*(?:aayega|hoga|hai)|syllabus|notification|"
+            r"vacancy|cut\s*off|result|admit\s*card|answer\s*key|news)\b",
+            text_lower,
+        ):
+            return None
+
+        now = datetime.datetime.now().strftime("%H:%M")
         try:
-            parts = re.split(r"[/-]", raw.strip())
-            if len(parts) == 3:
-                if len(parts[0]) == 4:  # YYYY-MM-DD
-                    return f"{parts[0]}-{parts[1].zfill(2)}-{parts[2].zfill(2)}"
-                else:  # DD-MM-YYYY
-                    return f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
-            return raw
-        except Exception:
-            return raw
+            results = await self.tinyfish_client.search(text, location="IN", limit=4)
+        except TinyFishError:
+            return {
+                "reply": (
+                    "I couldn't reach live web search just now. Please check the official portal "
+                    "directly, or try again in a moment."
+                ),
+                "action_taken": "SEARCH_UNAVAILABLE",
+                "timestamp": now,
+            }
+
+        if not results:
+            return {
+                "reply": (
+                    "I didn't find a reliable live result for that. Try a more specific query, "
+                    "or check the official portal's notification page."
+                ),
+                "action_taken": "SEARCH_EMPTY",
+                "timestamp": now,
+            }
+
+        lines = ["**Live web results**"]
+        for item in results[:3]:
+            title = (item.get("title") or "Untitled result").strip()
+            url = (item.get("url") or "").strip()
+            snippet = re.sub(r"\s+", " ", (item.get("snippet") or item.get("description") or "")).strip()
+            if snippet:
+                snippet = snippet[:220].rstrip() + ("…" if len(snippet) > 220 else "")
+            if url:
+                lines.append(f"• [{title}]({url})\n  {snippet}")
+            else:
+                lines.append(f"• **{title}**\n  {snippet}")
+
+        lines.append(
+            "\nThese are search results, not an official confirmation. Verify dates and "
+            "eligibility on the official portal before acting."
+        )
+        top_url = (results[0].get("url") or "").strip()
+        return {
+            "reply": "\n".join(lines),
+            "action_taken": "LIVE_SEARCH",
+            "source_url": top_url,
+            "timestamp": now,
+        }

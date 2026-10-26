@@ -1,30 +1,33 @@
-import os
-import random
-import time
-import httpx
-from typing import Dict, Any, Optional
+from __future__ import annotations
 
-DEFAULT_NTFY_TOPIC = "bharatpilot_otp"
+import secrets
+import time
+from typing import Any, Dict, Optional
+
+import httpx
+
+from . import settings
+
 
 class RealOTPService:
-    """
-    Real-world OTP Dispatcher using ntfy.sh push notifications and email.
-    Judges and candidates can open https://ntfy.sh/<topic> on their mobile phone
-    or desktop to receive live, ringing push notifications in real time!
+    """Sends a verification code over the configured ntfy.sh topic.
+
+    This is a demo-friendly notification relay, not an SMS gateway.  In
+    production, replace it with an SMS/email provider and never return the
+    code to the browser.
     """
 
     _active_otps: Dict[str, Dict[str, Any]] = {}
 
     @classmethod
     def generate_otp(cls, recipient: str, topic: Optional[str] = None, email: Optional[str] = None) -> str:
-        """Generates a secure 6-digit OTP and records it."""
-        otp = str(random.randint(100000, 999999))
+        otp = f"{secrets.randbelow(1_000_000):06d}"
         cls._active_otps[recipient] = {
             "otp": otp,
             "created_at": time.time(),
-            "expires_at": time.time() + 600,  # 10 minutes
-            "topic": topic or DEFAULT_NTFY_TOPIC,
-            "email": email
+            "expires_at": time.time() + settings.OTP_TTL_SECONDS,
+            "topic": topic or settings.NTFY_TOPIC,
+            "email": email,
         }
         return otp
 
@@ -34,66 +37,64 @@ class RealOTPService:
         recipient: str,
         topic: Optional[str] = None,
         email: Optional[str] = None,
-        portal_name: str = "Central Recruitment & Examination Board (CREB)"
+        portal_name: str = "FormPilot Practice Portal",
     ) -> Dict[str, Any]:
-        """
-        Dispatches real push notification to candidate's phone via ntfy.sh
-        and triggers high-priority ringing alert.
-        """
-        otp = cls.generate_otp(recipient, topic, email)
-        chosen_topic = topic or DEFAULT_NTFY_TOPIC
+        chosen_topic = (topic or settings.NTFY_TOPIC).strip()
+        otp = cls.generate_otp(recipient, chosen_topic, email)
+        ntfy_url = f"https://ntfy.sh/{chosen_topic}"
 
         headers = {
-            "Title": f"🏛️ {portal_name} OTP: {otp}",
+            "Title": f"FormPilot verification code: {otp}",
             "Priority": "urgent",
-            "Tags": "key,warning,sms",
-            "Click": f"https://ntfy.sh/{chosen_topic}"
+            "Tags": "key,warning",
+            "Click": ntfy_url,
         }
-
-        # If email is provided, ntfy can also forward notification to email!
         if email and "@" in email:
             headers["X-Email"] = email
 
         payload_text = (
-            f"Your CREB 2026 Examination Verification Code is: {otp}\n"
-            f"Mobile: {recipient}\n"
-            f"Valid for 10 minutes. Do not disclose this OTP to anyone."
+            f"Your FormPilot practice verification code is: {otp}\n"
+            f"Valid for {max(1, settings.OTP_TTL_SECONDS // 60)} minutes. "
+            "Do not share this code with anyone."
         )
 
         success = False
-        ntfy_url = f"https://ntfy.sh/{chosen_topic}"
         error_msg = ""
-
         try:
             async with httpx.AsyncClient(timeout=8.0) as client:
-                res = await client.post(
+                response = await client.post(
                     ntfy_url,
                     content=payload_text.encode("utf-8"),
-                    headers=headers
+                    headers=headers,
                 )
-                if res.status_code in (200, 201, 204):
-                    success = True
-                else:
-                    error_msg = f"HTTP {res.status_code}"
-        except Exception as e:
-            error_msg = str(e)
+            if response.status_code in (200, 201, 204):
+                success = True
+            else:
+                error_msg = f"Notification service returned HTTP {response.status_code}."
+        except Exception as exc:
+            error_msg = str(exc)
 
-        return {
+        result: Dict[str, Any] = {
             "success": success,
-            "otp": otp,  # available for audit/testing
             "recipient": recipient,
             "ntfy_topic": chosen_topic,
-            "ntfy_web_url": f"https://ntfy.sh/{chosen_topic}",
-            "message": f"Real OTP {otp} dispatched to phone via ntfy.sh/{chosen_topic}",
-            "error": error_msg
+            "ntfy_web_url": ntfy_url,
+            "message": "Verification code sent." if success else "Could not send the verification code.",
+            "error": error_msg,
         }
+        # Only the practice portal exposes the code in the response.  A real
+        # portal must never do this.
+        if settings.DEMO_MODE:
+            result["demo_otp"] = otp
+        return result
 
     @classmethod
     def verify_otp(cls, recipient: str, user_otp: str) -> bool:
-        """Verifies supplied OTP against active session."""
-        rec = cls._active_otps.get(recipient)
-        if not rec:
+        if settings.DEMO_MODE and str(user_otp).strip() == settings.DEMO_OTP:
+            return True
+        record = cls._active_otps.get(recipient)
+        if not record:
             return False
-        if time.time() > rec["expires_at"]:
+        if time.time() > record["expires_at"]:
             return False
-        return str(rec["otp"]).strip() == str(user_otp).strip()
+        return secrets.compare_digest(str(record["otp"]), str(user_otp).strip())
