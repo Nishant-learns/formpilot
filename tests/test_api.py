@@ -27,6 +27,10 @@ def test_health_reports_the_demo_configuration(client):
     assert payload["demo_mode"] is True
     assert payload["simulator_enabled"] is True
     assert "tinyfish_configured" in payload
+    # The live-photo checkpoint needs same-origin camera access.
+    assert response.headers["permissions-policy"] == (
+        "camera=(self), microphone=(), geolocation=()"
+    )
 
 
 def test_oracle_endpoint_uses_the_registry(client):
@@ -69,6 +73,103 @@ def test_vault_can_be_read_masked_and_updated(client):
     reset = client.post("/api/vault/reset")
     assert reset.status_code == 200
     assert reset.json()["vault"]["father_name"] == "Rajesh Kumar Sharma"
+
+
+def test_health_exposes_live_browser_and_inspect_state(client):
+    payload = client.get("/api/health").json()
+
+    assert payload["live_browser_sessions"] == 0
+    assert payload["inspect_ready"] is False
+    assert payload["run_mode"] in {"fill", "inspect"}
+
+
+def test_agent_state_has_live_browser_and_form_map_fields(client):
+    response = client.get("/api/agent/state")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["state"] == "IDLE"
+    assert payload["run_mode"] in {"fill", "inspect"}
+    assert payload["live_session"] is None
+    assert payload["form_map"] is None
+    assert "recipe" in payload
+    assert payload["browser_open"] is False
+
+
+def test_launch_mode_is_validated(client):
+    response = client.post(
+        "/api/agent/start",
+        json={"query_or_url": "https://example.gov.in/apply", "mode": "solve-captcha"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_inspect_scan_without_a_browser_is_a_clear_conflict(client):
+    response = client.post("/api/agent/inspect/scan")
+
+    assert response.status_code == 409
+    assert "no live browser" in response.json()["detail"].lower()
+
+
+def test_upload_without_a_browser_is_a_clear_conflict(client):
+    response = client.post(
+        "/api/agent/upload",
+        data={"field_key": "photo_upload"},
+        files={"file": ("photo.jpg", b"not-an-image", "image/jpeg")},
+    )
+
+    assert response.status_code == 409
+
+
+def test_recipe_api_lists_and_returns_saved_structure(client):
+    from backend.main import orchestrator
+
+    path = orchestrator.recipe_store.path_for("api-test.gov.in", "application_form")
+    path.unlink(missing_ok=True)
+    form_map = {
+        "portal": "api-test.gov.in",
+        "url": "https://api-test.gov.in/apply",
+        "display_url": "https://api-test.gov.in/apply",
+        "page_type": "application_form",
+        "fingerprint": "api-test-fingerprint",
+        "fingerprint_short": "api-test-fing",
+        "fields": [
+            {
+                "key": "full_name",
+                "semantic_key": "full_name",
+                "label": "Full Name",
+                "name": "full_name",
+                "type": "text",
+                "required": True,
+                "options": [],
+                "locators": [{"strategy": "id", "value": "full_name"}],
+                "confidence": 94,
+                "sensitive": False,
+            }
+        ],
+        "gateways": [],
+        "next_actions": [],
+    }
+    try:
+        saved = orchestrator.recipe_store.save_from_form_map(form_map, source="inspect")
+        listing = client.get("/api/recipes")
+        assert listing.status_code == 200
+        assert any(
+            recipe["recipe_id"] == saved["recipe_id"]
+            for recipe in listing.json()["recipes"]
+        )
+
+        detail = client.get(f"/api/recipes/{saved['recipe_id']}")
+        assert detail.status_code == 200
+        payload = detail.json()
+        assert payload["fingerprint"] == "api-test-fingerprint"
+        assert payload["fields"][0]["label"] == "Full Name"
+    finally:
+        path.unlink(missing_ok=True)
+
+    missing = client.get("/api/recipes/does-not-exist")
+    assert missing.status_code == 404
 
 
 def test_engine_config_is_redacted(client):

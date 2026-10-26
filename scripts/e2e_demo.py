@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -27,6 +28,21 @@ if str(ROOT) not in sys.path:
 
 from backend.core import settings
 from backend.core.orchestrator import FormPilotOrchestrator
+
+
+def _sample_upload(kind: str) -> Path:
+    """Create a small valid JPEG for the practice portal's file inputs."""
+    from PIL import Image, ImageDraw
+
+    path = Path(tempfile.gettempdir()) / f"formpilot-e2e-{kind}.jpg"
+    image = Image.new("RGB", (600, 800), (246, 247, 249))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((36, 36, 564, 764), outline=(20, 72, 120), width=5)
+    draw.text((70, 80), "FormPilot practice upload", fill=(20, 40, 60))
+    draw.text((70, 110), f"Field: {kind}", fill=(60, 80, 100))
+    draw.text((70, 140), "Demo file - not a real document", fill=(120, 60, 60))
+    image.save(path, "JPEG", quality=88)
+    return path
 
 
 async def run(target: str, login: bool) -> int:
@@ -86,6 +102,27 @@ async def run(target: str, login: bool) -> int:
                         orchestrator.submit_user_response(
                             {"action": "CAPTCHA_SUBMIT", "code": code}
                         )
+                    elif gate_type in {"FILE_UPLOAD", "LIVE_PHOTO"}:
+                        field_key = gate.get("field_key") or "photo_upload"
+                        upload = _sample_upload(field_key)
+                        result = await orchestrator.attach_upload(str(upload), field_key)
+                        print(
+                            f"UPLOAD {field_key}: {result.get('message')}",
+                            flush=True,
+                        )
+                        orchestrator.submit_user_response(
+                            {
+                                "action": "UPLOAD_COMPLETE",
+                                "field_key": field_key,
+                            }
+                        )
+                    elif gate_type == "LIVE_HANDOFF":
+                        print(
+                            f"LIVE HANDOFF REQUIRED: {gate.get('description')}",
+                            flush=True,
+                        )
+                        result = 1
+                        break
                     elif gate_type == "SECTION_APPROVAL":
                         orchestrator.submit_user_response(
                             {"action": "SECTION_APPROVAL", "approved": True}

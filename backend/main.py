@@ -33,8 +33,10 @@ from pydantic import BaseModel, Field
 from .core import field_registry, settings
 from .core.biometrics import BiometricCompressor
 from .core.chat_assistant import FormPilotChatAssistant
+from .core.live_browser import live_sessions
 from .core.oracle import PortalOracle
-from .core.orchestrator import FormPilotOrchestrator
+from .core.orchestrator import AgentRunError, FormPilotOrchestrator
+from .core.recipe import RecipeStore
 from .core.run_store import RunStore
 from .core.tinyfish_client import EngineConfig, TinyFishClient, TinyFishError
 from .core.vault import CandidateVault, VaultManager
@@ -144,7 +146,9 @@ async def security_headers_and_auth(request: Request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["X-Frame-Options"] = "SAMEORIGIN"
-    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    # The live-photo checkpoint runs in this page, so the camera must be
+    # allowed for the same origin. Microphone and geolocation stay off.
+    response.headers["Permissions-Policy"] = "camera=(self), microphone=(), geolocation=()"
     response.headers["Server-Timing"] = f"app;dur={(time.perf_counter() - started) * 1000:.1f}"
     if path.startswith("/api/vault") or path.startswith("/uploads/"):
         response.headers["Cache-Control"] = "no-store"
@@ -358,6 +362,9 @@ def health():
         "effective_mode": tinyfish_client.effective_mode(),
         "active_run": orchestrator.run_id,
         "state": orchestrator.state,
+        "run_mode": orchestrator.run_mode,
+        "live_browser_sessions": len(live_sessions.active()),
+        "inspect_ready": orchestrator.state == "INSPECT_READY",
     }
 
 
@@ -386,11 +393,28 @@ def get_run_audit(run_id: str):
     return JSONResponse(content=audit, headers={"Content-Disposition": f'attachment; filename="formpilot-audit-{run_id}.json"'})
 
 
+# --------------------------------------------------------------------------- recipes
+
+
+@app.get("/api/recipes")
+def list_recipes():
+    return {"recipes": orchestrator.recipe_store.list_recipes()}
+
+
+@app.get("/api/recipes/{recipe_id}")
+def get_recipe(recipe_id: str):
+    recipe = orchestrator.recipe_store.load_by_id(recipe_id)
+    if not recipe:
+        raise HTTPException(status_code=404, detail="Recipe not found.")
+    return recipe
+
+
 # --------------------------------------------------------------------------- agent
 
 
 class LaunchRequest(BaseModel):
     query_or_url: str = Field(..., min_length=1, max_length=500)
+    mode: str = Field("fill", pattern="^(fill|inspect)$")
 
 
 class ChatMessageRequest(BaseModel):
@@ -401,7 +425,9 @@ class ChatMessageRequest(BaseModel):
 async def start_agent(req: LaunchRequest):
     if orchestrator.is_running:
         return {"success": False, "message": "An application is already in progress."}
-    task = asyncio.create_task(orchestrator.start_application(req.query_or_url))
+    if orchestrator.page and not orchestrator.page.is_closed() and orchestrator.state in {"INSPECT_READY", "AWAITING_PAYMENT"}:
+        await orchestrator.stop()
+    task = asyncio.create_task(orchestrator.start_application(req.query_or_url, req.mode))
     app.state.agent_task = task
 
     def _done(done_task: asyncio.Task):
@@ -411,7 +437,55 @@ async def start_agent(req: LaunchRequest):
             traceback.print_exc()
 
     task.add_done_callback(_done)
-    return {"success": True, "message": "Application started.", "run_id": orchestrator.run_id}
+    return {
+        "success": True,
+        "message": "Inspection started." if req.mode == "inspect" else "Application started.",
+        "mode": req.mode,
+        "run_id": orchestrator.run_id,
+    }
+
+
+@app.post("/api/agent/inspect/scan")
+async def inspect_current_page():
+    try:
+        form_map = await orchestrator.refresh_inspection()
+    except AgentRunError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"success": True, "form_map": form_map, "recipe": orchestrator._recipe_status}
+
+
+@app.post("/api/agent/upload")
+async def upload_for_portal(
+    field_key: str = Form(..., min_length=1, max_length=80),
+    file: UploadFile = File(...),
+):
+    if not orchestrator.page or orchestrator.page.is_closed():
+        raise HTTPException(status_code=409, detail="There is no live browser to upload to.")
+    if not re.match(r"^[a-zA-Z0-9_\-]{1,80}$", field_key):
+        raise HTTPException(status_code=422, detail="Invalid field key.")
+
+    data = await file.read()
+    if len(data) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="The file must be 5 MB or smaller.")
+    content_type = (file.content_type or "").lower()
+    allowed = {
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+        "application/pdf": ".pdf",
+    }
+    if content_type not in allowed:
+        raise HTTPException(status_code=415, detail="Upload a JPG, PNG, WEBP or PDF file.")
+
+    original = Path(file.filename or "upload").name
+    safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(original).stem)[:60] or "upload"
+    destination = settings.UPLOADS_DIR / f"user-{uuid.uuid4().hex[:10]}-{safe_stem}{allowed[content_type]}"
+    destination.write_bytes(data)
+
+    result = await orchestrator.attach_upload(str(destination), field_key)
+    if not result.get("success"):
+        raise HTTPException(status_code=422, detail=result.get("message") or "The portal did not accept the file.")
+    return result
 
 
 @app.post("/api/agent/stop")
@@ -478,6 +552,82 @@ def _ws_token(websocket: WebSocket) -> str:
     return websocket.query_params.get("token") or websocket.headers.get("x-api-token") or ""
 
 
+@app.websocket("/ws/live")
+async def live_websocket(websocket: WebSocket):
+    """Interactive stream of the agent's real browser.
+
+    Frames are JPEG images from Chrome's CDP screencast.  Input is forwarded
+    back to the same page.  The session token is separate from the cockpit
+    token so another tab cannot take control of an active run.
+    """
+    session_id = websocket.query_params.get("session_id", "")
+    access_token = websocket.query_params.get("access_token", "")
+    session = live_sessions.get(session_id)
+    if not session or not hmac.compare_digest(session.access_token, access_token):
+        await websocket.close(code=1008)
+        return
+    if settings.AUTH_REQUIRED and not _safe_compare(_ws_token(websocket)):
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept()
+    queue = session.subscribe()
+    await websocket.send_json({"type": "hello", **session.public_info()})
+    # A static page may not produce another frame after the browser session
+    # starts. Send the latest frame on connect so a late subscriber sees the
+    # real page immediately instead of an empty viewer.
+    latest_frame = session.latest_frame_base64()
+    if latest_frame:
+        await websocket.send_json(
+            {
+                "type": "frame",
+                "data": latest_frame,
+                "metadata": session._latest_metadata,
+                "viewport": session.public_info()["viewport"],
+                "url": session.public_info()["url"],
+                "frames_sent": session.frames_sent,
+            }
+        )
+
+    async def sender():
+        while True:
+            message = await queue.get()
+            await websocket.send_json(message)
+
+    send_task = asyncio.create_task(sender())
+    window_start = time.monotonic()
+    message_count = 0
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            if len(raw) > 12_000:
+                await websocket.send_json({"type": "input_error", "error": "Input message is too large."})
+                continue
+            message_count += 1
+            now = time.monotonic()
+            if now - window_start >= 1.0:
+                window_start = now
+                message_count = 0
+            if message_count > 180:
+                await websocket.send_json({"type": "input_error", "error": "Too many input events. Slow down."})
+                continue
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                await websocket.send_json({"type": "input_error", "error": "Invalid JSON."})
+                continue
+            result = await session.dispatch(data)
+            if not result.get("ok"):
+                await websocket.send_json({"type": "input_error", **result})
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        traceback.print_exc()
+    finally:
+        send_task.cancel()
+        session.unsubscribe(queue)
+
+
 @app.websocket("/ws/cockpit")
 async def cockpit_websocket(websocket: WebSocket):
     if settings.AUTH_REQUIRED and not _safe_compare(_ws_token(websocket)):
@@ -498,6 +648,10 @@ async def cockpit_websocket(websocket: WebSocket):
                 "filled_audit": orchestrator._public_audit(),
                 "run_id": orchestrator.run_id,
                 "state": orchestrator.state,
+                "run_mode": orchestrator.run_mode,
+                "live_session": orchestrator.live.public_info() if orchestrator.live and not orchestrator.live.closed else None,
+                "form_map": orchestrator.form_map,
+                "recipe": orchestrator._recipe_status,
             }
         )
         while True:

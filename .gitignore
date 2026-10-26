@@ -36,6 +36,7 @@ uploads/*
 data/candidate_vault.json
 data/engine_config.json
 data/portal_registrations.json
+data/recipes/
 data/runs/
 data/*.tmp
 .env

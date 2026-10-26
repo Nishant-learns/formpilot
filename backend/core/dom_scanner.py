@@ -121,24 +121,108 @@ class DOMScanner:
             }
         }
 
+        const getNearbyText = (el) => {
+            let text = '';
+            let node = el;
+            for (let i = 0; i < 4 && node; i++) {
+                text += ' ' + (node.innerText || node.textContent || '');
+                node = node.parentElement;
+            }
+            const prev = el.previousElementSibling;
+            const next = el.nextElementSibling;
+            if (prev) text += ' ' + (prev.innerText || prev.textContent || '');
+            if (next) text += ' ' + (next.innerText || next.textContent || '');
+            return text.replace(/\s+/g, ' ').trim().slice(0, 240);
+        };
+
+        const hasNearbyTextInput = (el) => {
+            // Start at the parent: a canvas with id="captchaCanvas" would match
+            // the captcha selectors itself via closest(), hiding the input next
+            // to it.  Walk up to the form or the captcha wrapper instead.
+            let container = el.parentElement;
+            while (container) {
+                const marker = `${container.id || ''} ${container.className || ''}`;
+                if (container.tagName === 'FORM' || /captcha|turnstile|recaptcha|h-captcha/i.test(marker)) break;
+                container = container.parentElement;
+            }
+            container = container || el.parentElement;
+            if (!container) return false;
+            return Array.from(container.querySelectorAll('input[type="text"], input:not([type]), textarea')).some(isVisible);
+        };
+
         const captchaElements = [];
-        const captchaCandidates = Array.from(document.querySelectorAll('img, canvas, [id*="captcha" i], [class*="captcha" i]'));
+        const seenCaptcha = new Set();
+        const addCaptcha = (el, kind, prompt) => {
+            const key = (el.id || '') + '|' + el.tagName + '|' + (el.getAttribute('src') || '') + '|' + kind;
+            if (seenCaptcha.has(key)) return;
+            seenCaptcha.add(key);
+            const rect = el.getBoundingClientRect();
+            captchaElements.push({
+                tagName: el.tagName.toLowerCase(),
+                kind: kind,
+                id: el.id || null,
+                name: el.name || null,
+                prompt: (prompt || '').slice(0, 240),
+                src: (el.getAttribute('src') || '').slice(0, 300),
+                rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height }
+            });
+        };
+
+        // Image/canvas text challenges, Cloudflare Turnstile, reCAPTCHA,
+        // hCaptcha, sliders and drag puzzles.  Classification is only used to
+        // give the human better instructions; no challenge is solved here.
+        const captchaCandidates = Array.from(document.querySelectorAll(
+            'img, canvas, iframe, [id*="captcha" i], [class*="captcha" i], '
+            + '[class*="turnstile" i], [id*="turnstile" i], '
+            + '[class*="g-recaptcha" i], [class*="h-captcha" i], [data-sitekey]'
+        ));
         for (const el of captchaCandidates) {
             if (!isVisible(el)) continue;
-            const idLower = (el.id || '').toLowerCase();
-            const classLower = String(el.className || '').toLowerCase();
-            const src = el.src || '';
             const tagName = el.tagName.toLowerCase();
-            if (!['canvas', 'img'].includes(tagName)) continue;
-            if (idLower.includes('captcha') || classLower.includes('captcha') || src.includes('captcha') || tagName === 'canvas') {
+            const idLower = String(el.id || '').toLowerCase();
+            const classLower = String(el.className || '').toLowerCase();
+            const src = String(el.getAttribute('src') || '').toLowerCase();
+            const combined = `${idLower} ${classLower} ${src} ${getNearbyText(el).toLowerCase()}`;
+            // A wrapper such as <div class="captcha-box"> is not the challenge
+            // itself.  Skip it when it contains the real widget; otherwise the
+            // wrapper is reported as an unknown challenge and forces a live
+            // handoff even for a simple text CAPTCHA.
+            if (['div', 'section', 'span', 'form', 'fieldset', 'label', 'p'].includes(tagName)) {
+                const widgetMarker = /g-recaptcha|h-captcha|cf-turnstile|turnstile|recaptcha/.test(`${idLower} ${classLower}`);
+                const hasWidget = el.querySelector(
+                    'canvas, img, iframe, input, textarea, [data-sitekey], .g-recaptcha, .h-captcha, .cf-turnstile'
+                );
+                if (hasWidget && !widgetMarker) continue;
+            }
+            let kind = null;
+            if (tagName === 'iframe' || /turnstile|recaptcha|hcaptcha|cloudflare/.test(combined)) {
+                kind = 'interactive';
+            } else if (/slider|slide\s*to|drag\s*the|drag\s*and\s*drop|puzzle/.test(combined)) {
+                kind = /drag/.test(combined) ? 'drag' : 'slider';
+            } else if (tagName === 'canvas' || tagName === 'img') {
+                if (hasNearbyTextInput(el)) kind = 'text';
+                else if (idLower.includes('captcha') || classLower.includes('captcha') || src.includes('captcha')) kind = 'unknown';
+            }
+            if (!kind && (idLower.includes('captcha') || classLower.includes('captcha') || src.includes('captcha'))) {
+                // A text field whose name/id mentions captcha is where the
+                // human types the answer; it is not an interactive widget.
+                kind = ['input', 'textarea'].includes(tagName) ? 'text' : 'unknown';
+            }
+            if (kind) {
                 const rect = el.getBoundingClientRect();
-                if (rect.width > 40 && rect.height > 15) {
-                    captchaElements.push({
-                        tagName: tagName,
-                        id: el.id || null,
-                        rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height }
-                    });
+                if (rect.width > 20 && rect.height > 12) {
+                    addCaptcha(el, kind, getNearbyText(el));
                 }
+            }
+        }
+
+        // Some portals show a text prompt instead of an image.
+        for (const el of document.querySelectorAll('input[id*="captcha" i], input[name*="captcha" i]')) {
+            if (!isVisible(el)) continue;
+            if (captchaElements.some((item) => item.id && item.id === el.id)) continue;
+            const surrounding = getNearbyText(el).toLowerCase();
+            if (surrounding.includes('captcha') || surrounding.includes('security code') || surrounding.includes('enter the code')) {
+                addCaptcha(el, 'text', getNearbyText(el));
             }
         }
 
@@ -152,6 +236,33 @@ class DOMScanner:
 
         const bodyText = (document.body && document.body.innerText ? document.body.innerText : '').replace(/\s+/g, ' ').trim();
         const lowerBody = bodyText.toLowerCase();
+        const fileInputs = Array.from(document.querySelectorAll('input[type="file"]'))
+            .filter(isVisible)
+            .map((el) => {
+                const rect = el.getBoundingClientRect();
+                return {
+                    id: el.id || '',
+                    name: el.name || '',
+                    label: getLabel(el),
+                    accept: el.accept || '',
+                    capture: el.getAttribute('capture') || '',
+                    hasFile: Boolean(el.files && el.files.length),
+                    rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height }
+                };
+            });
+        const livePhotoRequired = /live\s*(photo|photograph|picture)|webcam|camera|capture\s*(photo|image)|liveness/.test(lowerBody)
+            && (fileInputs.length > 0 || !!document.querySelector('video'));
+        const otpInputs = Array.from(document.querySelectorAll('input'))
+            .filter((el) => isVisible(el) && /otp|one[-\s]?time|verification\s*code|auth(entication)?\s*code/i.test(
+                `${el.id || ''} ${el.name || ''} ${el.placeholder || ''}`
+            ))
+            .map((el) => ({
+                id: el.id || '',
+                name: el.name || '',
+                label: getLabel(el),
+                type: (el.type || 'text').toLowerCase()
+            }));
+        const formAction = document.querySelector('form') ? (document.querySelector('form').getAttribute('action') || '') : '';
         const paymentWords = ['application fee', 'pay fee', 'payment', 'checkout', 'net banking', 'debit card', 'credit card', 'upi', 'proceed to pay'];
         const paymentSignals = paymentWords.filter(w => lowerBody.includes(w)).length;
         const activeSection = document.querySelector('.form-section.active, .section.active, [data-section].active');
@@ -178,7 +289,11 @@ class DOMScanner:
             hasPaymentButton: !!paymentButton,
             activeSectionId: activeSection ? (activeSection.id || '') : '',
             stepHeading: heading ? (heading.innerText || '').trim().slice(0, 160) : '',
-            formCount: document.querySelectorAll('form').length
+            formCount: document.querySelectorAll('form').length,
+            formAction: formAction.slice(0, 500),
+            fileInputs: fileInputs,
+            livePhotoRequired: livePhotoRequired,
+            otpInputs: otpInputs
         };
     }
     """

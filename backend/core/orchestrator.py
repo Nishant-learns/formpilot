@@ -24,9 +24,12 @@ from playwright.async_api import (
 from . import field_registry, settings
 from .biometrics import BiometricCompressor
 from .dom_scanner import DOMScanner
+from .form_model import FormModel
+from .live_browser import LiveBrowserSession, live_sessions
 from .navigator import ResilientNavigator
 from .oracle import OracleResult, PortalOracle
 from .portal_adapter import BasePortalAdapter, get_adapter
+from .recipe import RecipeStore
 from .run_store import RunStore
 from .tinyfish_client import TinyFishClient, TinyFishError, TinyFishSession
 from .vault import CandidateVault, VaultManager
@@ -51,6 +54,7 @@ class FormPilotOrchestrator:
         self.page: Optional[Page] = None
         self._adapter: Optional[BasePortalAdapter] = None
         self._session: Optional[TinyFishSession] = None
+        self.live: Optional[LiveBrowserSession] = None
 
         self.is_running = False
         self.paused = False
@@ -68,7 +72,15 @@ class FormPilotOrchestrator:
         self.target_url = ""
         self.query = ""
         self.mode = "local"
+        self.run_mode = "fill"
         self.oracle_result: Optional[OracleResult] = None
+        self.form_map: Optional[Dict[str, Any]] = None
+        self.recipe_store = RecipeStore()
+        self._recipe_status: Optional[Dict[str, Any]] = None
+        self._last_form_fingerprint = ""
+        self._last_recipe_event = ""
+        self._pending_upload: Optional[Dict[str, Any]] = None
+        self._session_values: Dict[str, str] = {}
 
         self._otp_cleared = False
         self._captcha_signature = ""
@@ -81,6 +93,11 @@ class FormPilotOrchestrator:
     # ---------------------------------------------------------------- public API
 
     def get_state(self) -> Dict[str, Any]:
+        browser_open = False
+        try:
+            browser_open = bool(self.page and not self.page.is_closed())
+        except Exception:
+            browser_open = False
         return {
             "state": self.state,
             "is_running": self.is_running,
@@ -89,6 +106,11 @@ class FormPilotOrchestrator:
             "query": self.query,
             "target_url": self.target_url,
             "mode": self.mode,
+            "run_mode": self.run_mode,
+            "browser_open": browser_open,
+            "live_session": self.live.public_info() if self.live and not self.live.closed else None,
+            "form_map": self.form_map,
+            "recipe": self._recipe_status,
             "current_section": self.current_section,
             "active_gate": self.active_gate,
             "filled_audit": self._public_audit(),
@@ -96,10 +118,12 @@ class FormPilotOrchestrator:
             "oracle": self.oracle_result.model_dump() if self.oracle_result else None,
         }
 
-    async def start_application(self, query_or_url: str):
+    async def start_application(self, query_or_url: str, run_mode: str = "fill"):
         if self.is_running:
             await self.emit_event("SENSE", "An application is already in progress.", "Ek application pehle se chal rahi hai.")
             return
+        if run_mode not in {"fill", "inspect"}:
+            raise AgentRunError("Unknown run mode. Use 'fill' or 'inspect'.")
 
         if self.browser or self.page:
             await self._cleanup()
@@ -107,6 +131,7 @@ class FormPilotOrchestrator:
         self.paused = False
         self._is_paused = False
         self._pending_user_response = None
+        self._pending_upload = None
         self.filled_audit = []
         self.current_section = 1
         self.active_gate = None
@@ -114,6 +139,12 @@ class FormPilotOrchestrator:
         self.query = (query_or_url or "").strip()
         self.target_url = ""
         self.oracle_result = None
+        self.run_mode = run_mode
+        self.form_map = None
+        self._recipe_status = None
+        self._last_form_fingerprint = ""
+        self._last_recipe_event = ""
+        self._session_values = {}
         self._otp_cleared = False
         self._captcha_signature = ""
         self._last_error_signature = ""
@@ -122,7 +153,7 @@ class FormPilotOrchestrator:
         self._idle_cycles = 0
         self.run_id = f"run-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
         self.state = "RESOLVING"
-        self.run_store.start(self.run_id, {"query": self.query, "mode": self.mode})
+        self.run_store.start(self.run_id, {"query": self.query, "mode": self.mode, "run_mode": self.run_mode})
 
         try:
             await self.emit_event(
@@ -157,6 +188,11 @@ class FormPilotOrchestrator:
                 "Page load ho gaya. Ab form ki details dekh rahe hain...",
             )
 
+            await self._observe_page(force_emit=True)
+            if self.run_mode == "inspect":
+                await self._enter_inspect_mode()
+                return
+
             self.state = "RUNNING"
             await self._autonomous_drive_loop()
 
@@ -184,12 +220,12 @@ class FormPilotOrchestrator:
             )
         finally:
             self.is_running = False
-            if self.state != "AWAITING_PAYMENT":
+            if self.state not in {"AWAITING_PAYMENT", "INSPECT_READY"}:
                 await self._cleanup()
             self.run_store.finish(
                 self.run_id or "unknown",
                 self.state,
-                {"error": self.last_error, "target_url": self.target_url},
+                {"error": self.last_error, "target_url": self.target_url, "run_mode": self.run_mode},
             )
 
     async def stop(self):
@@ -292,7 +328,39 @@ class FormPilotOrchestrator:
             raise AgentRunError("Could not open a browser page.")
         self._adapter = get_adapter(target_url)
 
+        try:
+            self.live = LiveBrowserSession(
+                self.page,
+                run_id=self.run_id or "",
+                mode=self.mode,
+                run_mode=self.run_mode,
+            )
+            await self.live.start()
+            live_sessions.add(self.live)
+            if self.run_mode == "inspect":
+                self.live.set_allow_control(True, "Inspect mode: the browser is yours.")
+            await self.emit_event(
+                "ACT",
+                "Live browser ready. You can see the real page and take over when asked.",
+                "Live browser ready hai. Asli page dikh raha hai; zarurat par aap control le sakte hain.",
+            )
+        except Exception:
+            traceback.print_exc()
+            self.live = None
+            await self.emit_event(
+                "SENSE",
+                "The live view could not start, but the application can continue.",
+                "Live view shuru nahi ho paya, lekin application jaari rah sakti hai.",
+            )
+
     async def _cleanup(self):
+        if self.live:
+            live_sessions.remove(self.live)
+            try:
+                await self.live.stop()
+            except Exception:
+                pass
+            self.live = None
         try:
             if self.browser:
                 await self.browser.close()
@@ -356,6 +424,10 @@ class FormPilotOrchestrator:
             "run_id": self.run_id,
             "state": self.state,
             "mode": self.mode,
+            "run_mode": self.run_mode,
+            "live_session": self.live.public_info() if self.live and not self.live.closed else None,
+            "form_map": self.form_map,
+            "recipe": self._recipe_status,
         }
         if self.broadcast_fn:
             try:
@@ -390,6 +462,208 @@ class FormPilotOrchestrator:
         except Exception as exc:
             raise AgentRunError("The page is still loading. Please wait a moment and try again.") from exc
 
+    async def _observe_page(self, *, force_emit: bool = False) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        """Read the page, build the normalized form map, and compare it to memory."""
+        dom = await self._scan_dom()
+        try:
+            form_map = FormModel.build_form_map(
+                dom,
+                self.page.url if self.page else self.target_url,
+                vault=self.vault_mgr.vault,
+            )
+            recipe_status = self.recipe_store.match(form_map)
+        except Exception:
+            traceback.print_exc()
+            form_map = {
+                "url": self.page.url if self.page else self.target_url,
+                "page_type": "unknown",
+                "page_confidence": 0,
+                "field_count": len(dom.get("inputs") or []),
+                "fields": [],
+                "error": "The form model could not be built for this page.",
+            }
+            recipe_status = {"status": "new", "confidence": 0, "recipe_id": None, "drift": None}
+
+        self.form_map = form_map
+        self._recipe_status = recipe_status
+        fingerprint = str(form_map.get("fingerprint") or "")
+        recipe_event_key = f"{recipe_status.get('status')}:{fingerprint}:{recipe_status.get('recipe_id')}"
+
+        should_emit = force_emit or fingerprint != self._last_form_fingerprint
+        if should_emit and recipe_event_key != self._last_recipe_event:
+            self._last_form_fingerprint = fingerprint
+            self._last_recipe_event = recipe_event_key
+            status = str(recipe_status.get("status") or "new")
+            if status == "drift":
+                drift = recipe_status.get("drift") or {}
+                await self.emit_event(
+                    "THINK",
+                    f"Portal structure changed: {drift.get('summary') or 'the saved recipe no longer matches.'}",
+                    "Portal ka structure badal gaya hai. Agent page ko dobara padh raha hai.",
+                )
+            elif status == "match":
+                await self.emit_event(
+                    "SENSE",
+                    "Saved portal recipe matched this page. Reusing its field map and locators.",
+                    "Is page ke liye saved recipe mil gayi. Field map aur locators reuse ho rahe hain.",
+                )
+            else:
+                await self.emit_event(
+                    "SENSE",
+                    f"This is a new page in memory: {form_map.get('page_type')} with {form_map.get('field_count', 0)} fields.",
+                    "Yeh page pehli baar dekh rahe hain. Form ko samajh rahe hain.",
+                )
+        return dom, form_map
+
+    async def _enter_inspect_mode(self) -> None:
+        """Stop before touching the form and leave the real browser open."""
+        self.is_running = False
+        self.state = "INSPECT_READY"
+        if self.live:
+            self.live.set_allow_control(True, "Inspect mode: the browser is yours. Nothing will be filled or submitted.")
+
+        saved = None
+        if self._has_replayable_structure(self.form_map or {}):
+            try:
+                saved = self.recipe_store.save_from_form_map(
+                    self.form_map or {},
+                    source="inspect",
+                    status="draft",
+                )
+                if self._recipe_status is not None:
+                    self._recipe_status["saved_recipe"] = RecipeStore.summary(saved)
+            except Exception:
+                traceback.print_exc()
+
+        form_map = self.form_map or {}
+        message = (
+            f"Inspect only: {form_map.get('field_count', 0)} fields found on a "
+            f"{form_map.get('page_type', 'unknown')} page. Nothing was filled, clicked, paid or submitted."
+        )
+        await self.emit_event(
+            "INSPECT",
+            message,
+            "Inspect-only mode: form ka structure dekh liya. Kuch bhara ya submit nahi kiya.",
+            force_screenshot=True,
+        )
+
+    @staticmethod
+    def _has_replayable_structure(form_map: Dict[str, Any]) -> bool:
+        """An empty SPA shell is not a useful recipe.
+
+        A page with fields or gateway choices has replayable structure.  A
+        loading shell with neither must not overwrite a good recipe.
+        """
+        return bool(form_map.get("fields")) or bool(form_map.get("gateways"))
+
+    def _save_current_recipe(self, source: str = "agent") -> None:
+        if not self.form_map or not self._has_replayable_structure(self.form_map):
+            return
+        try:
+            saved = self.recipe_store.save_from_form_map(
+                self.form_map,
+                source=source,
+                status="draft",
+            )
+            if self._recipe_status is not None:
+                self._recipe_status["saved_recipe"] = RecipeStore.summary(saved)
+        except Exception:
+            traceback.print_exc()
+
+    async def refresh_inspection(self) -> Dict[str, Any]:
+        if not self.page:
+            raise AgentRunError("There is no live browser to inspect. Open a portal first.")
+        dom, form_map = await self._observe_page(force_emit=True)
+        if self._has_replayable_structure(form_map):
+            try:
+                saved = self.recipe_store.save_from_form_map(
+                    form_map, source="inspect", status="draft"
+                )
+                if self._recipe_status is not None:
+                    self._recipe_status["saved_recipe"] = RecipeStore.summary(saved)
+            except Exception:
+                traceback.print_exc()
+        self.state = "INSPECT_READY" if self.run_mode == "inspect" else self.state
+        await self.emit_event(
+            "INSPECT",
+            f"Page rescanned: {form_map.get('field_count', 0)} fields on a {form_map.get('page_type', 'unknown')} page.",
+            "Page dobara scan ho gaya.",
+            force_screenshot=True,
+        )
+        return form_map
+
+    async def attach_upload(self, path: str, field_key: str) -> Dict[str, Any]:
+        """Attach a user-provided file to the correct file input.
+
+        The file is used only in the live portal session.  It is not copied
+        into the vault and it is not reused for another portal.
+        """
+        if not self.page:
+            return {"success": False, "message": "There is no live browser to upload to."}
+        upload_path = Path(path)
+        if not upload_path.is_file():
+            return {"success": False, "message": "The uploaded file could not be found."}
+
+        try:
+            dom = await self._scan_dom()
+        except Exception:
+            dom = {"inputs": [], "fileInputs": []}
+
+        target = None
+        inputs = [item for item in (dom.get("inputs") or []) if str(item.get("type") or "").lower() == "file"]
+        for item in inputs:
+            sem_key, _ = DOMScanner.classify_field(item)
+            if sem_key == field_key or item.get("name") == field_key or item.get("id") == field_key:
+                target = item
+                break
+        if target is None:
+            if len(inputs) == 1:
+                target = inputs[0]
+            elif inputs:
+                # Never guess between a photo and a signature field.  A wrong
+                # file would be sent to the portal under the user's name.
+                return {
+                    "success": False,
+                    "message": (
+                        "More than one file field is visible and none matched "
+                        f"'{field_key}'. Attach the file in the live browser, then continue."
+                    ),
+                }
+
+        try:
+            if target and target.get("id"):
+                locator = self.page.locator(f"#{target.get('id')}").first
+            elif target and target.get("name"):
+                locator = self.page.locator(f"[name='{target.get('name')}']").first
+            elif target is not None:
+                index = int(target.get("index") or 0)
+                locator = self.page.locator("input[type='file']").nth(index)
+            else:
+                locator = self.page.locator("input[type='file']").first
+            if await locator.count() == 0:
+                return {"success": False, "message": "This page does not have a visible file input."}
+            await locator.set_input_files(str(upload_path), timeout=15000)
+        except Exception as exc:
+            return {"success": False, "message": f"The portal did not accept the file: {exc}"}
+
+        self._record_fill(
+            target or {"label": field_key, "type": "file"},
+            field_key,
+            str(upload_path),
+            "file",
+        )
+        await self.emit_event(
+            "ACT",
+            f"Uploaded the file for {field_key.replace('_', ' ')}.",
+            f"{field_key.replace('_', ' ')} ke liye file upload ho gayi.",
+        )
+        return {
+            "success": True,
+            "field_key": field_key,
+            "message": "File attached to the live portal. It was not saved to your vault.",
+        }
+
+
     async def _autonomous_drive_loop(self):
         while self.is_running:
             if self._is_paused:
@@ -398,7 +672,7 @@ class FormPilotOrchestrator:
                 continue
             self.state = "RUNNING"
 
-            dom = await self._scan_dom()
+            dom, _form_map = await self._observe_page()
             adapter = self._adapter or get_adapter(self.page.url if self.page else "")
             self._adapter = adapter
             step = adapter.current_step(self.page, dom)
@@ -444,7 +718,7 @@ class FormPilotOrchestrator:
                 continue
 
             await self._fill_form(dom)
-            await self._handle_otp()
+            await self._handle_otp(dom)
             fresh = await self._scan_dom()
             await self._handle_captcha(fresh)
             fresh = await self._scan_dom()
@@ -571,14 +845,20 @@ class FormPilotOrchestrator:
                     "field_name": record.get("field_name"),
                     "field_type": record.get("field_type"),
                     "status": record.get("status", "FILLED"),
+                    "provenance": record.get("provenance", "profile"),
                     "timestamp": record.get("timestamp"),
                 }
             )
         return list(reversed(public))
 
-    def _record_fill(self, item: Dict[str, Any], sem_key: str, value: str, method: str):
+    def _record_fill(self, item: Dict[str, Any], sem_key: str, value: str, method: str, *, custom: bool = False):
         key = item.get("id") or item.get("name") or sem_key
-        display = field_registry.mask_value(sem_key, value) if sem_key != "photo_upload" and sem_key != "signature_upload" else os.path.basename(str(value))
+        if custom or sem_key.startswith(("custom_", "unknown_")):
+            display = "provided by you"
+        elif sem_key not in {"photo_upload", "signature_upload", "matric_cert_upload"}:
+            display = field_registry.mask_value(sem_key, value)
+        else:
+            display = os.path.basename(str(value))
         record = {
             "field_label": item.get("label") or sem_key,
             "vault_key": sem_key,
@@ -588,6 +868,7 @@ class FormPilotOrchestrator:
             "field_name": item.get("name") or "",
             "field_type": item.get("type") or "text",
             "method": method,
+            "provenance": "user-entered-now" if custom else "profile",
             "timestamp": datetime.datetime.now().strftime("%H:%M:%S"),
             "status": "FILLED",
             "_key": key,
@@ -608,23 +889,30 @@ class FormPilotOrchestrator:
                 continue
 
             sem_key, _is_verify = DOMScanner.classify_field(item)
+            custom_field = False
             if not sem_key:
-                continue
-
-            if sem_key in {"photo_upload", "signature_upload", "matric_cert_upload"}:
-                if await self._handle_upload(item, sem_key):
-                    filled += 1
-                continue
-
-            value = vault.find_field_value(sem_key)
-            if sem_key == "dob" and value:
-                value = vault.get_formatted_dob("DD/MM/YYYY")
-
-            if not value:
-                value = await self._ask_for_missing_field(item, sem_key)
+                if not self._should_ask_unknown(item):
+                    continue
+                value = await self._ask_for_unknown_field(item)
                 if not value:
                     continue
-                vault = self.vault_mgr.vault
+                sem_key = self._custom_key(item)
+                custom_field = True
+            else:
+                if sem_key in {"photo_upload", "signature_upload", "matric_cert_upload"}:
+                    if await self._handle_upload(item, sem_key):
+                        filled += 1
+                    continue
+
+                value = vault.find_field_value(sem_key)
+                if sem_key == "dob" and value:
+                    value = vault.get_formatted_dob("DD/MM/YYYY")
+
+                if not value:
+                    value = await self._ask_for_missing_field(item, sem_key)
+                    if not value:
+                        continue
+                    vault = self.vault_mgr.vault
 
             try:
                 result = await self.page.evaluate(DOMScanner.INJECTION_JS, [item, str(value)])
@@ -633,7 +921,7 @@ class FormPilotOrchestrator:
 
             if result.get("success"):
                 filled += 1
-                self._record_fill(item, sem_key, str(value), result.get("method", "input"))
+                self._record_fill(item, sem_key, str(value), result.get("method", "input"), custom=custom_field)
                 await self.emit_event(
                     "ACT",
                     f"Filled: {item.get('label') or sem_key}",
@@ -647,6 +935,105 @@ class FormPilotOrchestrator:
                 )
             await asyncio.sleep(0.08)
         return filled
+
+    @staticmethod
+    def _should_ask_unknown(item: Dict[str, Any]) -> bool:
+        field_type = str(item.get("type") or "text").lower()
+        if field_type in {"file", "checkbox", "radio", "hidden", "submit", "button", "reset", "image", "search"}:
+            return False
+        label = str(item.get("label") or "").strip()
+        if len(label) < 2:
+            return False
+        if re.search(r"\b(?:search|filter|find|newsletter|subscribe|coupon|promo)\b", label, re.IGNORECASE):
+            return False
+        # CAPTCHA and OTP fields have their own checkpoints.  Asking for a
+        # reusable "custom field" value here would be wrong and would leak a
+        # one-time secret into the profile.
+        haystack = " ".join(
+            str(item.get(key) or "") for key in ("label", "name", "id", "placeholder")
+        )
+        if re.search(
+            r"captcha|security\s*(?:check|code)|otp|one[-\s]?time|verification\s*code|auth(?:entication)?\s*code",
+            haystack,
+            re.IGNORECASE,
+        ):
+            return False
+        return True
+
+    @staticmethod
+    def _custom_key(item: Dict[str, Any]) -> str:
+        label = str(item.get("label") or item.get("name") or item.get("id") or "field")
+        slug = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")[:48] or "field"
+        return f"custom_{slug}"
+
+    async def _ask_for_unknown_field(self, item: Dict[str, Any]) -> str:
+        label = str(item.get("label") or item.get("name") or "this field")
+        custom_key = self._custom_key(item)
+        if custom_key in self._session_values:
+            return self._session_values[custom_key]
+
+        await self.emit_event(
+            "THINK",
+            f"The form asks for something new: {label}",
+            f"Form mein ek nayi detail chahiye: {label}",
+        )
+        options = [
+            {"text": str(option.get("text") or ""), "value": str(option.get("value") or "")}
+            for option in (item.get("options") or [])[:60]
+        ]
+        gate = {
+            "gate_type": "UNKNOWN_FIELD",
+            "title": "The form asks for something new",
+            "hindi_title": "Form mein nayi detail chahiye",
+            "field_key": custom_key,
+            "field_label": label,
+            "input_type": item.get("type") or "text",
+            "options": options,
+            "required": bool(item.get("required")),
+            "description": (
+                "This label does not match a known field with enough confidence. "
+                "FormPilot will not guess. Enter the value yourself, or skip if the form allows it."
+            ),
+            "why": "No high-confidence match in the field registry.",
+            "can_skip": not bool(item.get("required")),
+            "live_session": self.live.public_info() if self.live and not self.live.closed else None,
+        }
+        self.active_gate = gate
+        self.state = "WAITING_FOR_USER"
+        if self.live:
+            self.live.set_allow_control(True, "Fill this new field in the live browser, or answer here.")
+        await self.emit_event(
+            "DECIDE",
+            f"Waiting for: {label}",
+            "Aapke input ka intezaar hai.",
+            gate,
+            force_screenshot=True,
+        )
+        response = await self._wait_for_user_response()
+        self.active_gate = None
+        if self.live:
+            self.live.set_allow_control(False, "The agent is driving again.")
+        self.state = "RUNNING" if self.is_running else self.state
+
+        action = str(response.get("action") or "")
+        if action in {"STOPPED", "TIMEOUT", "DISMISS", "SKIP"}:
+            if action == "TIMEOUT":
+                self.is_running = False
+            return ""
+        value = str(response.get("value") or response.get("text") or "").strip()
+        if not value:
+            return ""
+        self._session_values[custom_key] = value
+        try:
+            self.vault_mgr.add_custom_field(custom_key, value)
+        except Exception:
+            pass
+        await self.emit_event(
+            "THINK",
+            f"Saved '{label}' as a custom profile field for this account.",
+            f"'{label}' ko custom profile field ke roop mein save kar diya.",
+        )
+        return value
 
     async def _ask_for_missing_field(self, item: Dict[str, Any], sem_key: str) -> str:
         label = item.get("label") or sem_key
@@ -662,10 +1049,16 @@ class FormPilotOrchestrator:
             "field_key": sem_key,
             "field_label": label,
             "input_type": item.get("type") or "text",
+            "required": bool(item.get("required")),
+            "can_skip": not bool(item.get("required")),
+            "live_session": self.live.public_info() if self.live and not self.live.closed else None,
+            "can_takeover": bool(self.live),
             "description": f"This portal asks for {label}. Add it once and FormPilot will reuse it in future applications.",
         }
         self.active_gate = gate
         self.state = "WAITING_FOR_USER"
+        if self.live:
+            self.live.set_allow_control(True, "Enter this detail in the live browser, or answer here.")
         await self.emit_event(
             "DECIDE",
             f"Waiting for: {label}",
@@ -675,10 +1068,14 @@ class FormPilotOrchestrator:
         )
         response = await self._wait_for_user_response()
         self.active_gate = None
+        if self.live:
+            self.live.set_allow_control(False, "The agent is driving again.")
         self.state = "RUNNING" if self.is_running else self.state
-        if response.get("action") in {"STOPPED", "TIMEOUT", "DISMISS"}:
+        if response.get("action") in {"STOPPED", "TIMEOUT", "DISMISS", "SKIP"}:
             if response.get("action") == "TIMEOUT":
                 self.is_running = False
+            return ""
+        if response.get("action") == "HANDOFF_COMPLETE":
             return ""
         value = str(response.get("value") or response.get("text") or "").strip()
         if value:
@@ -689,10 +1086,14 @@ class FormPilotOrchestrator:
         return value
 
     async def _handle_upload(self, item: Dict[str, Any], sem_key: str) -> bool:
-        try:
-            BiometricCompressor.generate_sample_assets()
-        except Exception:
-            pass
+        live_photo = bool(
+            sem_key == "photo_upload"
+            and (
+                (self.form_map or {}).get("live_photo_required")
+                or str(item.get("capture") or "").strip()
+                or "live" in f"{item.get('label') or ''} {item.get('name') or ''}".lower()
+            )
+        )
 
         vault = self.vault_mgr.vault
         if sem_key == "photo_upload":
@@ -708,15 +1109,17 @@ class FormPilotOrchestrator:
         candidate = Path(path_value) if path_value else None
         if candidate and not candidate.is_absolute():
             candidate = settings.ROOT_DIR / candidate
-        if not candidate or not candidate.exists():
+        if (not candidate or not candidate.exists()) and settings.DEMO_MODE and getattr(self._adapter, "name", "") == "simulator":
+            try:
+                BiometricCompressor.generate_sample_assets()
+            except Exception:
+                pass
             candidate = fallback
-        if not candidate or not candidate.exists():
-            await self.emit_event(
-                "SENSE",
-                f"Please add a file for: {item.get('label') or sem_key}",
-                f"{item.get('label') or sem_key} ke liye file add karein.",
-            )
-            return False
+
+        if live_photo or not candidate or not candidate.exists():
+            if live_photo:
+                return await self._upload_handoff(item, sem_key, live_photo=True)
+            return await self._upload_handoff(item, sem_key, live_photo=False)
 
         try:
             locator = self.page.locator(f"#{item.get('id')}") if item.get("id") else self.page.locator(f"[name='{item.get('name')}']")
@@ -726,10 +1129,10 @@ class FormPilotOrchestrator:
         except Exception:
             await self.emit_event(
                 "SENSE",
-                f"Could not upload {item.get('label') or sem_key}.",
-                f"{item.get('label') or sem_key} upload nahi ho paya.",
+                f"Could not upload {item.get('label') or sem_key}. Please attach it in the live browser.",
+                f"{item.get('label') or sem_key} upload nahi ho paya. Live browser mein attach karein.",
             )
-            return False
+            return await self._upload_handoff(item, sem_key, live_photo=live_photo)
 
         self._record_fill(item, sem_key, str(candidate), "file")
         await self.emit_event(
@@ -739,17 +1142,113 @@ class FormPilotOrchestrator:
         )
         return True
 
+    async def _upload_handoff(self, item: Dict[str, Any], sem_key: str, *, live_photo: bool) -> bool:
+        label = str(item.get("label") or sem_key)
+        gate_type = "LIVE_PHOTO" if live_photo else "FILE_UPLOAD"
+        await self.emit_event(
+            "SENSE",
+            f"Please provide a file for: {label}",
+            f"{label} ke liye file chahiye.",
+        )
+        gate = {
+            "gate_type": gate_type,
+            "handoff_type": "live_photo" if live_photo else "file_upload",
+            "title": "Your camera or file is needed",
+            "hindi_title": "Aapka photo ya file chahiye",
+            "field_key": sem_key,
+            "field_label": label,
+            "accept": str(item.get("accept") or "image/*"),
+            "max_size_mb": 5,
+            "live_photo_required": live_photo,
+            "live_session": self.live.public_info() if self.live and not self.live.closed else None,
+            "description": (
+                "This portal asks for a live photo. Capture it with your own camera or choose a recent photo. "
+                "FormPilot never uses a stock image or another person's photo."
+                if live_photo
+                else f"This portal needs a file for {label}. Choose a file from your device."
+            ),
+            "instructions": (
+                [
+                    "Use your own front camera or a recent photo of yourself.",
+                    "If the portal insists on its own live webcam step, do that step directly on the portal.",
+                    "FormPilot attaches the file to this browser session only.",
+                ]
+                if live_photo
+                else [
+                    "Choose the exact document the portal asks for.",
+                    "Check the format and size before uploading.",
+                    "The file is attached to this browser session only.",
+                ]
+            ),
+            "privacy_note": "The file is attached to the live portal and is not added to your saved profile.",
+        }
+        self.active_gate = gate
+        self.state = "WAITING_FOR_USER"
+        if self.live:
+            self.live.set_allow_control(True, "Attach the requested file in the live browser.")
+        await self.emit_event(
+            "DECIDE",
+            f"Waiting for: {label}",
+            f"{label} ka intezaar hai.",
+            gate,
+            force_screenshot=True,
+        )
+        response = await self._wait_for_user_response()
+        self.active_gate = None
+        if self.live:
+            self.live.set_allow_control(False, "The agent is driving again.")
+        self.state = "RUNNING" if self.is_running else self.state
+
+        action = response.get("action")
+        if action in {"STOPPED", "TIMEOUT", "DISMISS"}:
+            if action == "TIMEOUT":
+                self.is_running = False
+            return False
+        if action not in {"UPLOAD_COMPLETE", "HANDOFF_COMPLETE", "CONTINUE"}:
+            return False
+
+        # The endpoint may have attached the file already.  Verify it, but
+        # never pretend the upload worked if the input is still empty.
+        try:
+            dom = await self._scan_dom()
+            file_inputs = [entry for entry in (dom.get("inputs") or []) if str(entry.get("type") or "").lower() == "file"]
+            attached = any(bool(entry.get("value")) for entry in file_inputs)
+            if not attached:
+                attached = any(bool(entry.get("hasFile")) for entry in (dom.get("fileInputs") or []))
+        except Exception:
+            attached = False
+        if attached:
+            await self.emit_event(
+                "ACT",
+                f"File attached for {label}.",
+                f"{label} ke liye file attach ho gayi.",
+            )
+            return True
+
+        await self.emit_event(
+            "SENSE",
+            f"No file is attached for {label} yet. Attach it in the live browser, then continue.",
+            f"{label} ke liye abhi file attach nahi hui. Live browser mein attach karein.",
+        )
+        return False
+
+
     # ---------------------------------------------------------------- security checks
 
-    async def _handle_otp(self):
+    async def _handle_otp(self, dom: Optional[Dict[str, Any]] = None):
         if self._otp_cleared or not self.page:
             return
-        selector = "#btn-send-otp, button:has-text('Send OTP'), button:has-text('Get OTP')"
+        dom = dom or {}
+        otp_inputs = dom.get("otpInputs") or []
+        selector = "#btn-send-otp, button:has-text('Send OTP'), button:has-text('Get OTP'), button:has-text('Send code')"
+        button = None
         try:
-            button = self.page.locator(selector).first
-            if await button.count() == 0 or not await button.is_visible():
-                return
+            candidate = self.page.locator(selector).first
+            if await candidate.count() > 0 and await candidate.is_visible():
+                button = candidate
         except Exception:
+            button = None
+        if button is None and not otp_inputs:
             return
 
         await self.emit_event(
@@ -757,11 +1256,12 @@ class FormPilotOrchestrator:
             "The portal needs to verify your phone number.",
             "Portal phone number verify karna chahta hai.",
         )
-        try:
-            await button.click(timeout=8000)
-        except Exception:
-            return
-        await self.page.wait_for_timeout(900)
+        if button is not None:
+            try:
+                await button.click(timeout=8000)
+            except Exception:
+                pass
+            await self.page.wait_for_timeout(900)
 
         config = self.tinyfish_mgr.config
         gate = {
@@ -769,16 +1269,24 @@ class FormPilotOrchestrator:
             "title": "Enter the verification code",
             "hindi_title": "Verification code enter karein",
             "hindi_audio_text": "Aapke phone par code bheja gaya hai. Woh code yahan enter karein.",
-            "description": "We sent a 6-digit code to the phone number saved in your details. FormPilot never stores this code.",
+            "description": "Enter the 6-digit code sent to the phone number saved in your details. FormPilot never stores this code.",
             "recipient": self._masked_phone(self.vault_mgr.vault.mobile),
             "ntfy_topic": config.ntfy_topic,
             "ntfy_url": f"https://ntfy.sh/{config.ntfy_topic}",
+            "live_session": self.live.public_info() if self.live and not self.live.closed else None,
+            "can_takeover": bool(self.live),
+            "instructions": [
+                "You can type the code below, or enter it directly in the live portal.",
+                "The code is used once and is never stored.",
+            ],
         }
         if settings.DEMO_MODE:
             gate["demo_otp"] = settings.DEMO_OTP
             gate["description"] += f" Demo mode code: {settings.DEMO_OTP}."
         self.active_gate = gate
         self.state = "WAITING_FOR_USER"
+        if self.live:
+            self.live.set_allow_control(True, "Enter the verification code in the live browser.")
         await self.emit_event(
             "DECIDE",
             "Waiting for the verification code.",
@@ -788,10 +1296,20 @@ class FormPilotOrchestrator:
         )
         response = await self._wait_for_user_response()
         self.active_gate = None
+        if self.live:
+            self.live.set_allow_control(False, "The agent is driving again.")
         self.state = "RUNNING" if self.is_running else self.state
         if response.get("action") in {"STOPPED", "TIMEOUT", "DISMISS"}:
             if response.get("action") == "TIMEOUT":
                 self.is_running = False
+            return
+        if response.get("action") == "HANDOFF_COMPLETE":
+            self._otp_cleared = True
+            await self.emit_event(
+                "ACT",
+                "Verification completed in the live browser.",
+                "Live browser mein verification pura ho gaya.",
+            )
             return
 
         otp = str(response.get("otp") or response.get("code") or "").strip()
@@ -823,11 +1341,32 @@ class FormPilotOrchestrator:
         captchas = dom.get("captchaElements") or []
         if not captchas or not self.page:
             return
-        captcha = captchas[0]
-        signature = f"{dom.get('url')}|{captcha.get('id')}|{captcha.get('tagName')}"
+
+        kinds = sorted({str(captcha.get("kind") or "unknown") for captcha in captchas})
+        signature = f"{dom.get('url')}|{'|'.join(kinds)}|" + "|".join(
+            str(captcha.get("id") or captcha.get("tagName") or "") for captcha in captchas[:3]
+        )
         if signature == self._captcha_signature:
             return
 
+        interactive = next(
+            (
+                captcha
+                for captcha in captchas
+                if str(captcha.get("kind") or "") in {"interactive", "slider", "drag", "unknown"}
+                and str(captcha.get("tagName") or "").lower() in {"iframe", "div", "canvas", "img", "input"}
+            ),
+            None,
+        )
+        if interactive and self.live:
+            await self._captcha_live_handoff(captchas, interactive, signature)
+            return
+
+        # Text CAPTCHA (for example "hJ8ik)3") can be entered in the gate.
+        captcha = next(
+            (item for item in captchas if str(item.get("kind") or "") == "text"),
+            captchas[0],
+        )
         selector = f"#{captcha.get('id')}" if captcha.get("id") else str(captcha.get("tagName") or "canvas")
         image_b64 = ""
         try:
@@ -848,7 +1387,14 @@ class FormPilotOrchestrator:
             "title": "Enter the security check",
             "hindi_title": "Security check enter karein",
             "captcha_image": image_b64,
+            "captcha_kind": str(captcha.get("kind") or "text"),
             "description": "Enter the characters shown in the image. This check is never solved automatically.",
+            "live_session": self.live.public_info() if self.live and not self.live.closed else None,
+            "instructions": [
+                "Read the characters in the live portal or in the image.",
+                "Type them in the box below.",
+                "FormPilot submits the text; a human still solves the challenge.",
+            ],
         }
         self.active_gate = gate
         self.state = "WAITING_FOR_USER"
@@ -865,6 +1411,9 @@ class FormPilotOrchestrator:
         if response.get("action") in {"STOPPED", "TIMEOUT", "DISMISS"}:
             if response.get("action") == "TIMEOUT":
                 self.is_running = False
+            return
+        if response.get("action") == "HANDOFF_COMPLETE":
+            self._captcha_signature = signature
             return
 
         code = str(response.get("code") or response.get("value") or "").strip()
@@ -889,6 +1438,90 @@ class FormPilotOrchestrator:
                 "Security check submit nahi ho paya.",
             )
 
+    async def _captcha_live_handoff(
+        self,
+        captchas: List[Dict[str, Any]],
+        captcha: Dict[str, Any],
+        signature: str,
+    ) -> None:
+        """Pause and let the human solve the challenge in the real browser."""
+        kind = str(captcha.get("kind") or "interactive")
+        prompt = str(captcha.get("prompt") or "").strip()
+        if self.live:
+            self.live.set_allow_control(True, "Solve the security check in the live browser.")
+
+        await self.emit_event(
+            "THINK",
+            "This page has a human-verification challenge. Automation is paused.",
+            "Is page par human verification hai. Automation pause kar diya hai.",
+        )
+        gate = {
+            "gate_type": "LIVE_HANDOFF",
+            "handoff_type": "captcha",
+            "title": "This step needs you",
+            "hindi_title": "Yeh step aapke liye hai",
+            "description": (
+                "Solve the security check directly in the live browser. "
+                "FormPilot will not click it, solve it, or inject a token."
+            ),
+            "captcha_kind": kind,
+            "captcha_prompt": prompt[:200],
+            "live_session": self.live.public_info() if self.live and not self.live.closed else None,
+            "instructions": [
+                "Use the live browser on the left. It is the same page the agent is using.",
+                "Complete the checkbox, image grid, slider or puzzle yourself.",
+                "When the portal shows success, click 'I completed this step'.",
+            ],
+            "solver_policy": "human_handoff_only",
+            "detected_types": sorted({str(item.get("kind") or "unknown") for item in captchas}),
+        }
+        self.active_gate = gate
+        self.state = "WAITING_FOR_USER"
+        await self.emit_event(
+            "DECIDE",
+            "The live browser is yours. Complete the security check, then continue.",
+            "Live browser aapka hai. Security check khud pura karein, phir continue karein.",
+            gate,
+            force_screenshot=True,
+        )
+        response = await self._wait_for_user_response()
+        self.active_gate = None
+        if self.live:
+            self.live.set_allow_control(False, "The agent is driving again.")
+        self.state = "RUNNING" if self.is_running else self.state
+
+        action = response.get("action")
+        if action in {"STOPPED", "TIMEOUT"}:
+            self.is_running = False
+            if action == "TIMEOUT":
+                self.last_error = "The security check was left open, so the application paused."
+            return
+        if action == "DISMISS":
+            self._captcha_signature = signature
+            return
+        if action not in {"HANDOFF_COMPLETE", "CONTINUE", "CAPTCHA_SUBMIT"}:
+            return
+
+        self._captcha_signature = signature
+        try:
+            fresh = await self._scan_dom()
+            remaining = fresh.get("captchaElements") or []
+            if remaining:
+                await self.emit_event(
+                    "SENSE",
+                    "A security widget is still visible. If the portal accepted the challenge, continue; otherwise reopen the checkpoint.",
+                    "Security widget abhi bhi dikh raha hai. Agar portal ne accept kar liya hai to continue karein.",
+                )
+            else:
+                await self.emit_event(
+                    "ACT",
+                    "Security check cleared. Resuming the form.",
+                    "Security check clear ho gaya. Form dobara shuru ho raha hai.",
+                )
+        except Exception:
+            pass
+
+
     async def _handle_errors(self, dom: Dict[str, Any]):
         errors = [str(error).strip() for error in (dom.get("errors") or []) if str(error).strip()]
         if not errors:
@@ -908,11 +1541,15 @@ class FormPilotOrchestrator:
             "title": "The portal needs attention",
             "hindi_title": "Portal par dhyan dein",
             "error_text": errors[0],
-            "description": "The portal did not accept the current details. Review the message, edit anything that is wrong, then continue.",
+            "description": "The portal did not accept the current details. Review the message, edit anything that is wrong in the live browser, then continue.",
             "suggested_actions": ["Review the details", "Try again", "Stop and open the portal myself"],
+            "live_session": self.live.public_info() if self.live and not self.live.closed else None,
+            "can_takeover": bool(self.live),
         }
         self.active_gate = gate
         self.state = "WAITING_FOR_USER"
+        if self.live:
+            self.live.set_allow_control(True, "Fix the highlighted field in the live browser.")
         await self.emit_event(
             "DECIDE",
             "Waiting for you to review the portal message.",
@@ -922,6 +1559,8 @@ class FormPilotOrchestrator:
         )
         response = await self._wait_for_user_response()
         self.active_gate = None
+        if self.live:
+            self.live.set_allow_control(False, "The agent is driving again.")
         self.state = "RUNNING" if self.is_running else self.state
         if response.get("action") in {"STOPPED", "TIMEOUT"}:
             self.is_running = False
@@ -936,11 +1575,15 @@ class FormPilotOrchestrator:
             "hindi_title": f"Section {step} review karein",
             "hindi_audio_text": f"Section {step} ready hai. Form par details check karein. Sab sahi ho to continue karein.",
             "section_number": step,
-            "description": "Please check the details on the form. Continue only if everything is correct.",
+            "description": "Please check the details on the form. You can edit fields directly in the live browser, then continue.",
             "fields_filled": self._public_audit(),
+            "live_session": self.live.public_info() if self.live and not self.live.closed else None,
+            "can_takeover": bool(self.live),
         }
         self.active_gate = gate
         self.state = "WAITING_FOR_USER"
+        if self.live:
+            self.live.set_allow_control(True, "Review and edit the form in the live browser.")
         await self.emit_event(
             "DECIDE",
             f"Section {step} is ready for your review.",
@@ -950,6 +1593,8 @@ class FormPilotOrchestrator:
         )
         response = await self._wait_for_user_response()
         self.active_gate = None
+        if self.live:
+            self.live.set_allow_control(False, "The agent is driving again.")
         if response.get("action") in {"STOPPED", "TIMEOUT"}:
             self.is_running = False
             self.state = "STOPPED" if response.get("action") == "STOPPED" else "FAILED"
@@ -984,6 +1629,7 @@ class FormPilotOrchestrator:
             f"Saving section {previous_step}...",
             f"Section {previous_step} save kar rahe hain...",
         )
+        self._save_current_recipe()
         if not await self._safe_click(button):
             return False
 
@@ -1054,6 +1700,12 @@ class FormPilotOrchestrator:
 
     async def _trigger_pre_payment_lock(self, *, final_action: bool = False):
         """Stop before payment or final submission, show an audit, and hand over."""
+        self._save_current_recipe()
+        if self.live:
+            self.live.set_allow_control(
+                True,
+                "Payment and final submission are yours. FormPilot will not click them.",
+            )
         try:
             reg_id = await self.page.evaluate(
                 "() => { const el = document.getElementById('permanent-reg-id'); return el ? el.innerText.trim() : ''; }"
@@ -1186,6 +1838,9 @@ class FormPilotOrchestrator:
             "portal_url": self.page.url if self.page else self.target_url,
             "audit_hash": audit_payload["audit_hash"],
             "download_available": True,
+            "live_session": self.live.public_info() if self.live and not self.live.closed else None,
+            "can_takeover": bool(self.live),
+            "human_action_required": "payment" if not final_action else "final_submission",
         }
         self.active_gate = gate
         self.state = "AWAITING_PAYMENT"

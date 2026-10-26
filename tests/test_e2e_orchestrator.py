@@ -60,6 +60,41 @@ def test_final_submit_and_payment_buttons_trigger_a_safety_stop():
     assert orchestrator._is_final_action({"text": "Review and Submit"}) is True
 
 
+def test_empty_spa_shell_is_not_remembered_as_a_recipe():
+    orchestrator = FormPilotOrchestrator()
+
+    assert orchestrator._has_replayable_structure({"fields": [], "gateways": []}) is False
+    assert orchestrator._has_replayable_structure({"fields": [], "gateways": None}) is False
+    assert orchestrator._has_replayable_structure({"fields": [{"key": "full_name"}]}) is True
+    assert orchestrator._has_replayable_structure(
+        {"fields": [], "gateways": [{"type": "LOGIN", "text": "Login"}]}
+    ) is True
+
+
+def test_unknown_field_gate_skips_captcha_and_one_time_codes():
+    orchestrator = FormPilotOrchestrator()
+
+    for item in (
+        {"label": "Captcha Code", "name": "captcha_code", "type": "text"},
+        {"label": "Enter OTP", "name": "otp_code", "type": "text"},
+        {"label": "One-time password", "name": "code", "type": "text"},
+        {"label": "Verification Code", "name": "verification_code", "type": "text"},
+        {"label": "Security check", "name": "security_check", "type": "text"},
+        {"label": "", "name": "otp", "id": "otp-input", "type": "text"},
+    ):
+        assert orchestrator._should_ask_unknown(item) is False, item
+
+    for item in (
+        {"label": "APAR ID", "name": "apar_id", "type": "text"},
+        {"label": "Father's Name", "name": "father_name", "type": "text"},
+        {"label": "Roll Number", "name": "roll_number", "type": "text"},
+    ):
+        assert orchestrator._should_ask_unknown(item) is True, item
+
+    assert orchestrator._should_ask_unknown({"label": "Search", "type": "search"}) is False
+    assert orchestrator._should_ask_unknown({"label": "Upload photo", "type": "file"}) is False
+
+
 @pytest.mark.e2e
 @pytest.mark.parametrize(
     ("route", "expected"),

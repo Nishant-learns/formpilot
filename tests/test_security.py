@@ -47,7 +47,12 @@ def test_security_headers_are_present(client):
     assert response.headers["X-Content-Type-Options"] == "nosniff"
     assert response.headers["Referrer-Policy"] == "no-referrer"
     assert response.headers["X-Frame-Options"] == "SAMEORIGIN"
-    assert "camera=()" in response.headers["Permissions-Policy"]
+    # Same-origin camera is required for the live-photo checkpoint. The
+    # microphone and geolocation stay disabled.
+    assert (
+        response.headers["Permissions-Policy"]
+        == "camera=(self), microphone=(), geolocation=()"
+    )
     assert response.headers["X-Request-ID"]
 
 
