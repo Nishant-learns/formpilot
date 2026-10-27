@@ -127,6 +127,44 @@ def _recipe_id_for(portal: str, page_type: str, page_key: str = "") -> str:
     return _bounded_id(base)
 
 
+_DURABLE_CONTROL_KEYS = (
+    "type",
+    "text",
+    "id",
+    "name",
+    "tag",
+    "role",
+    "href",
+    "frame",
+    "css",
+    "css_unique",
+    "xpath",
+    "element_hash",
+    "visible",
+    "interactable",
+    "requires_user_choice",
+    "kind",
+    "blocked",
+    "reason",
+)
+
+
+def _durable_controls(controls: Any) -> List[Dict[str, Any]]:
+    """Keep structure, drop per-scan ids and geometry from a recipe."""
+    durable: List[Dict[str, Any]] = []
+    for control in controls or []:
+        if not isinstance(control, dict):
+            continue
+        cleaned = {
+            key: control.get(key)
+            for key in _DURABLE_CONTROL_KEYS
+            if control.get(key) not in (None, "", [], {})
+        }
+        if cleaned:
+            durable.append(cleaned)
+    return durable
+
+
 def _field_keys(fields: List[Dict[str, Any]]) -> set[str]:
     """Replayable keys only.
 
@@ -292,8 +330,8 @@ class RecipeStore:
             "last_seen_at": now,
             "field_count": len(fields),
             "fields": fields,
-            "gateways": form_map.get("gateways") or [],
-            "next_actions": form_map.get("next_actions") or [],
+            "gateways": _durable_controls(form_map.get("gateways")),
+            "next_actions": _durable_controls(form_map.get("next_actions")),
             "safety": {
                 "human_handoff_only": ["captcha", "otp", "live_photo", "payment", "final_submission"],
                 "never_auto_submit": True,

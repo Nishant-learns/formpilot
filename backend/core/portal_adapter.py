@@ -60,13 +60,24 @@ class BasePortalAdapter:
             text = str(button.get("text") or "").lower()
             if "back" in text or "previous" in text:
                 continue
+            # A button that was scanned as hidden or covered is not a safe
+            # navigation target.  Legacy DOMs do not carry these keys.
+            if button.get("visible") is False or button.get("interactable") is False:
+                continue
+            if button.get("covered_by"):
+                continue
             return button
         return None
 
     def find_gateway(self, dom: dict[str, Any], gateway_type: str) -> Optional[dict[str, Any]]:
         for gateway in dom.get("gateways") or []:
-            if gateway.get("type") == gateway_type:
-                return gateway
+            if gateway.get("type") != gateway_type:
+                continue
+            if gateway.get("visible") is False or gateway.get("interactable") is False:
+                continue
+            if gateway.get("covered_by"):
+                continue
+            return gateway
         return None
 
 

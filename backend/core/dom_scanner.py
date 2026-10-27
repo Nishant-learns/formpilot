@@ -71,6 +71,8 @@ class DOMScanner:
                     id: btn.id || null,
                     name: btn.name || null,
                     className: btn.className || '',
+                    href: btn.getAttribute('href') || null,
+                    elementId: btn.getAttribute('data-fp-id') || null,
                     rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height }
                 });
             }
@@ -101,6 +103,7 @@ class DOMScanner:
                 required: el.required || el.getAttribute('aria-required') === 'true' || getLabel(el).includes('*'),
                 placeholder: el.placeholder || '',
                 options: options,
+                elementId: el.getAttribute('data-fp-id') || null,
                 rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height }
             });
         }
@@ -116,6 +119,8 @@ class DOMScanner:
                     id: btn.id || null,
                     name: btn.name || null,
                     className: btn.className || '',
+                    href: btn.getAttribute('href') || null,
+                    elementId: btn.getAttribute('data-fp-id') || null,
                     rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height }
                 });
             }
@@ -164,6 +169,7 @@ class DOMScanner:
                 name: el.name || null,
                 prompt: (prompt || '').slice(0, 240),
                 src: (el.getAttribute('src') || '').slice(0, 300),
+                elementId: el.getAttribute('data-fp-id') || null,
                 rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height }
             });
         };
@@ -247,6 +253,7 @@ class DOMScanner:
                     accept: el.accept || '',
                     capture: el.getAttribute('capture') || '',
                     hasFile: Boolean(el.files && el.files.length),
+                    elementId: el.getAttribute('data-fp-id') || null,
                     rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height }
                 };
             });
@@ -260,7 +267,8 @@ class DOMScanner:
                 id: el.id || '',
                 name: el.name || '',
                 label: getLabel(el),
-                type: (el.type || 'text').toLowerCase()
+                type: (el.type || 'text').toLowerCase(),
+                elementId: el.getAttribute('data-fp-id') || null
             }));
         const formAction = document.querySelector('form') ? (document.querySelector('form').getAttribute('action') || '') : '';
         const paymentWords = ['application fee', 'pay fee', 'payment', 'checkout', 'net banking', 'debit card', 'credit card', 'upi', 'proceed to pay'];
@@ -613,3 +621,709 @@ class DOMScanner:
         return { success: true, method: el.type === 'date' ? 'date' : 'input', value: finalValue };
     }
     """
+
+    # ------------------------------------------------------------------
+    # Blueprint scanner v2
+    #
+    # This pass is deliberately separate from DETECTION_JS.  It stamps every
+    # meaningful element with a per-scan id, records a nested tree and returns
+    # the metadata the action resolver needs.  DETECTION_JS then runs against
+    # the same DOM and its legacy lists are enriched with those ids.
+    # ------------------------------------------------------------------
+
+    STRUCTURE_JS = r"""
+    (frameId = "main") => {
+        const MAX_ELEMENTS = 6000;
+        const MAX_TEXT = 4000;
+        const MAX_OPTIONS = 200;
+        const scanId = "s" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+        let counter = 0;
+        let omitted = 0;
+        const elements = [];
+        const byId = new Map();
+        const roots = [];
+        const scanStarted = new Date().toISOString();
+
+        const normalize = (value) => String(value == null ? "" : value).replace(/\s+/g, " ").trim();
+        const truncate = (value, limit = MAX_TEXT) => {
+            const text = normalize(value);
+            return text.length > limit ? text.slice(0, limit) + "..." : text;
+        };
+        const attr = (el, name) => {
+            try { return el && el.getAttribute ? el.getAttribute(name) : null; } catch (e) { return null; }
+        };
+        const cssEscape = (value) => {
+            try {
+                if (window.CSS && CSS.escape) return CSS.escape(String(value));
+            } catch (e) {}
+            return String(value).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+        };
+        const cssAttr = (value) => String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+        const xpathString = (value) => {
+            const text = String(value);
+            if (!text.includes("'")) return "'" + text + "'";
+            if (!text.includes('"')) return '"' + text + '"';
+            return "concat('" + text.replace(/'/g, "', \"'\", '") + "')";
+        };
+        const stableId = (value) => {
+            const id = String(value || "");
+            if (!id || id.length > 80) return false;
+            if (/^[a-f0-9]{8,}$/i.test(id)) return false;
+            if (/^:r[0-9a-z]+:/i.test(id)) return false;
+            if (/^(mui|radix|react|ember|ext-gen|yui_|gwt-uid|rc-|ant-)/i.test(id)) return false;
+            if (/\d{6,}/.test(id)) return false;
+            return true;
+        };
+        const rootOf = (el) => {
+            try { return el.getRootNode(); } catch (e) { return document; }
+        };
+        const queryCount = (el, selector) => {
+            try {
+                const root = rootOf(el);
+                return root.querySelectorAll(selector).length;
+            } catch (e) { return 0; }
+        };
+        const isSecret = (el) => {
+            const type = String(el && el.type || "").toLowerCase();
+            const hint = `${el && el.id || ""} ${el && el.name || ""} ${attr(el, "placeholder") || ""} ${attr(el, "aria-label") || ""}`.toLowerCase();
+            return type === "password" || /otp|one[-\s]?time|captcha|security\s*code|verification\s*code|auth(?:entication)?\s*code/.test(hint);
+        };
+        const isVisible = (el) => {
+            if (!el || !el.isConnected) return false;
+            const tag = el.tagName.toLowerCase();
+            if (["script", "style", "noscript", "template", "meta", "link", "head", "title"].includes(tag)) return false;
+            if (el.hidden) return false;
+            try {
+                if (el.checkVisibility) {
+                    const visible = el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
+                    if (!visible) return false;
+                }
+            } catch (e) {}
+            let style;
+            try { style = window.getComputedStyle(el); } catch (e) { return false; }
+            if (!style) return false;
+            if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse" || style.opacity === "0") return false;
+            try {
+                if (el.closest && el.closest('[aria-hidden="true"]')) return false;
+                if (el.closest && el.closest("[inert]")) return false;
+            } catch (e) {}
+            const rect = el.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+        };
+        const tagRole = (el) => {
+            const tag = el.tagName.toLowerCase();
+            if (tag === "input") {
+                const type = String(attr(el, "type") || "text").toLowerCase();
+                if (["button", "submit", "reset", "image"].includes(type)) return "button";
+                if (type === "checkbox") return "checkbox";
+                if (type === "radio") return "radio";
+                if (type === "range") return "slider";
+                if (type === "search") return "searchbox";
+                if (type === "file") return "button";
+                if (type === "hidden") return "";
+                return "textbox";
+            }
+            if (tag === "select") return el.multiple ? "listbox" : "combobox";
+            if (tag === "textarea") return "textbox";
+            if (tag === "a") return attr(el, "href") ? "link" : "";
+            if (tag === "button") return "button";
+            if (tag === "img") return "img";
+            if (/^h[1-6]$/.test(tag)) return "heading";
+            if (tag === "form") return "form";
+            if (tag === "nav") return "navigation";
+            if (tag === "main") return "main";
+            if (tag === "header") return "banner";
+            if (tag === "footer") return "contentinfo";
+            if (tag === "table") return "table";
+            if (tag === "tr") return "row";
+            if (tag === "td") return "cell";
+            if (tag === "th") return "columnheader";
+            if (tag === "ul" || tag === "ol") return "list";
+            if (tag === "li") return "listitem";
+            if (tag === "dialog") return "dialog";
+            if (tag === "iframe") return "iframe";
+            if (el.isContentEditable) return "textbox";
+            return "";
+        };
+        const getRole = (el) => {
+            const explicit = normalize(attr(el, "role")).toLowerCase();
+            return explicit || tagRole(el);
+        };
+        const getAccessibleName = (el) => {
+            const aria = normalize(attr(el, "aria-label"));
+            if (aria) return aria;
+            const labelledBy = normalize(attr(el, "aria-labelledby"));
+            if (labelledBy) {
+                const parts = labelledBy.split(/\s+/).map((id) => document.getElementById(id)).filter(Boolean)
+                    .map((node) => normalize(node.innerText || node.textContent));
+                if (parts.length) return normalize(parts.join(" "));
+            }
+            if (el.id) {
+                try {
+                    const label = document.querySelector('label[for="' + cssAttr(el.id) + '"]');
+                    if (label) {
+                        const text = normalize(label.innerText || label.textContent);
+                        if (text) return text;
+                    }
+                } catch (e) {}
+            }
+            try {
+                const parentLabel = el.closest("label");
+                if (parentLabel) {
+                    const text = normalize(parentLabel.innerText || parentLabel.textContent);
+                    if (text) return text;
+                }
+            } catch (e) {}
+            const alt = normalize(attr(el, "alt"));
+            if (alt) return alt;
+            const title = normalize(attr(el, "title"));
+            if (title) return title;
+            const placeholder = normalize(attr(el, "placeholder"));
+            if (placeholder) return placeholder;
+            const tag = el.tagName.toLowerCase();
+            const type = String(attr(el, "type") || "").toLowerCase();
+            if (["button", "submit", "reset", "image"].includes(type) && el.value) return normalize(el.value);
+            if (["button", "a", "summary", "option", "label", "legend", "caption", "figcaption", "h1", "h2", "h3", "h4", "h5", "h6"].includes(tag)) {
+                const text = normalize(el.innerText || el.textContent);
+                if (text) return text.slice(0, 300);
+            }
+            try {
+                const td = el.closest("td");
+                if (td && td.previousElementSibling) {
+                    const text = normalize(td.previousElementSibling.innerText || td.previousElementSibling.textContent);
+                    if (text) return text;
+                }
+            } catch (e) {}
+            const name = normalize(attr(el, "name"));
+            if (name && ["input", "select", "textarea", "form", "iframe"].includes(tag)) return name;
+            return "";
+        };
+        const ownText = (el) => {
+            let text = "";
+            for (const node of el.childNodes) {
+                if (node.nodeType === Node.TEXT_NODE) text += " " + node.data;
+            }
+            return truncate(text);
+        };
+        const elementText = (el) => {
+            const tag = el.tagName.toLowerCase();
+            if (["button", "a", "label", "h1", "h2", "h3", "h4", "h5", "h6", "summary", "legend", "option"].includes(tag)) {
+                return truncate(el.innerText || el.textContent || "");
+            }
+            if (tag === "select") {
+                const selected = el.options && el.selectedIndex >= 0 ? el.options[el.selectedIndex] : null;
+                return selected ? truncate(selected.text) : "";
+            }
+            return ownText(el);
+        };
+        const getOptions = (el) => {
+            const tag = el.tagName.toLowerCase();
+            if (tag === "select") {
+                return Array.from(el.options || []).slice(0, MAX_OPTIONS).map((option, index) => ({
+                    text: truncate(option.text, 300),
+                    value: String(option.value || ""),
+                    index: index,
+                }));
+            }
+            const role = getRole(el);
+            if (tag === "input" || !(role === "listbox" || role === "combobox" || attr(el, "aria-haspopup"))) {
+                return [];
+            }
+            const nodes = Array.from(el.querySelectorAll('[role="option"], option')).slice(0, MAX_OPTIONS);
+            return nodes.map((option, index) => ({
+                text: truncate(option.innerText || option.textContent, 300),
+                value: String(attr(option, "data-value") || attr(option, "value") || ""),
+                index: index,
+            }));
+        };
+        const getCss = (el) => {
+            const tag = el.tagName.toLowerCase();
+            if (stableId(el.id)) {
+                const selector = "#" + cssEscape(el.id);
+                if (queryCount(el, selector) === 1) return { css: selector, unique: true };
+            }
+            const name = attr(el, "name");
+            if (name) {
+                const selector = tag + '[name="' + cssAttr(name) + '"]';
+                if (queryCount(el, selector) === 1) return { css: selector, unique: true };
+            }
+            for (const attribute of ["data-testid", "data-test", "data-qa", "data-cy"]) {
+                const value = attr(el, attribute);
+                if (value) {
+                    const selector = tag + '[' + attribute + '="' + cssAttr(value) + '"]';
+                    if (queryCount(el, selector) === 1) return { css: selector, unique: true };
+                }
+            }
+            if (tag === "a") {
+                const href = attr(el, "href");
+                if (href) {
+                    const selector = 'a[href="' + cssAttr(href) + '"]';
+                    if (queryCount(el, selector) === 1) return { css: selector, unique: true };
+                }
+            }
+            const aria = attr(el, "aria-label");
+            if (aria) {
+                const selector = tag + '[aria-label="' + cssAttr(aria) + '"]';
+                if (queryCount(el, selector) === 1) return { css: selector, unique: true };
+            }
+            const placeholder = attr(el, "placeholder");
+            if (placeholder) {
+                const selector = tag + '[placeholder="' + cssAttr(placeholder) + '"]';
+                if (queryCount(el, selector) === 1) return { css: selector, unique: true };
+            }
+            let classes = [];
+            try { classes = Array.from(el.classList || []); } catch (e) {}
+            classes = classes.filter((name) => name && !/^(active|show|open|hover|focus|selected|disabled|ng-|is-)/.test(name)).slice(0, 3);
+            if (classes.length) {
+                const selector = tag + classes.map((name) => "." + cssEscape(name)).join("");
+                if (queryCount(el, selector) === 1) return { css: selector, unique: true };
+            }
+            let node = el;
+            const parts = [];
+            while (node && node.nodeType === 1) {
+                let part = node.tagName.toLowerCase();
+                const parent = node.parentElement;
+                if (parent) {
+                    const siblings = Array.from(parent.children).filter((child) => child.tagName === node.tagName);
+                    if (siblings.length > 1) part += ":nth-of-type(" + (siblings.indexOf(node) + 1) + ")";
+                }
+                parts.unshift(part);
+                if (node === document.documentElement) break;
+                if (!parent) break;
+                node = parent;
+            }
+            const selector = parts.join(" > ");
+            return { css: selector, unique: queryCount(el, selector) === 1 };
+        };
+        const getXPath = (el) => {
+            if (rootOf(el) instanceof ShadowRoot) return "";
+            if (stableId(el.id)) {
+                const xpath = "//*[@id=" + xpathString(el.id) + "]";
+                try {
+                    const count = document.evaluate("count(" + xpath + ")", document, null, XPathResult.NUMBER_TYPE, null).numberValue;
+                    if (count === 1) return xpath;
+                } catch (e) {}
+            }
+            let node = el;
+            const parts = [];
+            while (node && node.nodeType === 1) {
+                let part = node.tagName.toLowerCase();
+                const parent = node.parentElement;
+                if (parent) {
+                    const siblings = Array.from(parent.children).filter((child) => child.tagName === node.tagName);
+                    if (siblings.length > 1) part += "[" + (siblings.indexOf(node) + 1) + "]";
+                }
+                parts.unshift(part);
+                if (node === document.documentElement) break;
+                node = parent;
+            }
+            return "/" + parts.join("/");
+        };
+        const getAttributes = (el) => {
+            const attrs = {};
+            const names = [
+                "id", "name", "type", "role", "href", "src", "alt", "title", "placeholder",
+                "aria-label", "aria-labelledby", "aria-describedby", "aria-expanded", "aria-haspopup",
+                "aria-controls", "aria-checked", "aria-selected", "aria-disabled", "aria-required",
+                "data-testid", "data-test", "data-qa", "data-cy", "contenteditable",
+                "disabled", "readonly", "required", "checked", "selected", "multiple",
+                "maxlength", "pattern", "autocomplete", "inputmode", "for", "tabindex"
+            ];
+            for (const name of names) {
+                const value = attr(el, name);
+                if (value !== null) attrs[name] = value;
+            }
+            if (el.disabled) attrs.disabled = true;
+            if (el.readOnly) attrs.readonly = true;
+            if (el.required) attrs.required = true;
+            if (el.checked) attrs.checked = true;
+            if (el.selected) attrs.selected = true;
+            if ("value" in el && !isSecret(el)) attrs.has_value = String(el.value || "").length > 0;
+            return attrs;
+        };
+        const isEditable = (el) => {
+            if (el.disabled || el.readOnly) return false;
+            const tag = el.tagName.toLowerCase();
+            if (tag === "textarea") return true;
+            if (tag === "select") return true;
+            if (tag === "input") {
+                const type = String(attr(el, "type") || "text").toLowerCase();
+                return !["hidden", "button", "submit", "reset", "image", "checkbox", "radio", "file", "range", "color"].includes(type);
+            }
+            return !!el.isContentEditable;
+        };
+        const isInteractable = (el) => {
+            if (!isVisible(el)) return false;
+            const tag = el.tagName.toLowerCase();
+            const role = getRole(el);
+            if (el.disabled || attr(el, "aria-disabled") === "true") return false;
+            let style;
+            try { style = window.getComputedStyle(el); } catch (e) { style = null; }
+            if (style && style.pointerEvents === "none" && !el.disabled) return false;
+            if (tag === "input") {
+                const type = String(attr(el, "type") || "text").toLowerCase();
+                return type !== "hidden";
+            }
+            if (["button", "select", "textarea", "summary"].includes(tag)) return true;
+            if (tag === "a") return !!attr(el, "href") || role === "button" || el.hasAttribute("onclick") || (el.tabIndex || -1) >= 0;
+            if (el.isContentEditable) return true;
+            if (["button", "link", "checkbox", "radio", "switch", "tab", "menuitem", "option", "combobox", "textbox", "searchbox", "slider", "spinbutton"].includes(role)) return true;
+            if (el.hasAttribute("onclick") || el.hasAttribute("tabindex")) return true;
+            if (style && style.cursor === "pointer") return true;
+            return false;
+        };
+        const hashString = (value) => {
+            let hash = 2166136261;
+            for (let index = 0; index < value.length; index++) {
+                hash ^= value.charCodeAt(index);
+                hash = Math.imul(hash, 16777619);
+            }
+            return (hash >>> 0).toString(16).padStart(8, "0");
+        };
+        const elementHash = (el, role, name, text, options) => {
+            const stable = [
+                el.tagName.toLowerCase(),
+                role,
+                name,
+                text,
+                String(attr(el, "type") || ""),
+                String(attr(el, "name") || ""),
+                String(attr(el, "href") || ""),
+                String(attr(el, "placeholder") || ""),
+                String(attr(el, "aria-label") || ""),
+                options.map((option) => option.text + "=" + option.value).join("|"),
+            ].join("||");
+            return hashString(stable);
+        };
+        const hitTest = (el) => {
+            const rect = el.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) return null;
+            const x = rect.left + rect.width / 2;
+            const y = rect.top + rect.height / 2;
+            if (x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight) return null;
+            let hit = null;
+            try { hit = document.elementFromPoint(x, y); } catch (e) { return null; }
+            if (!hit) return null;
+            if (hit === el || el.contains(hit) || hit.contains(el)) return null;
+            try {
+                const label = hit.closest && hit.closest("label");
+                if (label && label.contains(el)) return null;
+            } catch (e) {}
+            return {
+                tag: hit.tagName.toLowerCase(),
+                id: hit.id || null,
+                className: String(hit.className || "").slice(0, 120),
+                text: truncate(hit.innerText || hit.textContent, 120),
+            };
+        };
+        const childEntries = (el) => {
+            const entries = [];
+            for (const child of el.children) entries.push({ el: child, shadow: false });
+            if (el.shadowRoot) {
+                for (const child of el.shadowRoot.children) entries.push({ el: child, shadow: true });
+            }
+            return entries;
+        };
+        const STRUCTURAL = new Set([
+            "html", "body", "main", "header", "footer", "nav", "section", "article", "aside",
+            "form", "fieldset", "legend", "label", "button", "a", "input", "select", "textarea",
+            "table", "thead", "tbody", "tfoot", "tr", "td", "th", "ul", "ol", "li",
+            "h1", "h2", "h3", "h4", "h5", "h6", "p", "iframe", "dialog", "summary", "details",
+            "figure", "figcaption"
+        ]);
+        const TEXTUAL = new Set(["span", "div", "small", "strong", "em", "b", "i", "font", "center"]);
+        const shouldInclude = (el) => {
+            const tag = el.tagName.toLowerCase();
+            if (["script", "style", "noscript", "template", "meta", "link", "head", "title", "option"].includes(tag)) return false;
+            if (tag === "canvas" || tag === "svg") {
+                return !!(el.getAttribute("role") || /captcha|turnstile|recaptcha|h-captcha/i.test(`${el.id || ""} ${el.className || ""}`));
+            }
+            if (tag === "img") {
+                return !!(el.getAttribute("alt") || el.getAttribute("role") || el.hasAttribute("onclick") || el.hasAttribute("tabindex"));
+            }
+            if (STRUCTURAL.has(tag)) return true;
+            if (TEXTUAL.has(tag)) {
+                if (ownText(el)) return true;
+                if (el.getAttribute("role")) return true;
+                if (el.hasAttribute("onclick") || el.hasAttribute("tabindex") || el.isContentEditable) return true;
+                if (el.shadowRoot) return true;
+                if (el.querySelector('input, select, textarea, button, a, [role], [contenteditable="true"]')) return true;
+                return false;
+            }
+            if (el.getAttribute("role")) return true;
+            if (el.shadowRoot) return true;
+            if (el.hasAttribute("onclick") || el.hasAttribute("tabindex") || el.isContentEditable) return true;
+            return false;
+        };
+
+        const walk = (el, parentId, depth, shadowHostId) => {
+            if (!el || el.nodeType !== 1) return;
+            if (elements.length >= MAX_ELEMENTS) {
+                omitted += 1;
+                return;
+            }
+            const include = shouldInclude(el);
+            let currentParent = parentId;
+            let currentDepth = depth;
+            if (include) {
+                const id = "fp-" + scanId + "-" + (++counter);
+                try { el.setAttribute("data-fp-id", id); } catch (e) {}
+                const tag = el.tagName.toLowerCase();
+                const role = getRole(el);
+                const name = getAccessibleName(el);
+                const text = elementText(el);
+                const options = getOptions(el);
+                const css = getCss(el);
+                const rect = el.getBoundingClientRect();
+                const visible = isVisible(el);
+                const interactable = isInteractable(el);
+                const inViewport = rect.bottom > 0 && rect.right > 0 && rect.top < window.innerHeight && rect.left < window.innerWidth;
+                const coveredBy = interactable && visible && inViewport ? hitTest(el) : null;
+                const element = {
+                    id: id,
+                    frame: frameId,
+                    parentId: parentId,
+                    depth: depth,
+                    tag: tag,
+                    tagName: tag,
+                    role: role,
+                    name: name,
+                    text: text,
+                    attributes: getAttributes(el),
+                    css: css.css,
+                    cssUnique: css.unique,
+                    xpath: getXPath(el),
+                    rect: {
+                        x: rect.x, y: rect.y, width: rect.width, height: rect.height,
+                        top: rect.top, left: rect.left, right: rect.right, bottom: rect.bottom,
+                    },
+                    visible: visible,
+                    inViewport: inViewport,
+                    enabled: !el.disabled && attr(el, "aria-disabled") !== "true",
+                    editable: isEditable(el),
+                    interactable: interactable,
+                    hoverOnly: false,
+                    coveredBy: coveredBy,
+                    elementHash: elementHash(el, role, name, text, options),
+                    options: options,
+                    children: [],
+                    shadowHost: shadowHostId || null,
+                };
+                elements.push(element);
+                byId.set(id, element);
+                if (parentId && byId.has(parentId)) byId.get(parentId).children.push(id);
+                else roots.push(id);
+                currentParent = id;
+                currentDepth = depth + 1;
+            }
+            for (const entry of childEntries(el)) {
+                const nextShadowHost = entry.shadow
+                    ? (include ? currentParent : shadowHostId)
+                    : shadowHostId;
+                walk(entry.el, currentParent, currentDepth, nextShadowHost);
+            }
+        };
+
+        const frameworks = [];
+        if (window.__reactFiber || document.querySelector("[data-reactroot]") || window._reactRootContainer) frameworks.push("React");
+        if (window.ng || document.querySelector("[ng-version]") || document.querySelector("[ng-app]")) frameworks.push("Angular");
+        if (window.__vue__ || window.__vue_app__ || document.querySelector("[data-v-]")) frameworks.push("Vue");
+        if (window.Sys && window.Sys.WebForms) frameworks.push("ASP.NET Ajax");
+        if (document.getElementById("__VIEWSTATE")) frameworks.push("ASP.NET WebForms");
+        if (window.Ext) frameworks.push("ExtJS");
+        if (window.jQuery) frameworks.push("jQuery");
+        if (frameworks.length === 0) frameworks.push("Standard HTML5");
+
+        walk(document.documentElement, null, 0, null);
+
+        return {
+            scanId: scanId,
+            scan_id: scanId,
+            url: window.location.href,
+            title: document.title,
+            readyState: document.readyState,
+            capturedAt: scanStarted,
+            captured_at: scanStarted,
+            viewport: { width: window.innerWidth, height: window.innerHeight },
+            scroll: { x: window.scrollX, y: window.scrollY },
+            mutationCounter: window.__formpilotMutationCounter || 0,
+            mutation_counter: window.__formpilotMutationCounter || 0,
+            frameworks: frameworks,
+            elements: elements,
+            roots: roots,
+            truncated: elements.length >= MAX_ELEMENTS,
+            omittedCount: omitted,
+            omitted_count: omitted,
+            forms: Array.from(document.forms || []).map((form) => ({
+                id: form.id || "",
+                name: form.name || "",
+                action: form.getAttribute("action") || "",
+                method: form.method || "",
+                elementId: form.getAttribute("data-fp-id") || null,
+            })),
+            dialogs: Array.from(document.querySelectorAll('dialog, [role="dialog"], [aria-modal="true"]'))
+                .filter(isVisible)
+                .map((dialog) => ({
+                    id: dialog.id || "",
+                    name: getAccessibleName(dialog),
+                    text: truncate(dialog.innerText || dialog.textContent, 300),
+                    elementId: dialog.getAttribute("data-fp-id") || null,
+                })),
+            alerts: Array.from(document.querySelectorAll('[role="alert"], .error, .alert-danger, .text-danger, .invalid-feedback, .field-validation-error'))
+                .filter(isVisible)
+                .map((alert) => truncate(alert.innerText || alert.textContent, 300))
+                .filter(Boolean),
+        };
+    }
+    """
+
+    @classmethod
+    async def scan(cls, page) -> Tuple[Dict[str, Any], "PageBlueprint"]:
+        """Scan every frame and return (legacy DOM, typed blueprint).
+
+        ``STRUCTURE_JS`` stamps elements and builds the tree.  ``DETECTION_JS``
+        then runs against the same DOM so the existing form model keeps
+        working.  The two passes are synchronous with respect to page state:
+        no navigation happens between them.
+        """
+        from .blueprint import PageBlueprint
+
+        if page is None:
+            raise ValueError("A live page is required for a DOM scan.")
+
+        frames = list(page.frames or [])
+        main_frame = page.main_frame
+        all_elements: list[Dict[str, Any]] = []
+        frame_infos: list[Dict[str, Any]] = []
+        merged: Dict[str, Any] = {
+            "title": "",
+            "url": getattr(page, "url", "") or "",
+            "frameworks": [],
+            "gateways": [],
+            "inputs": [],
+            "nextButtons": [],
+            "captchaElements": [],
+            "errors": [],
+            "visibleText": "",
+            "paymentSignals": 0,
+            "hasPaymentButton": False,
+            "activeSectionId": "",
+            "stepHeading": "",
+            "formCount": 0,
+            "formAction": "",
+            "fileInputs": [],
+            "livePhotoRequired": False,
+            "otpInputs": [],
+            "elements": [],
+            "roots": [],
+            "forms": [],
+            "dialogs": [],
+            "alerts": [],
+        }
+        main_structure: Optional[Dict[str, Any]] = None
+
+        for index, frame in enumerate(frames):
+            frame_id = "main" if frame == main_frame else f"frame-{index}"
+            frame_info: Dict[str, Any] = {
+                "id": frame_id,
+                "index": index,
+                "url": getattr(frame, "url", "") or "",
+                "name": getattr(frame, "name", "") or "",
+                "accessible": True,
+            }
+            try:
+                structure = await frame.evaluate(cls.STRUCTURE_JS, frame_id)
+            except Exception as exc:
+                frame_info["accessible"] = False
+                frame_info["error"] = str(exc)[:200]
+                frame_infos.append(frame_info)
+                continue
+
+            try:
+                legacy = await frame.evaluate(cls.DETECTION_JS)
+            except Exception as exc:
+                # The structure pass is still useful: a frame can expose its
+                # controls even when the legacy classifier trips on a widget.
+                legacy = {}
+                frame_info["legacy_error"] = str(exc)[:200]
+
+            frame_infos.append(frame_info)
+            if frame == main_frame:
+                main_structure = structure
+                merged["title"] = str(structure.get("title") or "")
+                merged["url"] = str(structure.get("url") or merged["url"])
+                merged["frameworks"] = list(structure.get("frameworks") or [])
+                merged["forms"] = list(structure.get("forms") or [])
+                merged["dialogs"] = list(structure.get("dialogs") or [])
+                merged["alerts"] = list(structure.get("alerts") or [])
+                for key in (
+                    "visibleText",
+                    "paymentSignals",
+                    "hasPaymentButton",
+                    "activeSectionId",
+                    "stepHeading",
+                    "formCount",
+                    "formAction",
+                    "livePhotoRequired",
+                ):
+                    if key in legacy:
+                        merged[key] = legacy[key]
+
+            for element in structure.get("elements") or []:
+                if not isinstance(element, dict):
+                    continue
+                element["frame"] = frame_id
+                element["frame_index"] = index
+                all_elements.append(element)
+
+            for key in ("inputs", "gateways", "nextButtons", "captchaElements", "fileInputs", "otpInputs"):
+                for item in legacy.get(key) or []:
+                    if isinstance(item, dict):
+                        item["frame"] = frame_id
+                        item["frame_index"] = index
+                        merged[key].append(item)
+
+            for error in legacy.get("errors") or []:
+                text = str(error or "").strip()
+                if text and text not in merged["errors"]:
+                    merged["errors"].append(text)
+            for framework in legacy.get("frameworks") or []:
+                if framework and framework not in merged["frameworks"]:
+                    merged["frameworks"].append(framework)
+
+        if main_structure is None:
+            raise RuntimeError("The main frame could not be scanned.")
+
+        scan_id = str(main_structure.get("scanId") or main_structure.get("scan_id") or "")
+        merged["scan_id"] = scan_id
+        merged["captured_at"] = str(main_structure.get("capturedAt") or "")
+        merged["ready_state"] = str(main_structure.get("readyState") or "")
+        merged["viewport"] = main_structure.get("viewport") or {}
+        merged["scroll"] = main_structure.get("scroll") or {}
+        merged["mutation_counter"] = main_structure.get("mutationCounter") or 0
+        merged["truncated"] = bool(main_structure.get("truncated"))
+        merged["omitted_count"] = int(main_structure.get("omittedCount") or 0)
+        merged["elements"] = all_elements
+        merged["roots"] = list(main_structure.get("roots") or [])
+        merged["frames"] = frame_infos
+
+        blueprint = PageBlueprint.from_scan(
+            {
+                "scan_id": scan_id,
+                "url": merged["url"],
+                "title": merged["title"],
+                "elements": all_elements,
+                "roots": merged["roots"],
+                "captured_at": merged["captured_at"],
+                "truncated": merged["truncated"],
+                "omitted_count": merged["omitted_count"],
+                "ready_state": merged["ready_state"],
+                "viewport": merged["viewport"],
+                "scroll": merged["scroll"],
+                "mutation_counter": merged["mutation_counter"],
+                "frameworks": merged["frameworks"],
+            },
+            frames=frame_infos,
+        )
+        blueprint.enrich_legacy(merged)
+        return merged, blueprint

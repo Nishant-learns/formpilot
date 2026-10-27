@@ -201,6 +201,16 @@ class FormModel:
             "label": label or name or f"Field {int(item.get('index') or 0) + 1}",
             "name": name,
             "id": field_id,
+            "element_id": item.get("element_id"),
+            "frame": item.get("frame"),
+            "role": item.get("role"),
+            "css": item.get("css"),
+            "css_unique": bool(item.get("css_unique")),
+            "xpath": item.get("xpath"),
+            "element_hash": item.get("element_hash"),
+            "visible": bool(item.get("visible", True)),
+            "interactable": bool(item.get("interactable", True)),
+            "covered_by": item.get("covered_by"),
             "tag": tag,
             "type": field_type,
             "required": bool(item.get("required")),
@@ -249,19 +259,35 @@ class FormModel:
 
     @classmethod
     def locators(cls, item: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Return locators in the order the executor should try them.
+
+        The per-scan blueprint id is first because it is the only locator that
+        was validated as unique when the page was observed.  It is not stored
+        in a recipe; durable CSS/XPath/role/label strategies follow it.
+        """
         field_type = str(item.get("type") or "text").lower()
         tag = str(item.get("tagName") or "input").lower()
         label = str(item.get("label") or "").strip()
         name = str(item.get("name") or "").strip()
         field_id = str(item.get("id") or "").strip()
+        element_id = str(item.get("element_id") or "").strip()
+        css = str(item.get("css") or "").strip()
+        xpath = str(item.get("xpath") or "").strip()
+        role = str(item.get("role") or "").strip()
         locators: List[Dict[str, Any]] = []
+        if element_id:
+            locators.append({"strategy": "blueprint_id", "value": element_id})
+        if css:
+            locators.append({"strategy": "css", "value": css, "unique": bool(item.get("css_unique"))})
+        if xpath:
+            locators.append({"strategy": "xpath", "value": xpath})
         if field_id:
             locators.append({"strategy": "id", "value": field_id})
         if name:
             locators.append({"strategy": "name", "value": name})
         if label:
             locators.append({"strategy": "label", "value": label[:180]})
-            role = (
+            inferred_role = role or (
                 "combobox"
                 if tag == "select"
                 else "checkbox"
@@ -270,7 +296,11 @@ class FormModel:
                 if field_type == "radio"
                 else "textbox"
             )
-            locators.append({"strategy": "role", "role": role, "name": label[:180]})
+            locators.append({"strategy": "role", "role": inferred_role, "name": label[:180]})
+        elif role and item.get("name"):
+            locators.append(
+                {"strategy": "role", "role": role, "name": str(item.get("name"))[:180]}
+            )
         if tag == "select":
             locators.append({"strategy": "css", "value": "select"})
         elif tag == "textarea":
@@ -447,7 +477,11 @@ class FormModel:
         unique: List[Dict[str, Any]] = []
         seen = set()
         for gateway in dom.get("gateways") or []:
-            key = (str(gateway.get("type") or ""), _norm_text(gateway.get("text")))
+            key = (
+                str(gateway.get("type") or ""),
+                _norm_text(gateway.get("text")),
+                gateway.get("element_id") or gateway.get("css") or gateway.get("id"),
+            )
             if key in seen:
                 continue
             seen.add(key)
@@ -457,6 +491,18 @@ class FormModel:
                     "text": str(gateway.get("text") or "")[:180],
                     "id": gateway.get("id"),
                     "name": gateway.get("name"),
+                    "tag": str(gateway.get("tagName") or "")[:40],
+                    "role": str(gateway.get("role") or "")[:40],
+                    "href": str(gateway.get("href") or "")[:500],
+                    "element_id": gateway.get("element_id"),
+                    "frame": gateway.get("frame"),
+                    "css": gateway.get("css"),
+                    "css_unique": bool(gateway.get("css_unique")),
+                    "xpath": gateway.get("xpath"),
+                    "element_hash": gateway.get("element_hash"),
+                    "visible": gateway.get("visible"),
+                    "interactable": gateway.get("interactable"),
+                    "covered_by": gateway.get("covered_by"),
                     "requires_user_choice": True,
                 }
             )
@@ -501,6 +547,12 @@ class FormModel:
                 {
                     "text": text[:180],
                     "id": button.get("id"),
+                    "element_id": button.get("element_id"),
+                    "tag": str(button.get("tagName") or "")[:40],
+                    "role": str(button.get("role") or "")[:40],
+                    "frame": button.get("frame"),
+                    "css": button.get("css"),
+                    "xpath": button.get("xpath"),
                     "kind": "final_action" if blocked else "navigation",
                     "blocked": blocked,
                     "reason": "FormPilot never clicks payment or final submission." if blocked else None,
@@ -539,6 +591,13 @@ class FormModel:
         """Strip values and positions; keep only replayable structure."""
         compact: List[Dict[str, Any]] = []
         for field in form_map.get("fields") or []:
+            # Scan ids are intentionally excluded: they are only valid for one
+            # observation.  Recipes keep durable locators and element hashes.
+            durable_locators = [
+                locator
+                for locator in (field.get("locators") or [])
+                if locator.get("strategy") not in {"blueprint_id", "index"}
+            ]
             compact.append(
                 {
                     "key": field.get("semantic_key") or field.get("key"),
@@ -549,7 +608,11 @@ class FormModel:
                     "required": bool(field.get("required")),
                     "challenge": field.get("challenge"),
                     "options": _safe_json_list(field.get("options") or [], limit=60),
-                    "locators": _safe_json_list(field.get("locators") or [], limit=8),
+                    "locators": _safe_json_list(durable_locators, limit=8),
+                    "role": field.get("role"),
+                    "css": field.get("css"),
+                    "xpath": field.get("xpath"),
+                    "element_hash": field.get("element_hash"),
                     "confidence": int(field.get("confidence") or 0),
                     "sensitive": bool(field.get("sensitive")),
                 }

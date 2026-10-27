@@ -13,6 +13,7 @@ import traceback
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urljoin
 
 from playwright.async_api import (
     Browser,
@@ -22,7 +23,9 @@ from playwright.async_api import (
 )
 
 from . import field_registry, settings
+from .action_resolver import ActionResolver, ActionResult
 from .biometrics import BiometricCompressor
+from .blueprint import BlueprintElement, PageBlueprint
 from .dom_scanner import DOMScanner
 from .form_model import FormModel
 from .live_browser import LiveBrowserSession, live_sessions
@@ -76,6 +79,8 @@ class FormPilotOrchestrator:
         self.run_mode = "fill"
         self.oracle_result: Optional[OracleResult] = None
         self.form_map: Optional[Dict[str, Any]] = None
+        self.blueprint: Optional[PageBlueprint] = None
+        self._last_action_result: Optional[ActionResult] = None
         self.recipe_store = RecipeStore()
         self._recipe_status: Optional[Dict[str, Any]] = None
         self._last_form_fingerprint = ""
@@ -111,6 +116,7 @@ class FormPilotOrchestrator:
             "browser_open": browser_open,
             "live_session": self.live.public_info() if self.live and not self.live.closed else None,
             "form_map": self.form_map,
+            "blueprint": self.blueprint.summary() if self.blueprint else None,
             "recipe": self._recipe_status,
             "current_section": self.current_section,
             "active_gate": self.active_gate if self.is_running or self.state in {"WAITING_FOR_USER", "PAUSED"} else None,
@@ -467,6 +473,7 @@ class FormPilotOrchestrator:
             "last_error": self.last_error,
             "live_session": self.live.public_info() if self.live and not self.live.closed else None,
             "form_map": self.form_map,
+            "blueprint": self.blueprint.summary() if self.blueprint else None,
             "recipe": self._recipe_status,
         }
         if self.broadcast_fn:
@@ -495,12 +502,33 @@ class FormPilotOrchestrator:
     # ---------------------------------------------------------------- loop
 
     async def _scan_dom(self) -> Dict[str, Any]:
+        """Capture the page as a legacy DOM plus a typed blueprint.
+
+        ``DOMScanner.scan`` stamps every meaningful element with a per-scan
+        ``data-fp-id`` and builds the nested tree the resolver uses.  The
+        legacy lists remain in the returned dict so existing callers keep
+        working while they migrate to element ids.
+        """
         if not self.page:
             raise AgentRunError("The browser page is no longer available.")
         try:
-            return await self.page.evaluate(DOMScanner.DETECTION_JS)
+            dom, blueprint = await DOMScanner.scan(self.page)
         except Exception as exc:
             raise AgentRunError("The page is still loading. Please wait a moment and try again.") from exc
+        self.blueprint = blueprint
+        return dom
+
+    def _action_resolver(self) -> Optional[ActionResolver]:
+        if not self.page or not self.blueprint:
+            return None
+        return ActionResolver(self.page, self.blueprint)
+
+    async def _rescan_blueprint(self) -> Optional[PageBlueprint]:
+        try:
+            await self._scan_dom()
+        except Exception:
+            return None
+        return self.blueprint
 
     async def _observe_page(self, *, force_emit: bool = False) -> tuple[Dict[str, Any], Dict[str, Any]]:
         """Read the page, build the normalized form map, and compare it to memory."""
@@ -511,6 +539,8 @@ class FormPilotOrchestrator:
                 self.page.url if self.page else self.target_url,
                 vault=self.vault_mgr.vault,
             )
+            if self.blueprint is not None:
+                form_map["blueprint"] = self.blueprint.summary()
             recipe_status = self.recipe_store.match(form_map)
         except Exception:
             traceback.print_exc()
@@ -795,7 +825,11 @@ class FormPilotOrchestrator:
         unique: List[Dict[str, Any]] = []
         seen = set()
         for gateway in gateways:
-            key = (gateway.get("type"), gateway.get("text"))
+            key = (
+                gateway.get("type"),
+                gateway.get("text"),
+                gateway.get("element_id") or gateway.get("css") or gateway.get("id"),
+            )
             if key in seen:
                 continue
             seen.add(key)
@@ -816,7 +850,12 @@ class FormPilotOrchestrator:
             "hindi_title": "Shuru kaise karein?",
             "description": "Choose one option. You can review the next screen before any details are filled.",
             "options": [
-                {"id": g.get("id"), "text": g.get("text"), "type": g.get("type")}
+                {
+                    "id": g.get("id"),
+                    "element_id": g.get("element_id"),
+                    "text": g.get("text"),
+                    "type": g.get("type"),
+                }
                 for g in unique
             ],
         }
@@ -836,9 +875,13 @@ class FormPilotOrchestrator:
             return
 
         selected_id = response.get("id")
+        selected_element_id = response.get("element_id")
         selected_text = response.get("text")
         selected = None
         for gateway in unique:
+            if selected_element_id and gateway.get("element_id") == selected_element_id:
+                selected = gateway
+                break
             if selected_id and gateway.get("id") == selected_id:
                 selected = gateway
                 break
@@ -858,13 +901,31 @@ class FormPilotOrchestrator:
             f"Opening: {gateway.get('text') or 'the application form'}",
             "Chuni hui option khol rahe hain...",
         )
+        before_url = self.page.url
         if not await self._safe_click(gateway):
-            raise AgentRunError("The portal button could not be clicked. Please try again.")
+            detail = self._last_action_result
+            code = f" ({detail.error_code})" if detail and detail.error_code else ""
+            raise AgentRunError(
+                f"The portal button could not be clicked{code}. Please try again."
+            )
         try:
             await self.page.wait_for_load_state("domcontentloaded", timeout=12000)
         except Exception:
             pass
+        href = str(gateway.get("href") or "").strip()
+        if href:
+            try:
+                await self.page.wait_for_url(
+                    urljoin(before_url, href), timeout=8000, wait_until="domcontentloaded"
+                )
+            except Exception:
+                pass
         await self.page.wait_for_timeout(500)
+        if self.page.url != before_url:
+            # A new page owns its own gateway signature.  If the click did not
+            # navigate, keep the old signature so the loop cannot double-click
+            # the same gateway.
+            self._last_gateway_signature = ""
 
     # ---------------------------------------------------------------- filling
 
@@ -919,6 +980,42 @@ class FormPilotOrchestrator:
                 return
         self.filled_audit.append(record)
 
+    async def _apply_field_value(self, item: Dict[str, Any], value: str) -> Dict[str, Any]:
+        """Fill one field through the resolver, with the JS injector as fallback.
+
+        The resolver is preferred because it validates the element identity and
+        actionability before typing.  Radio groups, checkboxes and exotic
+        widgets keep using the injector, which already knows how to select a
+        group member by value.
+        """
+        element_id = str(item.get("element_id") or "")
+        tag = str(item.get("tagName") or "input").lower()
+        field_type = str(item.get("type") or "text").lower()
+        resolver = self._action_resolver()
+
+        if element_id and resolver and field_type not in {"checkbox", "radio", "file", "hidden"}:
+            if tag == "select":
+                resolved = await resolver.select(element_id, value)
+            elif tag in {"input", "textarea"} or str(item.get("role") or "") == "textbox":
+                resolved = await resolver.fill(element_id, value)
+            else:
+                resolved = None
+
+            if resolved and resolved.ok:
+                return {"success": True, "method": resolved.method, "value": value}
+            if resolved and resolved.error_code in {"NOT_VISIBLE", "DISABLED", "NOT_EDITABLE"}:
+                # Do not bypass a disabled or hidden field with a JS setter.
+                return {"success": False, "reason": resolved.message}
+            # Any other resolver failure falls through to the injector, which
+            # uses name/id/index and can handle unusual widgets.
+            if resolved and resolved.error_code:
+                self._last_action_result = resolved
+
+        try:
+            return await self.page.evaluate(DOMScanner.INJECTION_JS, [item, value])
+        except Exception:
+            return {"success": False, "reason": "The field could not be reached."}
+
     async def _fill_form(self, dom: Dict[str, Any]) -> int:
         filled = 0
         vault = self.vault_mgr.vault
@@ -954,10 +1051,7 @@ class FormPilotOrchestrator:
                         continue
                     vault = self.vault_mgr.vault
 
-            try:
-                result = await self.page.evaluate(DOMScanner.INJECTION_JS, [item, str(value)])
-            except Exception:
-                result = {"success": False, "reason": "The field could not be reached."}
+            result = await self._apply_field_value(item, str(value))
 
             if result.get("success"):
                 filled += 1
@@ -1653,6 +1747,13 @@ class FormPilotOrchestrator:
 
     async def _advance(self, dom: Dict[str, Any]) -> bool:
         adapter = self._adapter or get_adapter(self.page.url if self.page else "")
+        # Field filling and the security checkpoints may have re-rendered the
+        # page, so never click a button id from an older scan.  Take a fresh
+        # blueprint immediately before the navigation action.
+        try:
+            dom = await self._scan_dom()
+        except Exception:
+            pass
         button = adapter.find_next_button(dom)
         if not button:
             if adapter.is_payment_page(self.page, dom):
@@ -1912,25 +2013,160 @@ class FormPilotOrchestrator:
     # ---------------------------------------------------------------- helpers
 
     async def _safe_click(self, button: Dict[str, Any]) -> bool:
+        """Click a blueprint element, or a uniquely identified legacy control.
+
+        A blueprint id is always tried first.  If the id is stale we re-scan
+        once and re-identify the same control by its durable locators.  The
+        legacy path is only used for controls that predate the blueprint and
+        it refuses ambiguous matches instead of silently taking ``.first``.
+        """
+        self._last_action_result = None
         if not self.page:
             return False
-        try:
-            locator = None
-            if button.get("id"):
-                locator = self.page.locator(f"#{button['id']}").first
-            if locator is None or await locator.count() == 0:
-                text = str(button.get("text") or "").strip()
-                if text:
-                    locator = self.page.get_by_role("button", name=text, exact=True).first
-                    if await locator.count() == 0:
-                        locator = self.page.locator(f"text={text}").first
-            if locator is None or await locator.count() == 0:
-                return False
-            await locator.scroll_into_view_if_needed(timeout=5000)
-            await locator.click(timeout=8000)
-            return True
-        except Exception:
+
+        element_id = str(button.get("element_id") or "")
+        resolver = self._action_resolver()
+        if element_id and resolver:
+            result = await resolver.click(element_id)
+            if result.ok:
+                self._last_action_result = result
+                return True
+
+            if result.error_code in {"NOT_FOUND", "STALE_SNAPSHOT", "FRAME_NOT_ACCESSIBLE"}:
+                fresh_id = await self._find_fresh_element_id(button)
+                if fresh_id and fresh_id != element_id:
+                    resolver = self._action_resolver()
+                    if resolver:
+                        retry = await resolver.click(fresh_id)
+                        if retry.ok:
+                            self._last_action_result = retry
+                            button["element_id"] = fresh_id
+                            return True
+                        result = retry
+
+            self._last_action_result = result
+            await self.emit_event(
+                "SENSE",
+                f"Could not click {button.get('text') or 'the control'} ({result.error_code}): {result.message}",
+                f"{button.get('text') or 'Control'} click nahi ho paya. Page dobara scan kar rahe hain.",
+            )
             return False
+
+        return await self._legacy_click(button)
+
+    async def _find_fresh_element_id(self, button: Dict[str, Any]) -> Optional[str]:
+        """Re-identify a control after a re-scan using durable locators."""
+        blueprint = await self._rescan_blueprint()
+        if not blueprint:
+            return None
+
+        old_css = str(button.get("css") or "")
+        old_xpath = str(button.get("xpath") or "")
+        old_tag = str(button.get("tagName") or button.get("tag") or "").lower()
+        old_role = str(button.get("role") or "").lower()
+        old_name = str(button.get("text") or button.get("name") or "").strip().lower()
+        old_id = str(button.get("id") or "")
+
+        def unique(matches: List[BlueprintElement]) -> Optional[str]:
+            return matches[0].id if len(matches) == 1 else None
+
+        elements = list(blueprint.elements.values())
+        if old_css:
+            found = unique([element for element in elements if element.css == old_css])
+            if found:
+                return found
+        if old_xpath:
+            found = unique([element for element in elements if element.xpath == old_xpath])
+            if found:
+                return found
+        if old_id:
+            found = unique(
+                [element for element in elements if str(element.attributes.get("id") or "") == old_id]
+            )
+            if found:
+                return found
+        if old_role and old_name:
+            found = unique(
+                [
+                    element
+                    for element in elements
+                    if element.role == old_role
+                    and str(element.name or "").strip().lower() == old_name
+                    and (not old_tag or element.tag == old_tag)
+                ]
+            )
+            if found:
+                return found
+        if old_name and old_tag:
+            found = unique(
+                [
+                    element
+                    for element in elements
+                    if element.tag == old_tag
+                    and str(element.name or "").strip().lower() == old_name
+                ]
+            )
+            if found:
+                return found
+        return None
+
+    async def _legacy_click(self, button: Dict[str, Any]) -> bool:
+        """Last-resort click for controls without a blueprint element id.
+
+        Every candidate must resolve to exactly one node.  A text that matches
+        several nodes is rejected, because guessing the first one is what made
+        the HPSC login link fail.
+        """
+        if not self.page:
+            return False
+        text = str(button.get("text") or "").strip()
+        candidates = []
+        if button.get("id"):
+            candidates.append(self.page.locator(f"#{button['id']}"))
+        if button.get("css"):
+            candidates.append(self.page.locator(str(button["css"])))
+        if button.get("xpath"):
+            candidates.append(self.page.locator(f"xpath={button['xpath']}"))
+        role = str(button.get("role") or "").strip()
+        if role and text:
+            candidates.append(self.page.get_by_role(role, name=text, exact=True))
+        if text:
+            for role_name in ("button", "link"):
+                candidates.append(self.page.get_by_role(role_name, name=text, exact=True))
+            tag = str(button.get("tagName") or "").lower()
+            if tag:
+                escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+                candidates.append(self.page.locator(f'{tag}:text-is("{escaped}")'))
+
+        for locator in candidates:
+            try:
+                count = await locator.count()
+            except Exception:
+                continue
+            if count != 1:
+                continue
+            try:
+                await locator.scroll_into_view_if_needed(timeout=5000)
+                if not await locator.is_visible():
+                    continue
+                await locator.click(timeout=8000)
+                self._last_action_result = ActionResult(
+                    ok=True,
+                    action="click",
+                    method="legacy_unique",
+                    message=f"Clicked {text or 'the control'}.",
+                    scan_id=self.blueprint.scan_id if self.blueprint else "",
+                )
+                return True
+            except Exception as exc:
+                self._last_action_result = ActionResult(
+                    ok=False,
+                    action="click",
+                    error_code="CLICK_FAILED",
+                    message=str(exc)[:200],
+                    scan_id=self.blueprint.scan_id if self.blueprint else "",
+                )
+        return False
 
     def _stopped_gate_result(self) -> Dict[str, Any]:
         """Keep a stop request authoritative even if a gate opened mid-teardown."""

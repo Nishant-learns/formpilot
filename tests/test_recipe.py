@@ -33,6 +33,7 @@ def form_map(
     active_section_id="",
     form_action="",
     gateways=None,
+    next_actions=None,
 ):
     return {
         "portal": portal,
@@ -46,7 +47,8 @@ def form_map(
         "active_section_id": active_section_id,
         "form_action": form_action,
         "gateways": gateways or [],
-        "next_actions": [{"text": "Save & Next", "blocked": False, "kind": "navigation"}],
+        "next_actions": next_actions
+        or [{"text": "Save & Next", "blocked": False, "kind": "navigation"}],
     }
 
 
@@ -384,6 +386,57 @@ def test_recipe_summary_omits_field_content(tmp_path):
     assert summary["fingerprint_short"] == "fp-1"
     assert summary["page_key"] == ""
     assert json.dumps(summary)
+
+
+def test_recipe_keeps_durable_gateway_locators_but_not_scan_ids(tmp_path):
+    store = RecipeStore(tmp_path / "recipes")
+    saved = store.save_from_form_map(
+        form_map(
+            [field("full_name", "Full Name")],
+            gateways=[
+                {
+                    "type": "LOGIN",
+                    "text": "Login",
+                    "id": None,
+                    "name": None,
+                    "tag": "a",
+                    "role": "link",
+                    "href": "/frontend/site/login",
+                    "element_id": "fp-scan-123-11",
+                    "frame": "main",
+                    "css": 'a[href="/frontend/site/login"]',
+                    "css_unique": True,
+                    "xpath": "/html/body/nav[1]/div/a[2]",
+                    "element_hash": "0d889999",
+                    "covered_by": {"tag": "div"},
+                }
+            ],
+            next_actions=[
+                {
+                    "text": "Save & Next",
+                    "element_id": "fp-scan-123-42",
+                    "css": "#save-next",
+                    "kind": "navigation",
+                    "blocked": False,
+                }
+            ],
+        )
+    )
+
+    serialized = json.dumps(saved)
+    assert "fp-scan-123" not in serialized
+    assert "covered_by" not in serialized
+
+    gateway = saved["gateways"][0]
+    assert gateway["role"] == "link"
+    assert gateway["href"] == "/frontend/site/login"
+    assert gateway["css"] == 'a[href="/frontend/site/login"]'
+    assert gateway["xpath"] == "/html/body/nav[1]/div/a[2]"
+    assert gateway["element_hash"] == "0d889999"
+
+    action = saved["next_actions"][0]
+    assert action["css"] == "#save-next"
+    assert "element_id" not in action
 
 
 def test_atomic_write_leaves_no_temporary_files(tmp_path):

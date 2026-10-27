@@ -288,6 +288,40 @@ def test_page_classification_recognizes_registration_gateway():
     assert len(form_map["gateways"]) == 2
 
 
+def test_blueprint_locators_are_first_and_scan_ids_stay_out_of_recipes():
+    dom = sample_dom()
+    dom["inputs"][0].update(
+        {
+            "element_id": "fp-scan-7",
+            "frame": "main",
+            "role": "textbox",
+            "css": "#full_name",
+            "css_unique": True,
+            "xpath": "//*[@id='full_name']",
+            "element_hash": "abc12345",
+            "visible": True,
+            "interactable": True,
+            "covered_by": None,
+        }
+    )
+    form_map = FormModel.build_form_map(dom, "https://example.gov.in/apply")
+    field = form_map["fields"][0]
+
+    assert field["element_id"] == "fp-scan-7"
+    assert field["role"] == "textbox"
+    assert field["css"] == "#full_name"
+    assert field["xpath"] == "//*[@id='full_name']"
+    assert field["element_hash"] == "abc12345"
+    assert field["locators"][0] == {"strategy": "blueprint_id", "value": "fp-scan-7"}
+    assert any(locator["strategy"] == "css" and locator["value"] == "#full_name" for locator in field["locators"])
+
+    compact = FormModel.compact_for_recipe(form_map)[0]
+    assert all(locator["strategy"] != "blueprint_id" for locator in compact["locators"])
+    assert compact["css"] == "#full_name"
+    assert compact["xpath"] == "//*[@id='full_name']"
+    assert compact["element_hash"] == "abc12345"
+
+
 def test_recipe_compaction_contains_no_values_or_pii():
     dom = sample_dom()
     dom["inputs"][0]["value"] = "Aman Kumar Sharma"
