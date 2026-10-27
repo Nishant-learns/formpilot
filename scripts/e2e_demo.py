@@ -73,15 +73,86 @@ async def run(target: str, login: bool) -> int:
                     gate_type = gate.get("gate_type")
                     if gate_type == "GATEWAY_DECISION":
                         options = gate.get("options") or []
-                        wanted = "LOGIN" if login else "NEW_REGISTRATION"
+                        wanted = "login" if login else "register"
                         choice = next(
-                            (option for option in options if option.get("type") == wanted),
-                            options[0] if options else {},
+                            (
+                                option
+                                for option in options
+                                if str(option.get("mode") or option.get("type") or "").lower()
+                                == wanted
+                            ),
+                            None,
                         )
+                        if not choice:
+                            labels = ", ".join(
+                                str(option.get("text") or option.get("mode") or "?")
+                                for option in options
+                            )
+                            print(
+                                f"NO EXPLICIT {wanted.upper()} ENTRY PATH. Options: {labels}",
+                                flush=True,
+                            )
+                            result = 1
+                            break
                         orchestrator.submit_user_response(
                             {
                                 "action": "GATEWAY_CHOICE",
                                 "id": choice.get("id"),
+                                "element_id": choice.get("element_id"),
+                                "text": choice.get("text"),
+                                "mode": choice.get("mode"),
+                                "type": choice.get("type"),
+                            }
+                        )
+                    elif gate_type == "LOGIN_METHOD":
+                        options = gate.get("options") or []
+                        choice = next(
+                            (
+                                option
+                                for option in options
+                                if str(option.get("method") or "").lower()
+                                in {"mobile_otp", "urn_password", "email_password"}
+                            ),
+                            None,
+                        )
+                        if not choice:
+                            print(
+                                "LOGIN METHOD GATE HAS NO KNOWN METHOD; leaving it to a human.",
+                                flush=True,
+                            )
+                            result = 1
+                            break
+                        orchestrator.submit_user_response(
+                            {
+                                "action": "LOGIN_METHOD_CHOICE",
+                                "method": choice.get("method"),
+                                "value": choice.get("value"),
+                                "text": choice.get("text"),
+                            }
+                        )
+                    elif gate_type == "ACCOUNT_IDENTIFIER":
+                        options = gate.get("options") or []
+                        choice = next(
+                            (
+                                option
+                                for option in options
+                                if str(option.get("key") or "").lower() == "mobile"
+                            ),
+                            options[0] if len(options) == 1 else None,
+                        )
+                        if not choice:
+                            print(
+                                "ACCOUNT IDENTIFIER GATE NEEDS A HUMAN CHOICE: "
+                                + ", ".join(str(o.get("text") or o.get("key")) for o in options),
+                                flush=True,
+                            )
+                            result = 1
+                            break
+                        orchestrator.submit_user_response(
+                            {
+                                "action": "ACCOUNT_IDENTIFIER_CHOICE",
+                                "key": choice.get("key"),
+                                "value": choice.get("key"),
                                 "text": choice.get("text"),
                             }
                         )
@@ -124,12 +195,36 @@ async def run(target: str, login: bool) -> int:
                         result = 1
                         break
                     elif gate_type == "SECTION_APPROVAL":
+                        summary = gate.get("fill_summary") or {}
+                        print(
+                            f"SECTION {gate.get('section_number')} FILL: "
+                            f"{summary.get('status')} "
+                            f"({summary.get('verified', 0)}/{summary.get('attempted', 0)} verified)",
+                            flush=True,
+                        )
                         orchestrator.submit_user_response(
                             {"action": "SECTION_APPROVAL", "approved": True}
                         )
+                    elif gate_type == "FILL_INCOMPLETE":
+                        summary = gate.get("fill_summary") or {}
+                        failures = gate.get("fill_failures") or []
+                        print(
+                            "FILL INCOMPLETE: "
+                            f"{summary.get('verified', 0)}/{summary.get('attempted', 0)} verified, "
+                            f"{summary.get('failed', 0)} failed, {summary.get('skipped', 0)} skipped",
+                            flush=True,
+                        )
+                        for failure in failures[:6]:
+                            print(
+                                f"  - {failure.get('field_label')}: {failure.get('reason')}",
+                                flush=True,
+                            )
+                        result = 1
+                        break
                     elif gate_type == "PRE_PAYMENT_SAFETY_LOCK":
                         audit = gate.get("audit_diff") or []
                         matched = sum(1 for row in audit if row.get("status") == "MATCH")
+                        summary = gate.get("fill_summary") or {}
                         label = (
                             "STOPPED BEFORE SUBMISSION"
                             if gate.get("final_action") == "submission"
@@ -139,8 +234,15 @@ async def run(target: str, login: bool) -> int:
                             f"{label}: {matched}/{len(audit)} fields match.",
                             flush=True,
                         )
+                        print(
+                            "FILL SUMMARY: "
+                            f"{summary.get('status')} "
+                            f"({summary.get('verified', 0)}/{summary.get('attempted', 0)} verified, "
+                            f"{summary.get('failed', 0)} failed, {summary.get('skipped', 0)} skipped)",
+                            flush=True,
+                        )
                         print(f"Audit run: {gate.get('run_id')}", flush=True)
-                        result = 0
+                        result = 0 if summary.get("status") in {"FILLED", "NO_FIELDS"} else 1
                         responded = True
                         break
                     elif gate_type == "ERROR_DIAGNOSIS":
@@ -171,6 +273,8 @@ async def run(target: str, login: bool) -> int:
                 "mode": state.get("mode"),
                 "section": state.get("current_section"),
                 "filled": len(state.get("filled_audit") or []),
+                "entry_mode": state.get("entry_mode"),
+                "fill_summary": state.get("fill_summary"),
                 "run_id": state.get("run_id"),
             },
             flush=True,

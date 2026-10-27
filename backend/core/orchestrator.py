@@ -22,7 +22,7 @@ from playwright.async_api import (
     async_playwright,
 )
 
-from . import field_registry, settings
+from . import decision_policy, field_registry, settings
 from .action_resolver import ActionResolver, ActionResult
 from .biometrics import BiometricCompressor
 from .blueprint import BlueprintElement, PageBlueprint
@@ -69,6 +69,18 @@ class FormPilotOrchestrator:
 
         self.current_section = 1
         self.filled_audit: List[Dict[str, Any]] = []
+        self.fill_summary: Optional[Dict[str, Any]] = None
+        self.fill_failures: List[Dict[str, Any]] = []
+        self._fill_targets: List[Dict[str, Any]] = []
+        self._fill_skipped: List[Dict[str, Any]] = []
+        self._last_upload_path = ""
+        self._entry_mode: Optional[str] = None
+        self._requested_entry_mode: Optional[str] = None
+        self._entry_options: List[Dict[str, Any]] = []
+        self._login_method: Optional[str] = None
+        self._login_identifier: Optional[str] = None
+        self._requested_login_method: Optional[str] = None
+        self._requested_login_identifier: Optional[str] = None
 
         self.state = "IDLE"
         self.run_id: Optional[str] = None
@@ -121,6 +133,12 @@ class FormPilotOrchestrator:
             "current_section": self.current_section,
             "active_gate": self.active_gate if self.is_running or self.state in {"WAITING_FOR_USER", "PAUSED"} else None,
             "filled_audit": self._public_audit(),
+            "fill_summary": self.fill_summary,
+            "fill_failures": self.fill_failures,
+            "entry_mode": self._entry_mode,
+            "entry_options": decision_policy.entry_summary(self._entry_options),
+            "login_method": self._login_method,
+            "login_identifier": self._login_identifier,
             "last_error": self.last_error,
             "oracle": self.oracle_result.model_dump() if self.oracle_result else None,
         }
@@ -141,6 +159,18 @@ class FormPilotOrchestrator:
         self._pending_user_response = None
         self._pending_upload = None
         self.filled_audit = []
+        self.fill_summary = None
+        self.fill_failures = []
+        self._fill_targets = []
+        self._fill_skipped = []
+        self._last_upload_path = ""
+        self._entry_mode = None
+        self._requested_entry_mode = None
+        self._entry_options = []
+        self._login_method = None
+        self._login_identifier = None
+        self._requested_login_method = None
+        self._requested_login_identifier = None
         self.current_section = 1
         self.active_gate = None
         self.last_error = None
@@ -275,6 +305,18 @@ class FormPilotOrchestrator:
         self._recipe_status = None
         self.current_section = 1
         self.filled_audit = []
+        self.fill_summary = None
+        self.fill_failures = []
+        self._fill_targets = []
+        self._fill_skipped = []
+        self._last_upload_path = ""
+        self._entry_mode = None
+        self._requested_entry_mode = None
+        self._entry_options = []
+        self._login_method = None
+        self._login_identifier = None
+        self._requested_login_method = None
+        self._requested_login_identifier = None
         self.last_error = None
         self.active_gate = None
         self._pending_user_response = None
@@ -300,6 +342,171 @@ class FormPilotOrchestrator:
             self.active_event_future.set_result(data)
         elif self.active_gate is not None:
             self._pending_user_response = data
+
+    def choose_entry_mode(self, mode: str) -> Dict[str, Any]:
+        """Select register/login/resume without guessing.
+
+        Called by the chat assistant and by the cockpit.  When the entry gate is
+        open the answer is delivered immediately.  Otherwise the choice is
+        remembered and applied the next time the portal actually shows an
+        entry page.  The choice is validated against the options the page
+        offers; an unknown path is refused.
+        """
+        normalized = decision_policy.normalize_mode(mode)
+        if not normalized:
+            return {"success": False, "message": "Choose register, login or resume."}
+
+        options = list(self._entry_options or [])
+        gate = self.active_gate or {}
+        if gate.get("gate_type") == "GATEWAY_DECISION":
+            option = decision_policy.match_entry_response({"mode": normalized}, options)
+            if not option:
+                return {
+                    "success": False,
+                    "message": "The portal does not offer that entry path on this page.",
+                }
+            self.submit_user_response(
+                {
+                    "action": "GATEWAY_CHOICE",
+                    "mode": normalized,
+                    "type": option.get("type"),
+                    "element_id": option.get("element_id"),
+                    "text": option.get("text"),
+                }
+            )
+            return {
+                "success": True,
+                "mode": normalized,
+                "message": f"Selected {self._entry_label(normalized)}.",
+            }
+
+        if self._entry_mode == normalized:
+            return {
+                "success": True,
+                "mode": normalized,
+                "message": f"This session is already using {self._entry_label(normalized)}.",
+            }
+        if self._entry_mode and self._entry_mode not in {"manual", normalized}:
+            return {
+                "success": False,
+                "message": (
+                    "This session already chose a different entry path. "
+                    "Start a new session to change it."
+                ),
+            }
+        if options:
+            option = decision_policy.match_entry_response({"mode": normalized}, options)
+            if not option:
+                return {
+                    "success": False,
+                    "message": "The portal does not offer that entry path on this page.",
+                }
+        self._requested_entry_mode = normalized
+        return {
+            "success": True,
+            "mode": normalized,
+            "message": f"I will open {self._entry_label(normalized)} when the portal shows the entry page.",
+        }
+
+    def choose_login_method(self, method: str) -> Dict[str, Any]:
+        """Select a login method that the open gate actually offers."""
+        normalized = str(method or "").strip()
+        if not normalized:
+            return {"success": False, "message": "Choose a sign-in method."}
+        gate = self.active_gate or {}
+        if gate.get("gate_type") == "LOGIN_METHOD":
+            options = gate.get("options") or []
+            match = next(
+                (
+                    option
+                    for option in options
+                    if normalized
+                    in {
+                        str(option.get("method") or ""),
+                        str(option.get("value") or ""),
+                        str(option.get("text") or ""),
+                    }
+                ),
+                None,
+            )
+            if not match:
+                return {
+                    "success": False,
+                    "message": "That sign-in method is not offered on this form.",
+                }
+            self.submit_user_response(
+                {
+                    "action": "LOGIN_METHOD_CHOICE",
+                    "method": match.get("method"),
+                    "value": match.get("value"),
+                    "text": match.get("text"),
+                }
+            )
+            return {
+                "success": True,
+                "method": match.get("method"),
+                "message": f"Selected {match.get('label') or match.get('text')}.",
+            }
+        self._requested_login_method = normalized
+        return {
+            "success": True,
+            "method": normalized,
+            "message": "I will use that sign-in method when the login form asks for it.",
+        }
+
+    def choose_account_identifier(self, key: str) -> Dict[str, Any]:
+        """Select which account identifier the login form should use."""
+        normalized = str(key or "").strip()
+        if not normalized:
+            return {"success": False, "message": "Choose an account identifier."}
+        gate = self.active_gate or {}
+        if gate.get("gate_type") == "ACCOUNT_IDENTIFIER":
+            options = gate.get("options") or []
+            match = next(
+                (
+                    option
+                    for option in options
+                    if normalized
+                    in {
+                        str(option.get("key") or ""),
+                        str(option.get("value") or ""),
+                        str(option.get("text") or ""),
+                    }
+                ),
+                None,
+            )
+            if not match:
+                return {
+                    "success": False,
+                    "message": "That identifier is not offered on this login form.",
+                }
+            self.submit_user_response(
+                {
+                    "action": "ACCOUNT_IDENTIFIER_CHOICE",
+                    "key": match.get("key"),
+                    "value": match.get("key"),
+                    "text": match.get("text"),
+                }
+            )
+            return {
+                "success": True,
+                "identifier": match.get("key"),
+                "message": f"Using {match.get('text')} to identify the account.",
+            }
+        self._requested_login_identifier = normalized
+        return {
+            "success": True,
+            "identifier": normalized,
+            "message": "I will use that identifier when the login form asks for it.",
+        }
+
+    @staticmethod
+    def _entry_label(mode: str) -> str:
+        return {
+            "register": "account creation",
+            "login": "sign in",
+            "resume": "resume application",
+        }.get(str(mode or ""), "that entry path")
 
     # ---------------------------------------------------------------- browser
 
@@ -475,6 +682,12 @@ class FormPilotOrchestrator:
             "form_map": self.form_map,
             "blueprint": self.blueprint.summary() if self.blueprint else None,
             "recipe": self._recipe_status,
+            "fill_summary": self.fill_summary,
+            "fill_failures": self.fill_failures,
+            "entry_mode": self._entry_mode,
+            "entry_options": decision_policy.entry_summary(self._entry_options),
+            "login_method": self._login_method,
+            "login_identifier": self._login_identifier,
         }
         if self.broadcast_fn:
             try:
@@ -556,6 +769,10 @@ class FormPilotOrchestrator:
 
         self.form_map = form_map
         self._recipe_status = recipe_status
+        try:
+            self._entry_options = decision_policy.entry_options(dom, form_map)
+        except Exception:
+            self._entry_options = []
         fingerprint = str(form_map.get("fingerprint") or "")
         recipe_event_key = f"{recipe_status.get('status')}:{fingerprint}:{recipe_status.get('recipe_id')}"
 
@@ -713,6 +930,20 @@ class FormPilotOrchestrator:
             if await locator.count() == 0:
                 return {"success": False, "message": "This page does not have a visible file input."}
             await locator.set_input_files(str(upload_path), timeout=15000)
+            await self.page.wait_for_timeout(200)
+            fresh = await self._scan_dom()
+            if target:
+                attached = self._file_attached(target, fresh)
+            else:
+                files = [
+                    entry for entry in (fresh.get("fileInputs") or []) if entry.get("hasFile")
+                ]
+                attached = len(files) == 1
+            if not attached:
+                return {
+                    "success": False,
+                    "message": "The portal did not keep the attached file. Attach it in the live browser.",
+                }
         except Exception as exc:
             return {"success": False, "message": f"The portal did not accept the file: {exc}"}
 
@@ -765,9 +996,31 @@ class FormPilotOrchestrator:
             gateways = dom.get("gateways") or []
             inputs = dom.get("inputs") or []
 
-            if gateways and not inputs:
+            # A chat request such as "I need to register first" is remembered
+            # until the portal entry page is actually on screen.  It is applied
+            # only to an explicit option that the page offers.
+            if self._requested_entry_mode and decision_policy.is_entry_page(dom, self.form_map):
+                requested = decision_policy.match_entry_response(
+                    {"mode": self._requested_entry_mode},
+                    self._entry_options,
+                )
+                self._requested_entry_mode = None
+                if requested:
+                    await self._apply_entry_option(requested)
+                    continue
+
+            # Entry mode is never inferred from the URL or history.  The first
+            # entry page always asks when more than one path is visible.
+            if not self._entry_mode and decision_policy.is_entry_page(dom, self.form_map):
                 await self._gateway_checkpoint(dom, gateways)
                 continue
+
+            page_type = str((self.form_map or {}).get("page_type") or "")
+            if self._entry_mode == "login" or page_type == "login":
+                if await self._login_method_checkpoint(dom):
+                    continue
+                if await self._login_identifier_checkpoint(dom):
+                    continue
 
             if not inputs:
                 visible = str(dom.get("visibleText") or "").lower()
@@ -794,6 +1047,12 @@ class FormPilotOrchestrator:
             fresh = await self._scan_dom()
             await self._handle_errors(fresh)
 
+            fill_state = await self._fill_incomplete_checkpoint()
+            if fill_state == "stop":
+                return
+            if fill_state == "recheck":
+                continue
+
             approved = await self._section_checkpoint()
             if not approved:
                 if self.state in {"STOPPED", "FAILED"} or not self.is_running:
@@ -816,80 +1075,175 @@ class FormPilotOrchestrator:
     # ---------------------------------------------------------------- gateways
 
     async def _gateway_checkpoint(self, dom: Dict[str, Any], gateways: List[Dict[str, Any]]):
-        signature = "|".join(sorted(f"{g.get('type')}:{g.get('id')}:{g.get('text')}" for g in gateways))
+        """Ask for an explicit entry path, never infer one.
+
+        ``decision_policy`` has already reduced the page to at most one option
+        per entry type (register, login, resume).  A single explicit option is
+        followed; two or more options open a gate.  A response that does not
+        match exactly one option is rejected and the gate is shown again.
+        """
+        options = list(self._entry_options or [])
+        if not options:
+            try:
+                options = decision_policy.entry_options(dom, self.form_map)
+            except Exception:
+                options = []
+            self._entry_options = options
+
+        if not options:
+            await self._entry_handoff(gateways)
+            return
+
+        if len(options) == 1:
+            await self._apply_entry_option(options[0])
+            return
+
+        signature = "|".join(
+            sorted(
+                f"{option.get('type')}:{option.get('element_id') or option.get('href') or option.get('text')}"
+                for option in options
+            )
+        )
         if signature == self._last_gateway_signature:
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.8)
             return
         self._last_gateway_signature = signature
-
-        unique: List[Dict[str, Any]] = []
-        seen = set()
-        for gateway in gateways:
-            key = (
-                gateway.get("type"),
-                gateway.get("text"),
-                gateway.get("element_id") or gateway.get("css") or gateway.get("id"),
-            )
-            if key in seen:
-                continue
-            seen.add(key)
-            unique.append(gateway)
-
-        if len(unique) == 1:
-            await self._click_gateway(unique[0])
-            return
 
         await self.emit_event(
             "THINK",
             "This portal offers more than one way to start.",
             "Portal par do raste hain. Aap decide karein kaise shuru karna hai.",
         )
+        gate = decision_policy.build_entry_gate(options)
+        gate["live_session"] = self.live.public_info() if self.live and not self.live.closed else None
+        gate["can_takeover"] = bool(self.live)
+
+        while self.is_running:
+            self.active_gate = gate
+            self.state = "WAITING_FOR_USER"
+            if self.live:
+                self.live.set_allow_control(
+                    True,
+                    "Choose the entry path here or in the live browser, then continue.",
+                )
+            await self.emit_event(
+                "DECIDE",
+                "Waiting for you to choose how to start.",
+                "Aapke choice ka intezaar hai.",
+                gate,
+                force_screenshot=True,
+            )
+            response = await self._wait_for_user_response()
+            self.active_gate = None
+            if self.live:
+                self.live.set_allow_control(False, "The agent is driving again.")
+            if response.get("action") in {"STOPPED", "TIMEOUT"}:
+                self.is_running = False
+                return
+            if response.get("action") == "DISMISS":
+                # Dismissing the panel is not a choice.  Keep the decision
+                # open instead of silently taking the first path.
+                await self.emit_event(
+                    "SENSE",
+                    "The entry path is still open. Choose one of the listed options.",
+                    "Shuru ka rasta abhi chuna nahi gaya. Options mein se ek chunein.",
+                )
+                continue
+
+            selected = decision_policy.match_entry_response(response, options)
+            if selected:
+                self.state = "RUNNING"
+                await self._apply_entry_option(selected)
+                return
+            await self.emit_event(
+                "SENSE",
+                "That choice did not match an entry path on this page. Please choose one of the listed options.",
+                "Yeh choice is page ke kisi raste se match nahi hui. Options mein se ek chunein.",
+            )
+
+    async def _apply_entry_option(self, option: Dict[str, Any]) -> None:
+        mode = str(option.get("mode") or decision_policy.normalize_mode(option.get("type")) or "")
+        if not mode:
+            raise AgentRunError(
+                "The portal's entry path could not be identified. Please choose it in the live browser."
+            )
+        self._entry_mode = mode
+        if option.get("source") == "current_page":
+            await self.emit_event(
+                "DECIDE",
+                f"Continuing on this {self._entry_label(mode)} page. Nothing is assumed beyond what the page shows.",
+                "Is page par aage badh rahe hain. Page jo dikha raha hai, usi ke hisaab se.",
+            )
+            return
+        await self._click_gateway(option)
+
+    async def _entry_handoff(self, gateways: List[Dict[str, Any]]) -> None:
+        """Human handoff when the page has entry links we cannot classify."""
+        labels = []
+        seen = set()
+        for gateway in gateways:
+            text = str(gateway.get("text") or "").strip()
+            if not text or text.lower() in seen:
+                continue
+            seen.add(text.lower())
+            labels.append(text)
+        if not labels:
+            raise AgentRunError(
+                "This page does not show a clear way to register, sign in or resume. "
+                "Please open the portal and choose the path yourself."
+            )
+        if not self.live:
+            raise AgentRunError(
+                "This page's entry paths could not be identified. Please open the portal and choose the path yourself."
+            )
         gate = {
-            "gate_type": "GATEWAY_DECISION",
-            "title": "How would you like to start?",
-            "hindi_title": "Shuru kaise karein?",
-            "description": "Choose one option. You can review the next screen before any details are filled.",
-            "options": [
-                {
-                    "id": g.get("id"),
-                    "element_id": g.get("element_id"),
-                    "text": g.get("text"),
-                    "type": g.get("type"),
-                }
-                for g in unique
+            "gate_type": "LIVE_HANDOFF",
+            "handoff_type": "entry_choice",
+            "title": "Choose the entry path in the browser",
+            "hindi_title": "Browser mein shuru ka rasta chunein",
+            "description": (
+                "The portal shows entry links that could not be classified safely. "
+                "Use the live browser to choose register, sign in or resume yourself, then continue."
+            ),
+            "options": [{"text": label} for label in labels[:6]],
+            "live_session": self.live.public_info() if not self.live.closed else None,
+            "can_takeover": True,
+            "instructions": [
+                "Click the correct link in the live browser.",
+                "Wait for the next page to load.",
+                "Then click 'I completed this step'.",
             ],
         }
         self.active_gate = gate
         self.state = "WAITING_FOR_USER"
+        self.live.set_allow_control(True, "Choose the correct entry path in the live browser.")
         await self.emit_event(
             "DECIDE",
-            "Waiting for you to choose how to start.",
-            "Aapke choice ka intezaar hai.",
+            "Choose the entry path in the live browser, then continue.",
+            "Live browser mein sahi rasta chunein, phir continue karein.",
             gate,
             force_screenshot=True,
         )
         response = await self._wait_for_user_response()
         self.active_gate = None
+        self.live.set_allow_control(False, "The agent is driving again.")
         if response.get("action") in {"STOPPED", "TIMEOUT"}:
             self.is_running = False
             return
-
-        selected_id = response.get("id")
-        selected_element_id = response.get("element_id")
-        selected_text = response.get("text")
-        selected = None
-        for gateway in unique:
-            if selected_element_id and gateway.get("element_id") == selected_element_id:
-                selected = gateway
-                break
-            if selected_id and gateway.get("id") == selected_id:
-                selected = gateway
-                break
-        if not selected and selected_text:
-            selected = next((g for g in unique if g.get("text") == selected_text), None)
-        if not selected:
-            selected = unique[0]
-        await self._click_gateway(selected)
+        if response.get("action") not in {"HANDOFF_COMPLETE", "CONTINUE"}:
+            await self.emit_event(
+                "SENSE",
+                "The entry path is still open. Choose it in the live browser, then continue.",
+                "Shuru ka rasta abhi chuna nahi gaya. Live browser mein chunein.",
+            )
+            return
+        self._entry_mode = "manual"
+        self._last_gateway_signature = ""
+        await self.emit_event(
+            "ACT",
+            "Entry path completed in the live browser. Re-reading the page.",
+            "Live browser mein rasta chun liya. Page dobara padh rahe hain.",
+        )
 
     async def _click_gateway(self, gateway: Dict[str, Any]):
         self.state = "RUNNING"
@@ -901,7 +1255,8 @@ class FormPilotOrchestrator:
             f"Opening: {gateway.get('text') or 'the application form'}",
             "Chuni hui option khol rahe hain...",
         )
-        before_url = self.page.url
+        before = await self._page_snapshot()
+        before_url = str(before.get("url") or (self.page.url if self.page else ""))
         if not await self._safe_click(gateway):
             detail = self._last_action_result
             code = f" ({detail.error_code})" if detail and detail.error_code else ""
@@ -920,12 +1275,278 @@ class FormPilotOrchestrator:
                 )
             except Exception:
                 pass
-        await self.page.wait_for_timeout(500)
-        if self.page.url != before_url:
-            # A new page owns its own gateway signature.  If the click did not
-            # navigate, keep the old signature so the loop cannot double-click
-            # the same gateway.
-            self._last_gateway_signature = ""
+        if not await self._wait_for_page_change(before, timeout_ms=9000):
+            raise AgentRunError(
+                "The portal did not open the selected entry path. "
+                "Please choose it directly in the live browser and continue."
+            )
+        # A new page owns its own gateway signature.  If the click did not
+        # navigate, the signature stays so the loop cannot double-click it.
+        self._last_gateway_signature = ""
+
+    async def _page_snapshot(self) -> Dict[str, Any]:
+        """Cheap identity of the current page for real change detection."""
+        if not self.page:
+            return {}
+        try:
+            snapshot = await self.page.evaluate(
+                r"""() => {
+                    const text = (document.body && document.body.innerText
+                        ? document.body.innerText : '').replace(/\s+/g, ' ').trim();
+                    const active = document.querySelector(
+                        '.form-section.active, .section.active, [data-section].active'
+                    );
+                    const heading = document.querySelector(
+                        '.form-section.active h2, .section.active h2, h1, h2'
+                    );
+                    let digest = 0;
+                    for (let i = 0; i < text.length && i < 4000; i += 1) {
+                        digest = ((digest << 5) - digest + text.charCodeAt(i)) | 0;
+                    }
+                    return {
+                        url: location.href,
+                        title: document.title || '',
+                        section: active ? (active.id || '') : '',
+                        heading: heading ? (heading.innerText || '').trim().slice(0, 160) : '',
+                        inputCount: document.querySelectorAll(
+                            'input:not([type="hidden"]), select, textarea, [contenteditable="true"]'
+                        ).length,
+                        buttonCount: document.querySelectorAll(
+                            'button, input[type="submit"], input[type="button"], a[role="button"]'
+                        ).length,
+                        textDigest: String(digest),
+                    };
+                }"""
+            )
+            return snapshot if isinstance(snapshot, dict) else {}
+        except Exception:
+            return {"url": getattr(self.page, "url", ""), "title": "", "section": "", "heading": ""}
+
+    async def _wait_for_page_change(
+        self,
+        before: Dict[str, Any],
+        *,
+        timeout_ms: int = 9000,
+    ) -> bool:
+        if not before:
+            return False
+        keys = ("url", "title", "section", "heading", "inputCount", "buttonCount", "textDigest")
+        deadline = time.monotonic() + max(0.5, timeout_ms / 1000)
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.25)
+            after = await self._page_snapshot()
+            if any(str(before.get(key) or "") != str(after.get(key) or "") for key in keys):
+                return True
+        return False
+
+    async def _select_login_method(
+        self,
+        field: Dict[str, Any],
+        option: Dict[str, Any],
+    ) -> None:
+        result = await self._apply_field_value(field, str(option.get("value") or ""))
+        if not result.get("success"):
+            raise AgentRunError(
+                "The login method could not be selected. Please choose it in the live browser and continue."
+            )
+        await self.page.wait_for_timeout(350)
+        self._login_method = str(option.get("method") or "")
+        await self.emit_event(
+            "ACT",
+            f"Sign-in method selected: {option.get('label') or option.get('text')}.",
+            "Sign-in ka tarika select ho gaya.",
+        )
+
+    async def _login_method_checkpoint(self, dom: Dict[str, Any]) -> bool:
+        """Require an explicit choice when a login form offers several methods."""
+        selection = decision_policy.login_method_options(dom)
+        if not selection:
+            return False
+        options = selection.get("options") or []
+        field = selection.get("field") or {}
+        if not options:
+            return False
+        current_value = str(field.get("value") or "")
+        current = next(
+            (option for option in options if str(option.get("value") or "") == current_value),
+            None,
+        )
+
+        requested = self._requested_login_method
+        if requested:
+            self._requested_login_method = None
+            match = decision_policy.match_login_method_response(
+                {"method": requested, "value": requested, "text": requested},
+                selection,
+            )
+            if match:
+                self._login_method = str(match.get("method") or "")
+                if current_value != str(match.get("value") or ""):
+                    await self._select_login_method(field, match)
+                    return True
+                return False
+            await self.emit_event(
+                "SENSE",
+                "That sign-in method is not offered on this form. Please choose one of its options.",
+                "Yeh sign-in method is form par nahi hai. Form ke options mein se chunein.",
+            )
+
+        if self._login_method:
+            match = next(
+                (
+                    option
+                    for option in options
+                    if str(option.get("method") or "") == self._login_method
+                ),
+                None,
+            )
+            if match:
+                if current_value != str(match.get("value") or ""):
+                    await self._select_login_method(field, match)
+                    return True
+                return False
+            self._login_method = None
+
+        if len(options) == 1:
+            option = options[0]
+            self._login_method = str(option.get("method") or "")
+            if current_value != str(option.get("value") or ""):
+                await self._select_login_method(field, option)
+                return True
+            return False
+
+        gate = decision_policy.build_login_method_gate(selection)
+        gate["live_session"] = self.live.public_info() if self.live and not self.live.closed else None
+        gate["can_takeover"] = bool(self.live)
+        while self.is_running:
+            self.active_gate = gate
+            self.state = "WAITING_FOR_USER"
+            if self.live:
+                self.live.set_allow_control(
+                    True,
+                    "Choose the sign-in method here or in the live browser, then continue.",
+                )
+            await self.emit_event(
+                "DECIDE",
+                "Waiting for you to choose a sign-in method.",
+                "Sign-in method ka intezaar hai.",
+                gate,
+                force_screenshot=True,
+            )
+            response = await self._wait_for_user_response()
+            self.active_gate = None
+            if self.live:
+                self.live.set_allow_control(False, "The agent is driving again.")
+            if response.get("action") in {"STOPPED", "TIMEOUT"}:
+                self.is_running = False
+                return True
+            if response.get("action") == "DISMISS":
+                await self.emit_event(
+                    "SENSE",
+                    "The sign-in method is still open. Choose one of the listed methods.",
+                    "Sign-in method abhi chuna nahi gaya. Options mein se chunein.",
+                )
+                continue
+            selected = decision_policy.match_login_method_response(response, selection)
+            if selected:
+                await self._select_login_method(field, selected)
+                return True
+            await self.emit_event(
+                "SENSE",
+                "That choice did not match a sign-in method on this form. Please choose one of the listed methods.",
+                "Yeh choice kisi sign-in method se match nahi hui. Options mein se chunein.",
+            )
+        return True
+
+    async def _login_identifier_checkpoint(self, dom: Dict[str, Any]) -> bool:
+        """Require an explicit account identifier when several are visible."""
+        selection = decision_policy.identifier_options(dom)
+        if not selection:
+            return False
+        options = selection.get("options") or []
+        if not options:
+            return False
+
+        if self._login_identifier and not any(
+            str(option.get("key") or "") == self._login_identifier for option in options
+        ):
+            self._login_identifier = None
+
+        requested = self._requested_login_identifier
+        if requested:
+            self._requested_login_identifier = None
+            match = next(
+                (option for option in options if str(option.get("key") or "") == requested),
+                None,
+            )
+            if match:
+                self._login_identifier = requested
+                await self.emit_event(
+                    "THINK",
+                    f"Using {match.get('label')} to identify this account.",
+                    "Is account ko is detail se identify kar rahe hain.",
+                )
+                return False
+            await self.emit_event(
+                "SENSE",
+                "That account identifier is not offered on this login form. Please choose one of its options.",
+                "Yeh identifier is login form par nahi hai. Form ke options mein se chunein.",
+            )
+
+        if self._login_identifier:
+            return False
+
+        if len(options) == 1:
+            self._login_identifier = str(options[0].get("key") or "")
+            return False
+
+        gate = decision_policy.build_identifier_gate(selection)
+        gate["live_session"] = self.live.public_info() if self.live and not self.live.closed else None
+        gate["can_takeover"] = bool(self.live)
+        while self.is_running:
+            self.active_gate = gate
+            self.state = "WAITING_FOR_USER"
+            if self.live:
+                self.live.set_allow_control(
+                    True,
+                    "Choose the account identifier here or in the live browser, then continue.",
+                )
+            await self.emit_event(
+                "DECIDE",
+                "Waiting for you to choose which detail identifies your account.",
+                "Aapka account kis detail se khulta hai, iska intezaar hai.",
+                gate,
+                force_screenshot=True,
+            )
+            response = await self._wait_for_user_response()
+            self.active_gate = None
+            if self.live:
+                self.live.set_allow_control(False, "The agent is driving again.")
+            if response.get("action") in {"STOPPED", "TIMEOUT"}:
+                self.is_running = False
+                return True
+            if response.get("action") == "DISMISS":
+                await self.emit_event(
+                    "SENSE",
+                    "The account identifier is still open. Choose one of the listed options.",
+                    "Account identifier abhi chuna nahi gaya. Options mein se chunein.",
+                )
+                continue
+            selected = decision_policy.match_identifier_response(response, selection)
+            if selected:
+                self._login_identifier = str(selected.get("key") or "")
+                await self.emit_event(
+                    "THINK",
+                    f"Using {selected.get('label')} to identify this account.",
+                    "Is account ko is detail se identify kar rahe hain.",
+                )
+                return False
+            await self.emit_event(
+                "SENSE",
+                "That choice did not match an account identifier on this form. Please choose one of the listed options.",
+                "Yeh choice kisi identifier se match nahi hui. Options mein se chunein.",
+            )
+        return True
 
     # ---------------------------------------------------------------- filling
 
@@ -1016,29 +1637,113 @@ class FormPilotOrchestrator:
         except Exception:
             return {"success": False, "reason": "The field could not be reached."}
 
+    @staticmethod
+    def _is_security_code_field(item: Dict[str, Any]) -> bool:
+        """OTP and CAPTCHA inputs have their own human-only checkpoints.
+
+        They must not count as skipped form fields, otherwise every OTP page
+        would be reported as an incomplete fill.
+        """
+        haystack = " ".join(
+            str(item.get(key) or "")
+            for key in ("label", "name", "id", "placeholder", "aria_label")
+        ).lower()
+        return bool(
+            re.search(
+                r"otp|one[-\s]?time\s*(?:password|code)|verification\s*code|"
+                r"auth(?:entication)?\s*code|captcha|security\s*check",
+                haystack,
+            )
+        )
+
     async def _fill_form(self, dom: Dict[str, Any]) -> int:
-        filled = 0
+        """Fill fields, then verify every value against a fresh DOM scan.
+
+        Nothing is recorded in ``filled_audit`` until the portal itself shows
+        the expected value.  The UI reads ``fill_summary`` and therefore cannot
+        claim a form was filled when the page is empty or the portal rejected a
+        value.
+        """
+        targets: List[Dict[str, Any]] = []
+        skipped: List[Dict[str, Any]] = []
         vault = self.vault_mgr.vault
+        login_selection = decision_policy.login_method_options(dom)
+        login_field = (login_selection or {}).get("field") or {}
+        page_type = str((self.form_map or {}).get("page_type") or "").lower()
+        login_page = self._entry_mode == "login" or page_type == "login"
+        upload_keys = {"photo_upload", "signature_upload", "matric_cert_upload"}
+
         for item in dom.get("inputs") or []:
             if not self.is_running:
                 break
-            if (item.get("type") or "").lower() in {"submit", "button", "reset", "image"}:
+            if (item.get("type") or "").lower() in {"submit", "button", "reset", "image", "hidden"}:
                 continue
+            if self._is_security_code_field(item):
+                # Handled by _handle_otp / _handle_captcha, never by the fill
+                # verifier.
+                continue
+
+            label = str(item.get("label") or item.get("name") or item.get("id") or "field")
+            if login_field and self._same_field(item, login_field):
+                # The method selector has its own explicit checkpoint.
+                continue
+
+            if login_page and self._login_identifier:
+                identifier = decision_policy.classify_identifier(item)
+                if identifier and identifier != self._login_identifier:
+                    skipped.append(
+                        {
+                            "item": item,
+                            "sem_key": identifier,
+                            "label": label,
+                            "reason": "Not the account identifier you chose.",
+                        }
+                    )
+                    continue
 
             sem_key, _is_verify = DOMScanner.classify_field(item)
             custom_field = False
             if not sem_key:
                 if not self._should_ask_unknown(item):
+                    skipped.append(
+                        {
+                            "item": item,
+                            "sem_key": "",
+                            "label": label,
+                            "reason": "No high-confidence match for this label.",
+                        }
+                    )
                     continue
                 value = await self._ask_for_unknown_field(item)
                 if not value:
+                    skipped.append(
+                        {
+                            "item": item,
+                            "sem_key": "",
+                            "label": label,
+                            "reason": "You skipped this field.",
+                        }
+                    )
                     continue
                 sem_key = self._custom_key(item)
                 custom_field = True
             else:
-                if sem_key in {"photo_upload", "signature_upload", "matric_cert_upload"}:
-                    if await self._handle_upload(item, sem_key):
-                        filled += 1
+                if sem_key in upload_keys:
+                    self._last_upload_path = ""
+                    uploaded = await self._handle_upload(item, sem_key)
+                    targets.append(
+                        {
+                            "item": item,
+                            "sem_key": sem_key,
+                            "label": label,
+                            "value": self._last_upload_path or "attached by you",
+                            "method": "file",
+                            "custom": False,
+                            "kind": "upload",
+                            "apply_ok": bool(uploaded),
+                            "reason": "" if uploaded else "The file was not attached.",
+                        }
+                    )
                     continue
 
                 value = vault.find_field_value(sem_key)
@@ -1048,27 +1753,327 @@ class FormPilotOrchestrator:
                 if not value:
                     value = await self._ask_for_missing_field(item, sem_key)
                     if not value:
+                        skipped.append(
+                            {
+                                "item": item,
+                                "sem_key": sem_key,
+                                "label": label,
+                                "reason": "No value was available for this field.",
+                            }
+                        )
                         continue
                     vault = self.vault_mgr.vault
 
             result = await self._apply_field_value(item, str(value))
+            targets.append(
+                {
+                    "item": item,
+                    "sem_key": sem_key,
+                    "label": label,
+                    "value": str(value),
+                    "method": result.get("method", "input"),
+                    "custom": custom_field,
+                    "kind": "field",
+                    "apply_ok": bool(result.get("success")),
+                    "reason": str(result.get("reason") or ""),
+                }
+            )
+            await asyncio.sleep(0.08)
 
-            if result.get("success"):
-                filled += 1
-                self._record_fill(item, sem_key, str(value), result.get("method", "input"), custom=custom_field)
-                await self.emit_event(
-                    "ACT",
-                    f"Filled: {item.get('label') or sem_key}",
-                    f"{item.get('label') or sem_key} bhar diya hai.",
+        return await self._verify_fill_targets(targets, skipped)
+
+    @staticmethod
+    def _same_field(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
+        for key in ("element_id", "id", "name"):
+            left_value = str(left.get(key) or "")
+            right_value = str(right.get(key) or "")
+            if left_value and left_value == right_value:
+                return True
+        return False
+
+    @staticmethod
+    def _norm_exact(value: Any) -> str:
+        return re.sub(r"\s+", " ", str(value or "")).strip()
+
+    @classmethod
+    def _values_match(
+        cls,
+        item: Dict[str, Any],
+        expected: str,
+        actual: str,
+        raw_value: str,
+    ) -> bool:
+        field_type = str(item.get("type") or "text").lower()
+        tag = str(item.get("tagName") or "").lower()
+        if field_type == "password":
+            return expected == actual
+        if tag == "select":
+            return any(
+                cls._normalise_value(candidate) == cls._normalise_value(actual)
+                for candidate in (expected, raw_value)
+                if candidate
+            )
+        if field_type in {"date", "tel", "number", "email"}:
+            return any(
+                cls._normalise_value(candidate) == cls._normalise_value(actual)
+                for candidate in (expected, raw_value)
+                if candidate
+            )
+        return any(
+            cls._norm_exact(candidate) == cls._norm_exact(actual)
+            for candidate in (expected, raw_value)
+            if candidate
+        )
+
+    @staticmethod
+    def _find_current_input(
+        item: Dict[str, Any],
+        dom: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        inputs = [entry for entry in (dom.get("inputs") or []) if isinstance(entry, dict)]
+        frame = str(item.get("frame") or "")
+        for key in ("id", "name"):
+            value = str(item.get(key) or "")
+            if not value:
+                continue
+            matches = [
+                entry
+                for entry in inputs
+                if str(entry.get(key) or "") == value
+                and (not frame or not entry.get("frame") or str(entry.get("frame")) == frame)
+            ]
+            if len(matches) == 1:
+                return matches[0]
+        try:
+            index = int(item.get("index") or 0)
+        except (TypeError, ValueError):
+            return None
+        matches = [
+            entry
+            for entry in inputs
+            if int(entry.get("index") or -1) == index
+            and (not frame or not entry.get("frame") or str(entry.get("frame")) == frame)
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    @staticmethod
+    def _file_attached(item: Dict[str, Any], dom: Dict[str, Any]) -> bool:
+        frame = str(item.get("frame") or "")
+        for key in ("id", "name"):
+            value = str(item.get(key) or "")
+            if not value:
+                continue
+            matches = [
+                entry
+                for entry in (dom.get("fileInputs") or [])
+                if str(entry.get(key) or "") == value
+                and (not frame or not entry.get("frame") or str(entry.get("frame")) == frame)
+            ]
+            if len(matches) == 1:
+                return bool(matches[0].get("hasFile"))
+        current = FormPilotOrchestrator._find_current_input(item, dom)
+        if current:
+            return bool(current.get("value") or current.get("fileCount"))
+        files = [entry for entry in (dom.get("fileInputs") or []) if entry.get("hasFile")]
+        return len(files) == 1
+
+    def _drop_audit_for(self, item: Dict[str, Any], sem_key: str) -> None:
+        item_id = str(item.get("id") or "")
+        item_name = str(item.get("name") or "")
+        kept: List[Dict[str, Any]] = []
+        for record in self.filled_audit:
+            same = False
+            if item_id and str(record.get("field_id") or "") == item_id:
+                same = True
+            elif item_name and str(record.get("field_name") or "") == item_name:
+                same = True
+            elif not item_id and not item_name and str(record.get("vault_key") or "") == str(sem_key or ""):
+                same = True
+            if not same:
+                kept.append(record)
+        self.filled_audit = kept
+
+    async def _verify_fill_targets(
+        self,
+        targets: List[Dict[str, Any]],
+        skipped: List[Dict[str, Any]],
+    ) -> int:
+        self._fill_targets = list(targets)
+        self._fill_skipped = list(skipped)
+        self.fill_failures = []
+        verified = 0
+        field_results: List[Dict[str, Any]] = []
+
+        try:
+            fresh = await self._scan_dom()
+        except Exception:
+            fresh = {"inputs": [], "fileInputs": []}
+
+        for target in targets:
+            item = target.get("item") or {}
+            sem_key = str(target.get("sem_key") or "")
+            label = str(target.get("label") or sem_key or "field")
+            if not target.get("apply_ok"):
+                reason = str(target.get("reason") or "The portal did not accept this value.")
+                self._drop_audit_for(item, sem_key)
+                self.fill_failures.append(
+                    {"field_label": label, "vault_key": sem_key, "status": "FAILED", "reason": reason}
+                )
+                field_results.append(
+                    {"field_label": label, "vault_key": sem_key, "status": "FAILED"}
+                )
+                continue
+
+            if target.get("kind") == "upload":
+                attached = self._file_attached(item, fresh)
+                if attached:
+                    verified += 1
+                    self._record_fill(item, sem_key, str(target.get("value") or ""), "file")
+                    field_results.append(
+                        {"field_label": label, "vault_key": sem_key, "status": "VERIFIED"}
+                    )
+                else:
+                    self._drop_audit_for(item, sem_key)
+                    self.fill_failures.append(
+                        {
+                            "field_label": label,
+                            "vault_key": sem_key,
+                            "status": "FAILED",
+                            "reason": "The portal did not keep the attached file.",
+                        }
+                    )
+                    field_results.append(
+                        {"field_label": label, "vault_key": sem_key, "status": "FAILED"}
+                    )
+                continue
+
+            current = self._find_current_input(item, fresh)
+            field_type = str(item.get("type") or "text").lower()
+            if current is None:
+                self._drop_audit_for(item, sem_key)
+                self.fill_failures.append(
+                    {
+                        "field_label": label,
+                        "vault_key": sem_key,
+                        "status": "FAILED",
+                        "reason": "The field disappeared after it was filled.",
+                    }
+                )
+                field_results.append(
+                    {"field_label": label, "vault_key": sem_key, "status": "FAILED"}
+                )
+                continue
+
+            if field_type in {"checkbox", "radio"}:
+                expected = str(target.get("value") or "").strip().lower()
+                wanted = expected not in {"", "no", "false", "0", "unchecked"}
+                matches = bool(current.get("checked")) == wanted
+            else:
+                actual_values = [
+                    str(current.get("value") or ""),
+                    str(current.get("selectedText") or ""),
+                ]
+                matches = any(
+                    self._values_match(
+                        item,
+                        str(target.get("value") or ""),
+                        actual,
+                        str(target.get("value") or ""),
+                    )
+                    for actual in actual_values
+                    if actual
+                )
+
+            if matches:
+                verified += 1
+                self._record_fill(
+                    item,
+                    sem_key,
+                    str(target.get("value") or ""),
+                    str(target.get("method") or "input"),
+                    custom=bool(target.get("custom")),
+                )
+                field_results.append(
+                    {"field_label": label, "vault_key": sem_key, "status": "VERIFIED"}
                 )
             else:
-                await self.emit_event(
-                    "SENSE",
-                    f"Could not fill {item.get('label') or sem_key}: {result.get('reason', 'unknown reason')}",
-                    f"{item.get('label') or sem_key} fill nahi ho paya. Aap ise manually check kar sakte hain.",
+                self._drop_audit_for(item, sem_key)
+                self.fill_failures.append(
+                    {
+                        "field_label": label,
+                        "vault_key": sem_key,
+                        "status": "FAILED",
+                        "reason": "The portal did not keep the value that was entered.",
+                    }
                 )
-            await asyncio.sleep(0.08)
-        return filled
+                field_results.append(
+                    {"field_label": label, "vault_key": sem_key, "status": "FAILED"}
+                )
+
+        for skip in skipped:
+            item = skip.get("item") or {}
+            sem_key = str(skip.get("sem_key") or "")
+            label = str(skip.get("label") or sem_key or "field")
+            self._drop_audit_for(item, sem_key)
+            self.fill_failures.append(
+                {
+                    "field_label": label,
+                    "vault_key": sem_key,
+                    "status": "SKIPPED",
+                    "reason": str(skip.get("reason") or "This field was skipped."),
+                }
+            )
+            field_results.append(
+                {"field_label": label, "vault_key": sem_key, "status": "SKIPPED"}
+            )
+
+        attempted = len(targets)
+        skipped_count = len(skipped)
+        failed_count = sum(1 for failure in self.fill_failures if failure.get("status") == "FAILED")
+        if attempted == 0 and skipped_count == 0:
+            status = "NO_FIELDS"
+        elif verified == 0:
+            status = "FAILED"
+        elif failed_count == 0 and skipped_count == 0 and verified == attempted:
+            status = "FILLED"
+        else:
+            status = "PARTIAL"
+
+        self.fill_summary = {
+            "status": status,
+            "page_url": self.page.url if self.page else self.target_url,
+            "section": self.current_section,
+            "attempted": attempted,
+            "verified": verified,
+            "failed": failed_count,
+            "skipped": skipped_count,
+            "fields": field_results,
+            "verified_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+
+        if verified:
+            await self.emit_event(
+                "ACT",
+                f"Verified {verified} of {attempted} filled field(s) on this page.",
+                f"Is page par {attempted} mein se {verified} field verify ho gaye.",
+            )
+        if self.fill_failures:
+            labels = ", ".join(
+                str(failure.get("field_label") or "field")
+                for failure in self.fill_failures[:4]
+            )
+            await self.emit_event(
+                "SENSE",
+                f"{len(self.fill_failures)} field(s) need attention: {labels}.",
+                f"{len(self.fill_failures)} field par dhyan dein: {labels}.",
+            )
+        if status == "NO_FIELDS":
+            await self.emit_event(
+                "SENSE",
+                "No fillable fields were found on this page.",
+                "Is page par bharne ke liye koi field nahi mila.",
+            )
+        return verified
 
     @staticmethod
     def _should_ask_unknown(item: Dict[str, Any]) -> bool:
@@ -1268,11 +2273,11 @@ class FormPilotOrchestrator:
             )
             return await self._upload_handoff(item, sem_key, live_photo=live_photo)
 
-        self._record_fill(item, sem_key, str(candidate), "file")
+        self._last_upload_path = str(candidate)
         await self.emit_event(
             "ACT",
-            f"Uploaded: {item.get('label') or sem_key}",
-            f"{item.get('label') or sem_key} upload ho gaya.",
+            f"Uploaded: {item.get('label') or sem_key}. Verifying the attachment.",
+            f"{item.get('label') or sem_key} upload ho gaya. Attachment verify kar rahe hain.",
         )
         return True
 
@@ -1701,6 +2706,81 @@ class FormPilotOrchestrator:
 
     # ---------------------------------------------------------------- review + advance
 
+    async def _fill_incomplete_checkpoint(self) -> str:
+        """Stop when the page did not keep every value.
+
+        Returns ``recheck`` to rescan and fill again, ``continue`` when the
+        human explicitly accepts the incomplete state, or ``stop``.
+        """
+        summary = self.fill_summary or {}
+        if str(summary.get("status") or "") not in {"PARTIAL", "FAILED"}:
+            return "continue"
+
+        gate = {
+            "gate_type": "FILL_INCOMPLETE",
+            "title": "Some fields are not filled",
+            "hindi_title": "Kuch fields nahi bhare",
+            "section_number": self.current_section,
+            "description": (
+                "The portal did not keep every value FormPilot entered. "
+                "The form is not fully filled. Recheck the fields, edit them in the live browser, "
+                "or continue only after you have reviewed them yourself."
+            ),
+            "fill_summary": summary,
+            "fill_failures": list(self.fill_failures),
+            "fields_filled": self._public_audit(),
+            "live_session": self.live.public_info() if self.live and not self.live.closed else None,
+            "can_takeover": bool(self.live),
+            "options": [
+                {"action": "FILL_RECHECK", "label": "Recheck and fill again"},
+                {"action": "CONTINUE", "label": "Continue after reviewing"},
+            ],
+        }
+        while self.is_running:
+            self.active_gate = gate
+            self.state = "WAITING_FOR_USER"
+            if self.live:
+                self.live.set_allow_control(
+                    True,
+                    "Review the unfilled fields in the live browser, then choose recheck or continue.",
+                )
+            await self.emit_event(
+                "DECIDE",
+                "Some fields are not filled. Review them before continuing.",
+                "Kuch fields nahi bhare. Aage badhne se pehle unhe check karein.",
+                gate,
+                force_screenshot=True,
+            )
+            response = await self._wait_for_user_response()
+            self.active_gate = None
+            if self.live:
+                self.live.set_allow_control(False, "The agent is driving again.")
+            action = str(response.get("action") or "")
+            if action in {"STOPPED", "TIMEOUT"}:
+                self.is_running = False
+                self.state = "STOPPED" if action == "STOPPED" else "FAILED"
+                if action == "TIMEOUT":
+                    self.last_error = "No response was received. The application was paused."
+                return "stop"
+            if action in {"FILL_RECHECK", "RECHECK"}:
+                await self.emit_event(
+                    "ACT",
+                    "Rechecking the form fields now.",
+                    "Form ke fields dobara check kar rahe hain.",
+                )
+                return "recheck"
+            if action in {"CONTINUE", "FILL_CONTINUE", "SECTION_APPROVAL"}:
+                self.state = "RUNNING"
+                return "continue"
+            if action == "DISMISS":
+                await self.emit_event(
+                    "SENSE",
+                    "The fill check is still open. Recheck the fields or continue after reviewing them.",
+                    "Fill check abhi khula hai. Fields dobara check karein ya review ke baad continue karein.",
+                )
+                continue
+        return "stop"
+
     async def _section_checkpoint(self) -> bool:
         step = self.current_section
         gate = {
@@ -1711,6 +2791,8 @@ class FormPilotOrchestrator:
             "section_number": step,
             "description": "Please check the details on the form. You can edit fields directly in the live browser, then continue.",
             "fields_filled": self._public_audit(),
+            "fill_summary": self.fill_summary,
+            "fill_failures": list(self.fill_failures),
             "live_session": self.live.public_info() if self.live and not self.live.closed else None,
             "can_takeover": bool(self.live),
         }
@@ -1765,6 +2847,7 @@ class FormPilotOrchestrator:
         if self._is_final_action(button):
             await self._trigger_pre_payment_lock(final_action=True)
             return True
+        before = await self._page_snapshot()
         await self.emit_event(
             "ACT",
             f"Saving section {previous_step}...",
@@ -1774,8 +2857,13 @@ class FormPilotOrchestrator:
         if not await self._safe_click(button):
             return False
 
-        changed = await adapter.wait_for_step_change(self.page, previous_step)
+        changed = await self._wait_for_page_change(before)
         if not changed:
+            await self.emit_event(
+                "SENSE",
+                "The portal did not move to the next step. Nothing was saved.",
+                "Portal agle step par nahi gaya. Kuch save nahi hua.",
+            )
             return False
 
         self._captcha_signature = ""
@@ -1803,8 +2891,8 @@ class FormPilotOrchestrator:
 
         await self.emit_event(
             "ACT",
-            f"Section {previous_step} saved.",
-            f"Section {previous_step} save ho gaya.",
+            f"Section {previous_step} saved and the next step is open.",
+            f"Section {previous_step} save ho gaya aur agla step khul gaya.",
         )
         return True
 
@@ -1939,7 +3027,13 @@ class FormPilotOrchestrator:
             except Exception:
                 pass
 
-        safety_status = "READY_FOR_REVIEW" if mismatches == 0 else "NEEDS_REVIEW"
+        fill_status = str((self.fill_summary or {}).get("status") or "")
+        fill_incomplete = fill_status in {"PARTIAL", "FAILED"}
+        safety_status = (
+            "READY_FOR_REVIEW"
+            if mismatches == 0 and not fill_incomplete
+            else "NEEDS_REVIEW"
+        )
         gate = {
             "gate_type": "PRE_PAYMENT_SAFETY_LOCK",
             "title": (
@@ -1974,6 +3068,8 @@ class FormPilotOrchestrator:
             "total_verified_fields": len(records) - mismatches,
             "total_checked_fields": len(records),
             "total_mismatches": mismatches,
+            "fill_summary": self.fill_summary,
+            "fill_failures": list(self.fill_failures),
             "safety_status": safety_status,
             "registration_id": reg_id,
             "portal_url": self.page.url if self.page else self.target_url,

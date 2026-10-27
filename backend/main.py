@@ -421,6 +421,10 @@ class ChatMessageRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=2000)
 
 
+class EntryModeRequest(BaseModel):
+    mode: str = Field(..., pattern="^(register|login|resume)$")
+
+
 @app.post("/api/agent/start")
 async def start_agent(req: LaunchRequest):
     if orchestrator.is_running:
@@ -443,6 +447,27 @@ async def start_agent(req: LaunchRequest):
         "mode": req.mode,
         "run_id": orchestrator.run_id,
     }
+
+
+@app.post("/api/agent/entry-mode")
+async def choose_entry_mode(req: EntryModeRequest):
+    """Select register/login/resume explicitly, without guessing."""
+    result = orchestrator.choose_entry_mode(req.mode)
+    if not result.get("success"):
+        raise HTTPException(status_code=409, detail=result.get("message") or "That entry path is not available.")
+    await broadcast_to_cockpits(
+        {
+            "timestamp": datetime.datetime.now().strftime("%H:%M:%S"),
+            "phase": "DECIDE",
+            "message": result.get("message") or "Entry path selected.",
+            "state": orchestrator.state,
+            "run_id": orchestrator.run_id,
+            "entry_mode": orchestrator._entry_mode,
+            "entry_options": orchestrator.get_state().get("entry_options") or [],
+            "fill_summary": orchestrator.fill_summary,
+        }
+    )
+    return result
 
 
 @app.post("/api/agent/inspect/scan")
@@ -599,6 +624,11 @@ async def post_chat_message(req: ChatMessageRequest):
             "action_taken": result.get("action_taken"),
             "field_updated": result.get("field_updated"),
             "new_value": result.get("new_value"),
+            "entry_mode": result.get("entry_mode"),
+            "login_method": result.get("login_method"),
+            "login_identifier": result.get("login_identifier"),
+            "fill_summary": orchestrator.fill_summary,
+            "fill_failures": orchestrator.fill_failures,
         }
     )
     return result
@@ -719,6 +749,12 @@ async def cockpit_websocket(websocket: WebSocket):
                 "live_session": orchestrator.live.public_info() if orchestrator.live and not orchestrator.live.closed else None,
                 "form_map": orchestrator.form_map,
                 "recipe": orchestrator._recipe_status,
+                "fill_summary": orchestrator.fill_summary,
+                "fill_failures": orchestrator.fill_failures,
+                "entry_mode": orchestrator._entry_mode,
+                "entry_options": orchestrator.get_state().get("entry_options") or [],
+                "login_method": orchestrator._login_method,
+                "login_identifier": orchestrator._login_identifier,
             }
         )
         while True:
@@ -743,6 +779,11 @@ async def cockpit_websocket(websocket: WebSocket):
                         "action_taken": result.get("action_taken"),
                         "field_updated": result.get("field_updated"),
                         "new_value": result.get("new_value"),
+                        "entry_mode": result.get("entry_mode"),
+                        "login_method": result.get("login_method"),
+                        "login_identifier": result.get("login_identifier"),
+                        "fill_summary": orchestrator.fill_summary,
+                        "fill_failures": orchestrator.fill_failures,
                     }
                 )
             elif action == "PING":

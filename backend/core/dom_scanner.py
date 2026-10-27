@@ -49,29 +49,51 @@ class DOMScanner:
         };
 
         const clickables = Array.from(document.querySelectorAll('button, a, input[type="button"], input[type="submit"], [role="button"], .btn, .loginButton'));
+        const authHref = (href) => {
+            const value = String(href || '').toLowerCase();
+            if (!value) return null;
+            if (/(?:resume|continue|track|status|saved[-_]?application)/.test(value)) return 'RESUME';
+            if (/(?:^|\/)(?:signup|sign-up|register|registration|create-account|new-registration|account\/create)(?:\/|$|[?#])/.test(value)) return 'NEW_REGISTRATION';
+            if (/(?:^|\/)(?:login|log-in|signin|sign-in)(?:\/|$|[?#])/.test(value)) return 'LOGIN';
+            return null;
+        };
+        const entryType = (text, href, insideForm) => {
+            const label = String(text || '').replace(/\s+/g, ' ').trim();
+            if (!label || label.length > 140) return null;
+            if (/forgot|help|instruction|manual|faq|guideline|privacy|terms|contact|download|notification|syllabus|result|admit\s*card/i.test(label)) return null;
+            const pathType = authHref(href);
+            if (insideForm && !pathType) return null;
+            if (pathType) return pathType;
+            const resume = /resume|continue\s+(?:my\s+)?application|already\s+started|saved\s+application|track\s+(?:my\s+)?application|application\s+status/i.test(label);
+            const register = /new\s*registration|account\s*creation|create\s*(?:an?\s*)?account|create\s+your\s+account|register(?:\s*here)?|registration\b|sign\s*up|signup|new\s*user|new\s*applicant|first[-\s]*time|get\s*started|\botr\b|apply\s*online/i.test(label);
+            const login = /candidate\s*login|log\s*in|login|sign\s*in|signin|already\s*registered|returning\s*candidate|existing\s*(?:user|account|candidate)/i.test(label);
+            if (resume && !register) return 'RESUME';
+            if (register && login) return null;
+            if (register) return 'NEW_REGISTRATION';
+            if (login) return 'LOGIN';
+            return null;
+        };
         const gateways = [];
         for (const btn of clickables) {
             if (!isVisible(btn)) continue;
             const text = (btn.innerText || btn.value || btn.getAttribute('aria-label') || '').trim();
-            const lower = text.toLowerCase();
-            let gType = null;
-            if (/new\s*registration|create\s*account|register\s*here|new\s*user|otr|apply\s*online|sign\s*up/i.test(lower)) {
-                gType = 'NEW_REGISTRATION';
-            } else if (/candidate\s*login|sign\s*in|login|log\s*in|already\s*registered/i.test(lower)) {
-                gType = 'LOGIN';
-            } else if (/aadhaar|digilocker/i.test(lower)) {
-                gType = 'DIGILOCKER_AADHAAR';
-            }
+            const href = btn.getAttribute('href') || '';
+            const insideForm = Boolean(btn.closest('form'));
+            const gType = entryType(text, href, insideForm);
             if (gType) {
                 const rect = btn.getBoundingClientRect();
                 gateways.push({
                     text: text,
                     type: gType,
                     tagName: btn.tagName.toLowerCase(),
+                    role: (btn.getAttribute('role') || '').toLowerCase(),
                     id: btn.id || null,
                     name: btn.name || null,
                     className: btn.className || '',
-                    href: btn.getAttribute('href') || null,
+                    href: href || null,
+                    insideForm: insideForm,
+                    visible: true,
+                    interactable: !btn.disabled,
                     elementId: btn.getAttribute('data-fp-id') || null,
                     rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height }
                 });
@@ -103,6 +125,7 @@ class DOMScanner:
                 required: el.required || el.getAttribute('aria-required') === 'true' || getLabel(el).includes('*'),
                 placeholder: el.placeholder || '',
                 options: options,
+                selectedText: tag === 'select' && el.selectedIndex >= 0 ? el.options[el.selectedIndex].text : '',
                 elementId: el.getAttribute('data-fp-id') || null,
                 rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height }
             });
@@ -111,19 +134,36 @@ class DOMScanner:
         const nextButtons = [];
         for (const btn of clickables) {
             if (!isVisible(btn)) continue;
-            const text = (btn.innerText || btn.value || '').trim();
-            if (/save\s*&\s*next|save\s*and\s*next|proceed|continue|next\s*step|submit|log\s*in|sign\s*in/i.test(text)) {
-                const rect = btn.getBoundingClientRect();
-                nextButtons.push({
-                    text: text,
-                    id: btn.id || null,
-                    name: btn.name || null,
-                    className: btn.className || '',
-                    href: btn.getAttribute('href') || null,
-                    elementId: btn.getAttribute('data-fp-id') || null,
-                    rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height }
-                });
-            }
+            const text = (btn.innerText || btn.value || btn.getAttribute('aria-label') || '').trim();
+            const href = btn.getAttribute('href') || '';
+            const insideForm = Boolean(btn.closest('form'));
+            if (!text) continue;
+            if (/forgot|help|instruction|manual|faq|guideline|privacy|terms|download|notification|syllabus|result|admit\s*card|back|previous|cancel/i.test(text)) continue;
+            // A login/signup navigation link is an entry path, never the
+            // button that advances the current form.
+            if (authHref(href)) continue;
+            const isSubmitControl = ['button', 'input'].includes(btn.tagName.toLowerCase())
+                || /submit|btn-next|btn-main|next/i.test(String(btn.className || ''))
+                || /submit|next/i.test(String(btn.id || ''));
+            if (entryType(text, href, insideForm) && !insideForm && !isSubmitControl) continue;
+            const nextish = /save\s*&\s*next|save\s*and\s*next|proceed|continue|next\s*step|\bnext\b|submit|log\s*in|sign\s*in|register|create\s*(?:an?\s*)?account|account\s*creation|verify|confirm|send\s*otp|get\s*otp|apply|pay|checkout|finish|complete\s*(?:application|registration|profile)|save|update/i.test(text);
+            if (!nextish) continue;
+            const rect = btn.getBoundingClientRect();
+            nextButtons.push({
+                text: text,
+                tagName: btn.tagName.toLowerCase(),
+                type: String(btn.type || '').toLowerCase(),
+                role: (btn.getAttribute('role') || '').toLowerCase(),
+                id: btn.id || null,
+                name: btn.name || null,
+                className: btn.className || '',
+                href: href || null,
+                insideForm: insideForm,
+                visible: true,
+                interactable: !btn.disabled,
+                elementId: btn.getAttribute('data-fp-id') || null,
+                rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height }
+            });
         }
 
         const getNearbyText = (el) => {
@@ -336,6 +376,8 @@ class DOMScanner:
                 type: (el.type || el.tagName.toLowerCase()).toLowerCase(),
                 value: el.type === 'file' ? (el.files && el.files.length ? el.files[0].name : '') : (el.value || el.innerText || ''),
                 checked: !!el.checked,
+                fileCount: el.type === 'file' && el.files ? el.files.length : 0,
+                elementId: el.getAttribute('data-fp-id') || null,
                 selectedText: el.tagName && el.tagName.toLowerCase() === 'select' && el.selectedIndex >= 0 ? el.options[el.selectedIndex].text : ''
             }));
     }

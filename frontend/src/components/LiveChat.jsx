@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   Send,
   Sparkles,
   CheckCircle2,
@@ -17,7 +18,17 @@ const WELCOME = {
   action_taken: 'GREETING',
 };
 
-export default function LiveChat({ onSendMessage, chatMessages, voiceEnabled, onClearChat }) {
+export default function LiveChat({
+  onSendMessage,
+  chatMessages,
+  voiceEnabled,
+  onClearChat,
+  entryMode,
+  entryOptions,
+  loginMethod,
+  loginIdentifier,
+  activeGate,
+}) {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef(null);
@@ -83,6 +94,52 @@ export default function LiveChat({ onSendMessage, chatMessages, voiceEnabled, on
     { label: 'Show my progress', query: 'What is my current status?' },
   ];
 
+  const gateType = activeGate?.gate_type || '';
+  const gateOptions = activeGate?.options || [];
+  const entryNeeded = gateType === 'GATEWAY_DECISION' || (!entryMode && (entryOptions?.length || 0) > 0);
+  const entryChoices = gateType === 'GATEWAY_DECISION'
+    ? gateOptions
+    : (entryOptions || []);
+  const entryChips = entryNeeded
+    ? entryChoices.slice(0, 4).map((option) => ({
+        label: option.text || option.mode || option.type || 'Entry path',
+        query: option.mode || option.type || option.text,
+      }))
+    : [];
+  const loginChips = gateType === 'LOGIN_METHOD'
+    ? gateOptions.slice(0, 4).map((option) => ({
+        label: option.label || option.text || option.method,
+        query: option.label || option.text || option.method,
+      }))
+    : [];
+  const identifierChips = gateType === 'ACCOUNT_IDENTIFIER'
+    ? gateOptions.slice(0, 4).map((option) => ({
+        label: option.text || option.key,
+        query: option.text || option.key,
+      }))
+    : [];
+  const fillChips = gateType === 'FILL_INCOMPLETE'
+    ? [
+        { label: 'Recheck fields', query: 'Recheck the fields and fill again' },
+        { label: 'Continue after review', query: 'Continue after reviewing the form' },
+      ]
+    : [];
+  const gateChips = [...fillChips, ...entryChips, ...loginChips, ...identifierChips];
+  const chips = gateChips.length
+    ? [...gateChips, ...quickChips.slice(0, 2)]
+    : quickChips;
+  const entryBadge = entryMode === 'register'
+    ? 'Creating account'
+    : entryMode === 'login'
+      ? 'Signing in'
+      : entryMode === 'resume'
+        ? 'Resuming'
+        : entryMode === 'manual'
+          ? 'Entry chosen by you'
+          : '';
+  const methodBadge = loginMethod ? String(loginMethod).replace(/_/g, ' ') : '';
+  const identifierBadge = loginIdentifier ? String(loginIdentifier).replace(/_/g, ' ') : '';
+
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl flex flex-col h-full min-h-[460px] overflow-hidden">
       <div className="p-3.5 bg-slate-950/80 border-b border-slate-800 flex items-center justify-between shrink-0">
@@ -103,6 +160,25 @@ export default function LiveChat({ onSendMessage, chatMessages, voiceEnabled, on
             <p className="text-[11px] text-slate-400">
               Questions, saved details, or a quick progress check
             </p>
+            {(entryBadge || methodBadge || identifierBadge) && (
+              <div className="mt-1 flex flex-wrap items-center gap-1">
+                {entryBadge && (
+                  <span className="rounded border border-sky-500/30 bg-sky-950/60 px-1.5 py-0.5 text-[9px] font-semibold text-sky-300">
+                    {entryBadge}
+                  </span>
+                )}
+                {methodBadge && (
+                  <span className="rounded border border-emerald-500/30 bg-emerald-950/60 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-300">
+                    {methodBadge}
+                  </span>
+                )}
+                {identifierBadge && (
+                  <span className="rounded border border-slate-600 bg-slate-800/70 px-1.5 py-0.5 text-[9px] font-semibold text-slate-300">
+                    {identifierBadge}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
@@ -173,6 +249,36 @@ export default function LiveChat({ onSendMessage, chatMessages, voiceEnabled, on
                     <span>Live web results</span>
                   </div>
                 )}
+                {['ENTRY_MODE_SELECTED', 'ENTRY_MODE_REQUESTED'].includes(m.action_taken) && (
+                  <div className="mt-2 pt-2 border-t border-slate-800/80 flex items-center gap-1.5 text-[11px] font-mono text-sky-300 font-semibold">
+                    <CheckCircle2 className="w-3 h-3 text-sky-300 shrink-0" />
+                    <span>Entry path: {m.entry_mode || 'selected'}</span>
+                  </div>
+                )}
+                {m.action_taken === 'LOGIN_METHOD_SELECTED' && (
+                  <div className="mt-2 pt-2 border-t border-slate-800/80 flex items-center gap-1.5 text-[11px] font-mono text-emerald-300 font-semibold">
+                    <CheckCircle2 className="w-3 h-3 text-emerald-300 shrink-0" />
+                    <span>Sign-in method: {String(m.login_method || '').replace(/_/g, ' ')}</span>
+                  </div>
+                )}
+                {m.action_taken === 'ACCOUNT_IDENTIFIER_SELECTED' && (
+                  <div className="mt-2 pt-2 border-t border-slate-800/80 flex items-center gap-1.5 text-[11px] font-mono text-slate-300 font-semibold">
+                    <CheckCircle2 className="w-3 h-3 text-slate-300 shrink-0" />
+                    <span>Account identified by: {String(m.login_identifier || '').replace(/_/g, ' ')}</span>
+                  </div>
+                )}
+                {['FILL_RECHECK', 'FILL_CONTINUE', 'FILL_INCOMPLETE'].includes(m.action_taken) && (
+                  <div className="mt-2 pt-2 border-t border-slate-800/80 flex items-center gap-1.5 text-[11px] font-mono text-amber-300 font-semibold">
+                    <AlertTriangle className="w-3 h-3 text-amber-300 shrink-0" />
+                    <span>
+                      {m.action_taken === 'FILL_RECHECK'
+                        ? 'Rechecking every field'
+                        : m.action_taken === 'FILL_CONTINUE'
+                          ? 'Continuing with an incomplete fill recorded'
+                          : 'Some fields are not filled'}
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
           );
@@ -187,9 +293,9 @@ export default function LiveChat({ onSendMessage, chatMessages, voiceEnabled, on
       </div>
 
       <div className="px-3 py-2 bg-slate-950/60 border-t border-slate-800/60 flex items-center gap-1.5 overflow-x-auto no-scrollbar shrink-0">
-        {quickChips.map((chip, idx) => (
+        {chips.map((chip, idx) => (
           <button
-            key={idx}
+            key={`${chip.label}-${idx}`}
             type="button"
             onClick={() => handleSend(chip.query)}
             className="whitespace-nowrap px-2.5 py-1 rounded-lg bg-slate-800/70 hover:bg-slate-800 text-slate-300 hover:text-amber-300 text-[11px] font-medium border border-slate-700/60 transition-all shrink-0"

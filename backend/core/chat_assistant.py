@@ -12,7 +12,7 @@ import datetime
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import field_registry
+from . import decision_policy, field_registry
 from .dom_scanner import DOMScanner
 from .tinyfish_client import TinyFishClient, TinyFishError
 from .vault import VaultManager
@@ -46,6 +46,10 @@ class FormPilotChatAssistant:
         edit = await self._try_field_edit(text)
         if edit:
             return self._remember(edit, timestamp)
+
+        entry = await self._try_entry_action(text)
+        if entry:
+            return self._remember(entry, timestamp)
 
         workflow = await self._try_workflow_action(text)
         if workflow:
@@ -367,11 +371,261 @@ class FormPilotChatAssistant:
                 pass
         return updated
 
+    # ----------------------------------------------------------- entry + login
+
+    _REGISTER_INTENT_RE = re.compile(
+        r"\b(?:register|registration|sign\s*up|signup|create\s+(?:an?\s+)?account|"
+        r"new\s+account|new\s+user|first\s*time|account\s+creation|"
+        r"naya\s+account|nayi\s+registration)\b",
+        re.IGNORECASE,
+    )
+    _LOGIN_INTENT_RE = re.compile(
+        r"\b(?:log\s*in|login|sign\s*in|signin|existing\s+account|"
+        r"already\s+registered|returning\s+candidate|purana\s+account)\b",
+        re.IGNORECASE,
+    )
+    _RESUME_INTENT_RE = re.compile(
+        r"\b(?:resume|continue)\s+(?:my\s+)?(?:application|registration|form)\b|"
+        r"\balready\s+started\b|\bsaved\s+application\b|"
+        r"\btrack\s+(?:my\s+)?application\b|\bapplication\s+status\b",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _entry_mode_from_text(cls, text: str) -> Optional[str]:
+        register = bool(cls._REGISTER_INTENT_RE.search(text))
+        login = bool(cls._LOGIN_INTENT_RE.search(text))
+        resume = bool(cls._RESUME_INTENT_RE.search(text))
+        if resume and not register and not login:
+            return "resume"
+        if register and login:
+            return None
+        if register:
+            return "register"
+        if login:
+            return "login"
+        return None
+
+    @staticmethod
+    def _match_gate_option(text: str, options: List[Dict[str, Any]], keys: Tuple[str, ...]) -> Optional[Dict[str, Any]]:
+        wanted = re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+        if not wanted:
+            return None
+        for option in options:
+            for key in keys:
+                value = re.sub(
+                    r"[^a-z0-9]+", " ", str(option.get(key) or "").lower()
+                ).strip()
+                if value and (value == wanted or value in wanted or wanted in value):
+                    return option
+        return None
+
+    def _entry_help(self, gate: Dict[str, Any]) -> Dict[str, Any]:
+        options = gate.get("options") or []
+        if not options:
+            return {
+                "reply": (
+                    "I need your explicit choice before opening an entry path. "
+                    "Use the live browser to choose register, sign in or resume, then continue."
+                ),
+                "action_taken": "ENTRY_CHOICE_NEEDED",
+            }
+        lines = ["I need one explicit choice before opening a path:"]
+        for option in options:
+            mode = str(option.get("mode") or "").replace("_", " ").title()
+            lines.append(f"• **{option.get('text')}**" + (f" — {mode}" if mode else ""))
+        lines.append(
+            "\nReply with **register**, **login** or **resume**, or use the checkpoint panel."
+        )
+        return {"reply": "\n".join(lines), "action_taken": "ENTRY_CHOICE_NEEDED"}
+
+    def _login_help(self, gate: Dict[str, Any]) -> Dict[str, Any]:
+        options = gate.get("options") or []
+        lines = ["This login form supports more than one sign-in method. Which one is yours?"]
+        for option in options:
+            lines.append(f"• **{option.get('label') or option.get('text')}**")
+        lines.append("\nTell me the method, for example \"mobile OTP\" or \"email password\".")
+        return {"reply": "\n".join(lines), "action_taken": "LOGIN_METHOD_NEEDED"}
+
+    def _identifier_help(self, gate: Dict[str, Any]) -> Dict[str, Any]:
+        options = gate.get("options") or []
+        lines = ["Which detail identifies your account on this login form?"]
+        for option in options:
+            lines.append(f"• **{option.get('text') or option.get('key')}**")
+        lines.append("\nTell me the detail, for example \"mobile number\" or \"registration ID\".")
+        return {"reply": "\n".join(lines), "action_taken": "ACCOUNT_IDENTIFIER_NEEDED"}
+
+    async def _try_entry_action(self, text: str) -> Optional[Dict[str, Any]]:
+        """Turn a chat sentence into a real entry/login decision.
+
+        This runs before the generic workflow so phrases such as
+        "I need to register first" cannot fall through to a greeting.
+        """
+        if not self.orchestrator:
+            return None
+        gate = getattr(self.orchestrator, "active_gate", None) or {}
+        gate_type = str(gate.get("gate_type") or "")
+
+        if gate_type == "GATEWAY_DECISION":
+            options = gate.get("options") or []
+            option_match = re.search(r"\boption\s*(\d+)\b", text, re.IGNORECASE)
+            selected = None
+            if option_match:
+                index = int(option_match.group(1)) - 1
+                if 0 <= index < len(options):
+                    selected = options[index]
+            if not selected:
+                selected = self._match_gate_option(text, options, ("text", "mode", "type"))
+            if not selected:
+                mode = self._entry_mode_from_text(text)
+                if mode:
+                    selected = next(
+                        (option for option in options if option.get("mode") == mode),
+                        None,
+                    )
+            if not selected:
+                return self._entry_help(gate)
+            result = self.orchestrator.choose_entry_mode(
+                str(selected.get("mode") or selected.get("type") or "")
+            )
+            if result.get("success"):
+                return {
+                    "reply": (
+                        f"Done — I selected **{selected.get('text')}**. "
+                        "The portal will open that path; review the next screen before any details are filled."
+                    ),
+                    "action_taken": "ENTRY_MODE_SELECTED",
+                    "entry_mode": result.get("mode"),
+                }
+            return {
+                "reply": result.get("message") or "I could not select that entry path.",
+                "action_taken": "ENTRY_MODE_FAILED",
+            }
+
+        if gate_type == "LOGIN_METHOD":
+            options = gate.get("options") or []
+            selected = self._match_gate_option(
+                text, options, ("method", "label", "text", "value")
+            )
+            method = str(selected.get("method") or "") if selected else decision_policy.classify_login_method(text)
+            if not method:
+                return self._login_help(gate)
+            result = self.orchestrator.choose_login_method(method)
+            if result.get("success"):
+                label = (
+                    selected.get("label")
+                    if selected
+                    else decision_policy.LOGIN_METHOD_LABELS.get(
+                        method, method.replace("_", " ").title()
+                    )
+                )
+                return {
+                    "reply": f"Done — I selected **{label}** for this login.",
+                    "action_taken": "LOGIN_METHOD_SELECTED",
+                    "login_method": result.get("method"),
+                }
+            return {
+                "reply": result.get("message") or "I could not select that sign-in method.",
+                "action_taken": "LOGIN_METHOD_FAILED",
+            }
+
+        if gate_type == "ACCOUNT_IDENTIFIER":
+            options = gate.get("options") or []
+            selected = self._match_gate_option(text, options, ("key", "text", "value"))
+            key = str(selected.get("key") or "") if selected else self._identifier_from_text(text)
+            if not key:
+                return self._identifier_help(gate)
+            result = self.orchestrator.choose_account_identifier(key)
+            if result.get("success"):
+                label = selected.get("text") if selected else key.replace("_", " ").title()
+                return {
+                    "reply": f"Done — I will use **{label}** to identify the account.",
+                    "action_taken": "ACCOUNT_IDENTIFIER_SELECTED",
+                    "login_identifier": result.get("identifier"),
+                }
+            return {
+                "reply": result.get("message") or "I could not select that account identifier.",
+                "action_taken": "ACCOUNT_IDENTIFIER_FAILED",
+            }
+
+        mode = self._entry_mode_from_text(text)
+        if not mode:
+            return None
+        result = self.orchestrator.choose_entry_mode(mode)
+        if result.get("success"):
+            return {
+                "reply": (
+                    f"Understood — {self._entry_phrase(mode)}. "
+                    "I will apply that choice only when the portal actually shows that entry path; "
+                    "I will not guess from the URL or history."
+                ),
+                "action_taken": "ENTRY_MODE_REQUESTED",
+                "entry_mode": result.get("mode"),
+            }
+        return {
+            "reply": result.get("message") or "I could not use that entry path.",
+            "action_taken": "ENTRY_MODE_FAILED",
+        }
+
+    @staticmethod
+    def _identifier_from_text(text: str) -> Optional[str]:
+        lower = text.lower()
+        if re.search(r"aadhaar|aadhar", lower):
+            return "aadhaar_number"
+        if re.search(r"registration|reg\s*(?:id|no|number)|\burn\b|application\s*(?:id|no|number)", lower):
+            return "registration_id"
+        if re.search(r"e-?mail|mail\s*(?:id|address)?", lower):
+            return "email"
+        if re.search(r"mobile|phone|contact\s*(?:no|number)?", lower):
+            return "mobile"
+        if re.search(r"user\s*(?:id|name)|login\s*id", lower):
+            return "username"
+        return None
+
+    @staticmethod
+    def _entry_phrase(mode: str) -> str:
+        return {
+            "register": "you need to create a new account first",
+            "login": "you already have an account and want to sign in",
+            "resume": "you want to resume an application you already started",
+        }.get(mode, "that is the entry path you want")
+
     # --------------------------------------------------------------- workflow
 
     async def _try_workflow_action(self, text: str) -> Optional[Dict[str, Any]]:
         text_lower = text.lower()
         now = datetime.datetime.now().strftime("%H:%M")
+        gate = (getattr(self.orchestrator, "active_gate", None) or {}) if self.orchestrator else {}
+        gate_type = str(gate.get("gate_type") or "")
+
+        if gate_type == "FILL_INCOMPLETE":
+            if re.search(r"\b(recheck|retry|try\s+again|dobara|phir\s+se)\b", text_lower):
+                self.orchestrator.submit_user_response({"action": "FILL_RECHECK"})
+                return {
+                    "reply": "Rechecking the form now. I will verify every field again before asking you to continue.",
+                    "action_taken": "FILL_RECHECK",
+                    "timestamp": now,
+                }
+            if re.search(r"\b(continue|proceed|aage|ignore|skip)\b", text_lower):
+                self.orchestrator.submit_user_response({"action": "CONTINUE"})
+                return {
+                    "reply": (
+                        "Continuing after your review. The fill check is recorded as incomplete, "
+                        "so the form is not marked as fully filled."
+                    ),
+                    "action_taken": "FILL_CONTINUE",
+                    "timestamp": now,
+                }
+            summary = (getattr(self.orchestrator, "fill_summary", None) or {})
+            return {
+                "reply": (
+                    f"Some fields are not filled: {summary.get('verified', 0)} verified, "
+                    f"{summary.get('failed', 0)} failed, {summary.get('skipped', 0)} skipped. "
+                    "Say **recheck** to try again, or **continue** after reviewing the form yourself."
+                ),
+                "action_taken": "FILL_INCOMPLETE",
+                "timestamp": now,
+            }
 
         if re.search(r"\b(stop|cancel|band\s*karo|rok\s*do|exit)\b", text_lower):
             if self.orchestrator:
@@ -412,16 +666,50 @@ class FormPilotChatAssistant:
             state = self.orchestrator.get_state() if self.orchestrator else {}
             section = state.get("current_section") or 1
             filled = len(state.get("filled_audit") or [])
+            summary = state.get("fill_summary") or {}
+            fill_status = str(summary.get("status") or "")
             gate = state.get("active_gate") or {}
             gate_title = gate.get("title") or "No review is pending"
             phase = state.get("state") or "READY"
+            entry_mode = state.get("entry_mode") or "not chosen yet"
+
+            if fill_status == "FILLED":
+                fill_line = (
+                    f"• Fields verified on this page: {summary.get('verified', 0)} "
+                    f"of {summary.get('attempted', 0)}"
+                )
+            elif fill_status == "PARTIAL":
+                fill_line = (
+                    f"• Fields verified: {summary.get('verified', 0)} of "
+                    f"{summary.get('attempted', 0)} — "
+                    f"{summary.get('failed', 0)} failed, {summary.get('skipped', 0)} skipped"
+                )
+            elif fill_status == "FAILED":
+                fill_line = (
+                    f"• Fill failed: 0 of {summary.get('attempted', 0)} attempted fields verified"
+                )
+            elif fill_status == "NO_FIELDS":
+                fill_line = "• No fillable fields were found on the current page"
+            else:
+                fill_line = "• Fill has not been verified yet"
+
+            gate_lines = ""
+            options = gate.get("options") or []
+            if options:
+                gate_lines = "\n• Choices open: " + ", ".join(
+                    str(option.get("text") or option.get("label") or option.get("key") or "")
+                    for option in options[:6]
+                )
+
             return {
                 "reply": (
                     f"**Current status**\n"
                     f"• Stage: {phase.replace('_', ' ').title()}\n"
+                    f"• Entry path: {entry_mode}\n"
                     f"• Section: {section}\n"
-                    f"• Details filled from your saved profile: {filled}\n"
-                    f"• Waiting for you: {gate_title}\n\n"
+                    f"{fill_line}\n"
+                    f"• Details verified in the saved audit: {filled}\n"
+                    f"• Waiting for you: {gate_title}{gate_lines}\n\n"
                     "FormPilot stops before payment or final submission and never submits an application on your behalf."
                 ),
                 "action_taken": "STATUS_REPORT",

@@ -11,7 +11,7 @@ import BiometricsStudio from './components/BiometricsStudio';
 import TinyFishSettingsModal from './components/TinyFishSettingsModal';
 import SessionStrip from './components/SessionStrip';
 import Toasts from './components/Toasts';
-import { MessageSquare, ScanSearch, Terminal } from 'lucide-react';
+import { AlertTriangle, MessageSquare, ScanSearch, Terminal } from 'lucide-react';
 
 const ACTIVE_STATES = new Set(['RESOLVING', 'RUNNING', 'WAITING_FOR_USER', 'PAUSED']);
 const TERMINAL_STATES = new Set(['STOPPED', 'FAILED', 'COMPLETED', 'AWAITING_PAYMENT']);
@@ -54,6 +54,12 @@ export default function App() {
   const [liveSession, setLiveSession] = useState(null);
   const [formMap, setFormMap] = useState(null);
   const [recipe, setRecipe] = useState(null);
+  const [fillSummary, setFillSummary] = useState(null);
+  const [fillFailures, setFillFailures] = useState([]);
+  const [entryMode, setEntryMode] = useState(null);
+  const [entryOptions, setEntryOptions] = useState([]);
+  const [loginMethod, setLoginMethod] = useState(null);
+  const [loginIdentifier, setLoginIdentifier] = useState(null);
   const [rescanning, setRescanning] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [rightTab, setRightTab] = useState('chat'); // 'chat' | 'stream' | 'map'
@@ -203,6 +209,12 @@ export default function App() {
       setLiveSession(data.live_session || null);
       setFormMap(data.form_map || null);
       setRecipe(data.recipe || null);
+      setFillSummary(data.fill_summary || null);
+      setFillFailures(data.fill_failures || []);
+      setEntryMode(data.entry_mode || null);
+      setEntryOptions(data.entry_options || []);
+      setLoginMethod(data.login_method || null);
+      setLoginIdentifier(data.login_identifier || null);
       setCurrentSection(data.current_section || 1);
       setQuery(data.query || '');
       setRunId(data.run_id || null);
@@ -292,6 +304,24 @@ export default function App() {
         if ('recipe' in data) {
           setRecipe(data.recipe || null);
         }
+        if ('fill_summary' in data) {
+          setFillSummary(data.fill_summary || null);
+        }
+        if ('fill_failures' in data) {
+          setFillFailures(data.fill_failures || []);
+        }
+        if ('entry_mode' in data) {
+          setEntryMode(data.entry_mode || null);
+        }
+        if ('entry_options' in data) {
+          setEntryOptions(data.entry_options || []);
+        }
+        if ('login_method' in data) {
+          setLoginMethod(data.login_method || null);
+        }
+        if ('login_identifier' in data) {
+          setLoginIdentifier(data.login_identifier || null);
+        }
 
         // Update active gate. A new checkpoint opens the panel; a hidden panel
         // stays hidden for the same gate.
@@ -325,7 +355,10 @@ export default function App() {
               time: data.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
               action_taken: data.action_taken,
               field_updated: data.field_updated,
-              new_value: data.new_value
+              new_value: data.new_value,
+              entry_mode: data.entry_mode,
+              login_method: data.login_method,
+              login_identifier: data.login_identifier
             }
           ]);
         }
@@ -351,6 +384,12 @@ export default function App() {
     setLiveSession(null);
     setFormMap(null);
     setRecipe(null);
+    setFillSummary(null);
+    setFillFailures([]);
+    setEntryMode(null);
+    setEntryOptions([]);
+    setLoginMethod(null);
+    setLoginIdentifier(null);
     setChatMessages([]);
     setRunMode(mode);
     setRunState('RESOLVING');
@@ -521,7 +560,10 @@ export default function App() {
               time: data.timestamp || time,
               action_taken: data.action_taken,
               field_updated: data.field_updated,
-              new_value: data.new_value
+              new_value: data.new_value,
+              entry_mode: data.entry_mode,
+              login_method: data.login_method,
+              login_identifier: data.login_identifier
             }
           ]);
         } else {
@@ -602,6 +644,9 @@ export default function App() {
             elapsed={elapsed}
             paused={paused}
             runId={runId}
+            fillSummary={fillSummary}
+            entryMode={entryMode}
+            loginMethod={loginMethod}
             onPauseToggle={handlePauseToggle}
             onNewSession={handleNewSession}
           />
@@ -616,6 +661,20 @@ export default function App() {
         {lastError && (
           <div className="mt-3 rounded-xl border border-red-500/35 bg-red-500/10 px-3.5 py-2.5 text-[11px] text-red-200">
             <span className="font-bold">Last issue:</span> {lastError}
+          </div>
+        )}
+
+        {['PARTIAL', 'FAILED'].includes(fillSummary?.status) && (
+          <div className="mt-3 flex items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3.5 py-2.5 text-[11px] text-amber-100">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+            <span>
+              <span className="font-bold">This form is not fully filled.</span>{' '}
+              {fillSummary?.verified || 0} of {fillSummary?.attempted || 0} fields were verified
+              {fillSummary?.failed ? `, ${fillSummary.failed} failed` : ''}
+              {fillSummary?.skipped ? `, ${fillSummary.skipped} skipped` : ''}. Review the
+              highlighted fields in the live browser; FormPilot will not report this section as
+              filled.
+            </span>
           </div>
         )}
 
@@ -675,6 +734,11 @@ export default function App() {
                   chatMessages={chatMessages}
                   voiceEnabled={voiceEnabled}
                   onClearChat={() => setChatMessages([])}
+                  entryMode={entryMode}
+                  entryOptions={entryOptions}
+                  loginMethod={loginMethod}
+                  loginIdentifier={loginIdentifier}
+                  activeGate={currentGate}
                 />
               )}
               {rightTab === 'map' && (

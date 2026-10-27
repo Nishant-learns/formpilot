@@ -24,14 +24,19 @@ from typing import Any, Dict, Iterable, List, Optional
 
 
 _GATEWAY_RE = re.compile(
-    r"new\s*registration|create\s*account|register\s*here|new\s*user|otr|"
-    r"apply\s*online|sign\s*up|candidate\s*login|sign\s*in|login|log\s*in|"
-    r"already\s*registered|aadhaar|digilocker",
+    r"new\s*registration|account\s*creation|create\s*(?:an?\s*)?account|"
+    r"create\s+your\s+account|register(?:\s*here)?|registration\b|new\s*user|"
+    r"new\s*applicant|get\s*started|otr|apply\s*online|sign\s*up|signup|"
+    r"candidate\s*login|sign\s*in|signin|login|log\s*in|already\s*registered|"
+    r"returning\s*candidate|resume|continue\s+(?:my\s+)?application|"
+    r"aadhaar|digilocker",
     re.IGNORECASE,
 )
 _NEXT_RE = re.compile(
-    r"save\s*&\s*next|save\s*and\s*next|proceed|continue|next\s*step|"
-    r"submit|log\s*in|sign\s*in|register|create\s*account",
+    r"save\s*&\s*next|save\s*and\s*next|proceed|continue|next\s*step|\bnext\b|"
+    r"submit|log\s*in|sign\s*in|register|create\s*(?:an?\s*)?account|"
+    r"account\s*creation|verify|confirm|send\s*otp|get\s*otp|apply|pay|"
+    r"checkout|finish|complete\s*(?:application|registration|profile)|save|update",
     re.IGNORECASE,
 )
 _BACK_RE = re.compile(r"\b(?:back|previous|cancel)\b", re.IGNORECASE)

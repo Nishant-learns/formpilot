@@ -77,6 +77,9 @@ export default function SessionStrip({
   elapsed,
   paused,
   runId,
+  fillSummary,
+  entryMode,
+  loginMethod,
   onPauseToggle,
   onNewSession,
 }) {
@@ -98,12 +101,40 @@ export default function SessionStrip({
       : 'New page';
 
   const portalDone = Boolean(formMap || targetUrl);
+  const fillStatus = fillSummary?.status || '';
+  const fillVerified = Number(fillSummary?.verified || 0);
+  const fillAttempted = Number(fillSummary?.attempted || 0);
+  const fillFailed = Number(fillSummary?.failed || 0);
+  const fillSkipped = Number(fillSummary?.skipped || 0);
+  const fillSettled = ['FILLED', 'NO_FIELDS'].includes(fillStatus);
   const fillActive = !inspect && !waiting && !finished && (runState === 'RUNNING' || runState === 'PAUSED' || runState === 'RESOLVING');
-  const fillDone = !inspect && (waiting || ['AWAITING_PAYMENT', 'COMPLETED'].includes(runState));
+  // A section is only "filled" when the backend verified the values on the
+  // portal.  Waiting for the human is not evidence that the page is filled.
+  const fillDone = !inspect && (fillSettled || ['AWAITING_PAYMENT', 'COMPLETED'].includes(runState));
+  const fillDetail = inspect
+    ? `${fields} field${fields === 1 ? '' : 's'}${gateways ? ` · ${gateways} gateway${gateways === 1 ? '' : 's'}` : ''} mapped`
+    : fillStatus === 'FILLED'
+      ? `${fillVerified} of ${fillAttempted} fields verified`
+      : fillStatus === 'PARTIAL'
+        ? `${fillVerified} verified · ${fillFailed} failed · ${fillSkipped} skipped`
+        : fillStatus === 'FAILED'
+          ? `Fill failed · 0 of ${fillAttempted} verified`
+          : fillStatus === 'NO_FIELDS'
+            ? 'No fillable fields on this page'
+            : `${known} of ${fields || '—'} fields matched`;
   const checksActive = waiting;
   const checksDone = !inspect && ['AWAITING_PAYMENT', 'COMPLETED'].includes(runState);
   const reviewActive = runState === 'AWAITING_PAYMENT';
   const reviewDone = runState === 'COMPLETED';
+  const entryLabel = entryMode === 'register'
+    ? 'Account creation'
+    : entryMode === 'login'
+      ? `Sign in${loginMethod ? ` · ${String(loginMethod).replace(/_/g, ' ')}` : ''}`
+      : entryMode === 'resume'
+        ? 'Resume application'
+        : entryMode === 'manual'
+          ? 'Chosen in browser'
+          : '';
 
   const title = query || targetUrl || (inspect ? 'Inspect-only browser' : 'Application in progress');
   const stateLabel = paused
@@ -139,6 +170,11 @@ export default function SessionStrip({
                 }`}>
                   {inspect ? 'Inspect only' : paused ? 'Paused' : 'Guided fill'}
                 </span>
+                {!inspect && entryLabel && (
+                  <span className="rounded-full border border-slate-700 bg-slate-800/70 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em] text-slate-300">
+                    {entryLabel}
+                  </span>
+                )}
                 <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
                   {stateLabel}
                 </span>
@@ -184,9 +220,7 @@ export default function SessionStrip({
           <Step
             icon={ClipboardList}
             label={inspect ? 'Page mapped' : `Details · Section ${currentSection || 1}`}
-            detail={inspect
-              ? `${fields} field${fields === 1 ? '' : 's'}${gateways ? ` · ${gateways} gateway${gateways === 1 ? '' : 's'}` : ''} mapped`
-              : `${known} of ${fields || '—'} fields matched`}
+            detail={fillDetail}
             state={stepState(fillDone || (inspect && portalDone), fillActive, false)}
           />
           <Step

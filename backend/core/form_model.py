@@ -324,20 +324,75 @@ class FormModel:
         scores: Dict[str, int] = {}
         evidence: List[str] = []
 
+        url_path = ""
+        try:
+            url_path = urlsplit(str(url or "")).path.lower()
+        except ValueError:
+            url_path = ""
+
         gateway_types = {str(g.get("type") or "") for g in gateways}
-        if "NEW_REGISTRATION" in gateway_types and "LOGIN" in gateway_types:
+        both_entry_paths = "NEW_REGISTRATION" in gateway_types and "LOGIN" in gateway_types
+        if both_entry_paths and not inputs:
             scores["portal_entry"] = 95
             evidence.append("Both New Registration and Candidate Login are visible.")
-        elif "LOGIN" in gateway_types:
+        elif not inputs and "LOGIN" in gateway_types:
             scores["login"] = 88
             evidence.append("A candidate login option is visible.")
-        elif "NEW_REGISTRATION" in gateway_types:
+        elif not inputs and "NEW_REGISTRATION" in gateway_types:
             scores["registration"] = 86
             evidence.append("A new-registration option is visible.")
 
+        labels = " ".join(
+            " ".join(
+                str(item.get(key) or "")
+                for key in ("label", "name", "id", "placeholder")
+            )
+            for item in inputs
+        ).lower()
         password_input = any(str(item.get("type") or "").lower() == "password" for item in inputs)
-        if password_input:
+        confirm_password = password_input and bool(
+            re.search(r"confirm|re-?enter|repeat|verify", labels)
+        )
+        login_method_select = any(
+            str(item.get("tagName") or "").lower() == "select"
+            and re.search(
+                r"login|method|type",
+                f"{item.get('name') or ''} {item.get('id') or ''} {item.get('label') or ''}",
+                re.IGNORECASE,
+            )
+            and len(item.get("options") or []) >= 2
+            for item in inputs
+        )
+        signup_text = bool(
+            re.search(
+                r"sign\s*up|signup|register|registration|create\s*(?:an?\s*)?account|"
+                r"new\s*user|new\s*applicant|account\s*creation",
+                f"{text} {labels}",
+            )
+        )
+        signup_url = bool(
+            re.search(r"/(?:signup|sign-up|register|registration|create-account|new-registration)(?:/|$)", url_path)
+        )
+        login_text = bool(re.search(r"log\s*in|login|sign\s*in|signin|forgot\s*password", text))
+        login_url = bool(re.search(r"/(?:login|log-in|signin|sign-in)(?:/|$)", url_path))
+
+        if confirm_password:
+            scores["registration"] = max(scores.get("registration", 0), 96)
+            evidence.append("The form asks for a confirmation password.")
+        elif password_input and signup_url:
+            scores["registration"] = max(scores.get("registration", 0), 93)
+            evidence.append("The signup URL and a password field identify account creation.")
+        elif login_method_select:
+            scores["login"] = max(scores.get("login", 0), 94)
+            evidence.append("The login form has a sign-in method selector.")
+        elif password_input and (login_url or login_text):
             scores["login"] = max(scores.get("login", 0), 92)
+            evidence.append("The page has a password field and login language.")
+        elif password_input and signup_text:
+            scores["registration"] = max(scores.get("registration", 0), 93)
+            evidence.append("The form has signup fields and a password field.")
+        elif password_input:
+            scores["login"] = max(scores.get("login", 0), 80)
             evidence.append("The page has a password field.")
 
         if dom.get("hasPaymentButton") or int(dom.get("paymentSignals") or 0) >= 3:

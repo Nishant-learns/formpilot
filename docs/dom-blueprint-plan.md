@@ -29,8 +29,24 @@ Implemented and tested:
   runtime-only and are stripped from recipes.
 - `backend/core/recipe.py`: gateway/next-action recipes keep durable locators
   but never per-scan ids or hit-test geometry.
+- `backend/core/decision_policy.py`: deterministic entry-path, login-method and
+  account-identifier decisions. A single explicit option may be followed; two
+  or more options always open a human gate. There is no `options[0]` fallback.
+  See `docs/decision-policy.md`.
+- `backend/core/orchestrator.py` (decision + verification layer): explicit
+  `GATEWAY_DECISION`, `LOGIN_METHOD`, `ACCOUNT_IDENTIFIER` and
+  `FILL_INCOMPLETE` gates; real page-change verification after entry clicks and
+  section advance; `fill_summary` / `fill_failures` built from a fresh scan so
+  a form is never reported as filled unless the portal kept the values.
+- `backend/core/chat_assistant.py`: entry/login/identifier intents and
+  fill-recheck actions run before the generic workflow and report the real
+  orchestrator result.
+- Frontend: `SessionStrip` only marks details done for `FILLED`/`NO_FIELDS`;
+  `HumanCheckpointModal` renders the new gates; `LiveChat` exposes entry/login
+  quick actions and badges; `App.jsx` shows an incomplete-fill warning banner.
 - Tests: `test_dom_scanner.py`, `test_action_resolver.py`,
-  `test_hpsc_gateway.py`, plus form-model and recipe coverage.
+  `test_hpsc_gateway.py`, `test_decision_policy.py`,
+  `test_fill_verification.py`, plus form-model, chat and recipe coverage.
 
 Verified live on 2026-10-27: the HPSC entry page's `Login` anchor resolves as
 `a[href="/frontend/site/login"]`, role `link`, unique CSS, and clicking it
@@ -473,10 +489,14 @@ New:
 
 - `backend/core/blueprint.py`
 - `backend/core/action_resolver.py`
+- `backend/core/decision_policy.py`
 - `tests/browser_helpers.py`
 - `tests/test_dom_scanner.py`
 - `tests/test_action_resolver.py`
 - `tests/test_hpsc_gateway.py`
+- `tests/test_decision_policy.py`
+- `tests/test_fill_verification.py`
+- `docs/decision-policy.md`
 
 Modified:
 
@@ -484,8 +504,16 @@ Modified:
 - `backend/core/form_model.py`
 - `backend/core/portal_adapter.py`
 - `backend/core/orchestrator.py`
+- `backend/core/chat_assistant.py`
 - `backend/core/recipe.py`
+- `backend/main.py`
+- `frontend/src/App.jsx`
+- `frontend/src/components/SessionStrip.jsx`
+- `frontend/src/components/HumanCheckpointModal.jsx`
+- `frontend/src/components/LiveChat.jsx`
+- `scripts/e2e_demo.py`
 - `tests/test_form_model.py`
+- `tests/test_chat_assistant.py`
 - `tests/test_recipe.py`
 
 Not created: `backend/core/actions.py` was merged into `action_resolver.py`.
@@ -509,6 +537,6 @@ separate HTML file.
 - No AI action without a valid blueprint element ID. Status: no AI actions
   exist yet.
 - CAPTCHA/OTP/payment/final submission never auto-executed. Status: holds.
-- Full test suite green. Status: 145 passed, 2 skipped on 2026-10-27.
+- Full test suite green. Status: 165 passed, 2 skipped on 2026-10-27.
   Both opt-in practice-portal flows also passed: new registration stopped at
   `AWAITING_PAYMENT`; returning-candidate login finished at `DONE`.
