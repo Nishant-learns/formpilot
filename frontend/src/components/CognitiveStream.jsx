@@ -77,7 +77,7 @@ export default function CognitiveStream({ events, voiceEnabled }) {
   ];
 
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-2xl flex flex-col h-[520px] shadow-xl overflow-hidden">
+    <div className="bg-slate-900 border border-slate-800 rounded-2xl flex flex-col h-full min-h-[460px] shadow-xl overflow-hidden">
       <div className="bg-slate-950 px-4 py-3 border-b border-slate-800 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2">
           <Terminal className="w-4 h-4 text-amber-400" />

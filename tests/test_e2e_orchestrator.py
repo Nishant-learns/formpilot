@@ -41,6 +41,29 @@ def test_orchestrator_holds_a_candidate_response_until_a_gate_is_read():
     }
 
 
+def test_stop_wins_a_race_with_a_gate_opening():
+    """A stop request must not leave the run waiting at a freshly opened gate."""
+    import asyncio
+
+    async def scenario():
+        orchestrator = FormPilotOrchestrator()
+        orchestrator.is_running = True
+        orchestrator.state = "RUNNING"
+        orchestrator.active_gate = {"gate_type": "SECTION_APPROVAL"}
+        waiter = asyncio.create_task(orchestrator._wait_for_user_response())
+        await asyncio.sleep(0)
+        await orchestrator.stop()
+        result = await asyncio.wait_for(waiter, timeout=2)
+        return orchestrator, result
+
+    orchestrator, result = asyncio.run(scenario())
+
+    assert result == {"action": "STOPPED"}
+    assert orchestrator.state == "STOPPED"
+    assert orchestrator.active_gate is None
+    assert orchestrator.get_state()["active_gate"] is None
+
+
 def test_final_submit_and_payment_buttons_trigger_a_safety_stop():
     orchestrator = FormPilotOrchestrator()
 

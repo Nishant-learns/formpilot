@@ -51,6 +51,16 @@ def test_third_party_url_is_flagged():
     assert "not a verified government domain" in result.advisory.lower()
 
 
+def test_local_practice_url_is_not_labelled_government():
+    result = PortalOracle.resolve_target("http://127.0.0.1:8000/gov-portal-demo")
+
+    assert result.is_gov_domain is False
+    assert result.is_practice is True
+    assert result.official_verified is False
+    assert result.authority_type == "Practice / local demo"
+    assert "not a government website" in result.advisory.lower()
+
+
 def test_third_party_recruitment_link_is_replaced_with_official_portal():
     result = PortalOracle.resolve_target("https://example.com/railway-ntpc-application")
 

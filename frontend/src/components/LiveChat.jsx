@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Send,
   Sparkles,
@@ -17,17 +17,13 @@ const WELCOME = {
   action_taken: 'GREETING',
 };
 
-export default function LiveChat({ onSendMessage, chatMessages, voiceEnabled }) {
+export default function LiveChat({ onSendMessage, chatMessages, voiceEnabled, onClearChat }) {
   const [input, setInput] = useState('');
-  const [messages, setMessages] = useState(chatMessages?.length ? chatMessages : [WELCOME]);
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef(null);
+  const lastSpokenRef = useRef(WELCOME.text);
 
-  useEffect(() => {
-    if (chatMessages && chatMessages.length > 0) {
-      setMessages(chatMessages);
-    }
-  }, [chatMessages]);
+  const messages = chatMessages?.length ? chatMessages : [WELCOME];
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -35,74 +31,37 @@ export default function LiveChat({ onSendMessage, chatMessages, voiceEnabled }) 
     }
   }, [messages, loading]);
 
-  const quickChips = [
-    { label: 'Documents I need', query: 'Which documents do I need for this application?' },
-    { label: 'Update my date of birth', query: 'Change my date of birth to 15/08/2004' },
-    { label: 'Photo requirements', query: 'What are the photo and signature requirements?' },
-    { label: 'Is the fee refundable?', query: 'Is the application fee refundable?' },
-    { label: 'Pause the application', query: 'Pause the application' },
-    { label: 'Show my progress', query: 'What is my current status?' },
-  ];
+  useEffect(() => {
+    if (!voiceEnabled || !messages.length) return;
+    const latest = messages[messages.length - 1];
+    if (latest.sender === 'Candidate') return;
+    if (!latest.text || latest.text === lastSpokenRef.current) return;
+    if (!('speechSynthesis' in window)) return;
 
-  const speak = (text) => {
-    if (!voiceEnabled || !('speechSynthesis' in window)) return;
+    lastSpokenRef.current = latest.text;
     try {
       window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
+      const utterance = new SpeechSynthesisUtterance(latest.text);
       utterance.lang = 'hi-IN';
       utterance.rate = 1.05;
       window.speechSynthesis.speak(utterance);
     } catch (err) {
       // Voice is optional; text is always available.
     }
-  };
+  }, [messages, voiceEnabled]);
 
   const handleSend = async (textToSend) => {
     const text = (textToSend || input).trim();
     if (!text || loading) return;
 
-    const userTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    setMessages((prev) => [...prev, { sender: 'Candidate', text, time: userTime }]);
     setInput('');
     setLoading(true);
-
     try {
       if (onSendMessage) {
         await onSendMessage(text);
-      } else {
-        const res = await fetch('/api/chat/message', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: text }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          setMessages((prev) => [
-            ...prev,
-            {
-              sender: 'FormPilot',
-              text: data.reply,
-              time: data.timestamp || userTime,
-              action_taken: data.action_taken,
-              field_updated: data.field_updated,
-              new_value: data.new_value,
-            },
-          ]);
-          speak(data.reply);
-        } else {
-          throw new Error('Request failed');
-        }
       }
     } catch (err) {
       console.error('Chat send error:', err);
-      setMessages((prev) => [
-        ...prev,
-        {
-          sender: 'FormPilot',
-          text: "I couldn't send that message. Please check your connection and try again.",
-          time: userTime,
-        },
-      ]);
     } finally {
       setLoading(false);
     }
@@ -115,13 +74,18 @@ export default function LiveChat({ onSendMessage, chatMessages, voiceEnabled }) 
     }
   };
 
-  const clearChat = () => {
-    setMessages([{ ...WELCOME, text: 'Chat cleared. What would you like help with?' }]);
-  };
+  const quickChips = [
+    { label: 'Documents I need', query: 'Which documents do I need for this application?' },
+    { label: 'Update my date of birth', query: 'Change my date of birth to 15/08/2004' },
+    { label: 'Photo requirements', query: 'What are the photo and signature requirements?' },
+    { label: 'Is the fee refundable?', query: 'Is the application fee refundable?' },
+    { label: 'Pause the application', query: 'Pause the application' },
+    { label: 'Show my progress', query: 'What is my current status?' },
+  ];
 
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl flex flex-col h-[520px] overflow-hidden">
-      <div className="p-3.5 bg-slate-950/80 border-b border-slate-800 flex items-center justify-between">
+    <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl flex flex-col h-full min-h-[460px] overflow-hidden">
+      <div className="p-3.5 bg-slate-950/80 border-b border-slate-800 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2.5">
           <div className="relative">
             <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-amber-600 to-orange-500 flex items-center justify-center text-slate-950 font-black text-xs shadow-md">
@@ -143,7 +107,8 @@ export default function LiveChat({ onSendMessage, chatMessages, voiceEnabled }) 
         </div>
 
         <button
-          onClick={clearChat}
+          type="button"
+          onClick={() => onClearChat?.()}
           className="p-1.5 rounded-lg text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition-colors"
           title="Clear conversation"
         >
@@ -156,7 +121,7 @@ export default function LiveChat({ onSendMessage, chatMessages, voiceEnabled }) 
           const isUser = m.sender === 'Candidate';
           return (
             <div
-              key={i}
+              key={`${m.time}-${i}-${m.sender}`}
               className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} animate-fadeIn`}
             >
               <div className="flex items-center gap-1.5 mb-1 text-[10px] text-slate-500">
@@ -221,7 +186,7 @@ export default function LiveChat({ onSendMessage, chatMessages, voiceEnabled }) 
         )}
       </div>
 
-      <div className="px-3 py-2 bg-slate-950/60 border-t border-slate-800/60 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+      <div className="px-3 py-2 bg-slate-950/60 border-t border-slate-800/60 flex items-center gap-1.5 overflow-x-auto no-scrollbar shrink-0">
         {quickChips.map((chip, idx) => (
           <button
             key={idx}
@@ -239,7 +204,7 @@ export default function LiveChat({ onSendMessage, chatMessages, voiceEnabled }) 
           e.preventDefault();
           handleSend();
         }}
-        className="p-3 bg-slate-950 border-t border-slate-800 flex items-center gap-2"
+        className="p-3 bg-slate-950 border-t border-slate-800 flex items-center gap-2 shrink-0"
       >
         <input
           type="text"

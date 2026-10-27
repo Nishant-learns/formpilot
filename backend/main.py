@@ -488,10 +488,77 @@ async def upload_for_portal(
     return result
 
 
+@app.post("/api/agent/pause")
+async def pause_agent():
+    if not orchestrator.is_running:
+        return {"success": False, "message": "There is no active application to pause."}
+    if orchestrator.state == "WAITING_FOR_USER":
+        return {
+            "success": False,
+            "message": "The agent is already waiting for your input at a checkpoint.",
+        }
+    if orchestrator.state not in {"RUNNING", "RESOLVING"}:
+        return {
+            "success": False,
+            "message": "The agent is not currently working, so there is nothing to pause.",
+        }
+    orchestrator.pause()
+    await broadcast_to_cockpits(
+        {
+            "timestamp": datetime.datetime.now().strftime("%H:%M:%S"),
+            "phase": "DECIDE",
+            "message": "Application paused. Take your time to review.",
+            "state": orchestrator.state,
+            "run_id": orchestrator.run_id,
+        }
+    )
+    return {"success": True, "state": orchestrator.state}
+
+
+@app.post("/api/agent/resume")
+async def resume_agent():
+    if not orchestrator.is_running:
+        return {"success": False, "message": "There is no active application to resume."}
+    if not orchestrator.paused:
+        return {"success": False, "message": "The application is already running."}
+    orchestrator.resume()
+    await broadcast_to_cockpits(
+        {
+            "timestamp": datetime.datetime.now().strftime("%H:%M:%S"),
+            "phase": "ACT",
+            "message": "Application resumed.",
+            "state": orchestrator.state,
+            "run_id": orchestrator.run_id,
+        }
+    )
+    return {"success": True, "state": orchestrator.state}
+
+
 @app.post("/api/agent/stop")
 async def stop_agent():
     await orchestrator.stop()
     return {"success": True, "message": "Application stopped."}
+
+
+@app.post("/api/agent/reset")
+async def reset_agent():
+    if not await orchestrator.reset_session():
+        return {
+            "success": False,
+            "message": "Stop the active application before starting a new one.",
+        }
+    await broadcast_to_cockpits(
+        {
+            "timestamp": datetime.datetime.now().strftime("%H:%M:%S"),
+            "phase": "DECIDE",
+            "message": "Ready for a new application.",
+            "state": "IDLE",
+            "run_id": None,
+            "active_gate": None,
+            "run_mode": "fill",
+        }
+    )
+    return {"success": True, "state": "IDLE"}
 
 
 @app.post("/api/agent/dismiss-gate")

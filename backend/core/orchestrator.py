@@ -59,6 +59,7 @@ class FormPilotOrchestrator:
         self.is_running = False
         self.paused = False
         self._is_paused = False
+        self._stop_requested = False
         self.active_gate: Optional[Dict[str, Any]] = None
         self.active_event_future: Optional[asyncio.Future] = None
         self._pending_user_response: Optional[Dict[str, Any]] = None
@@ -112,7 +113,7 @@ class FormPilotOrchestrator:
             "form_map": self.form_map,
             "recipe": self._recipe_status,
             "current_section": self.current_section,
-            "active_gate": self.active_gate,
+            "active_gate": self.active_gate if self.is_running or self.state in {"WAITING_FOR_USER", "PAUSED"} else None,
             "filled_audit": self._public_audit(),
             "last_error": self.last_error,
             "oracle": self.oracle_result.model_dump() if self.oracle_result else None,
@@ -130,6 +131,7 @@ class FormPilotOrchestrator:
         self.is_running = True
         self.paused = False
         self._is_paused = False
+        self._stop_requested = False
         self._pending_user_response = None
         self._pending_upload = None
         self.filled_audit = []
@@ -200,24 +202,30 @@ class FormPilotOrchestrator:
             self.state = "STOPPED"
             await self.emit_event("DECIDE", "Application stopped.", "Application stop ho gayi.")
         except AgentRunError as exc:
-            self.state = "FAILED"
-            self.last_error = str(exc)
-            await self.emit_event(
-                "DECIDE",
-                str(exc),
-                "Is portal ko verify nahi kar paye. Official notification link check karein.",
-                force_screenshot=True,
-            )
+            if self._stop_requested:
+                self.state = "STOPPED"
+            else:
+                self.state = "FAILED"
+                self.last_error = str(exc)
+                await self.emit_event(
+                    "DECIDE",
+                    str(exc),
+                    "Is portal ko verify nahi kar paye. Official notification link check karein.",
+                    force_screenshot=True,
+                )
         except Exception:
-            self.state = "FAILED"
-            self.last_error = "Something went wrong while filling this portal. Please try again or use the official portal directly."
-            traceback.print_exc()
-            await self.emit_event(
-                "DECIDE",
-                self.last_error,
-                "Kuch technical dikkat aa gayi. Dobara koshish karein ya official portal par khud apply karein.",
-                force_screenshot=True,
-            )
+            if self._stop_requested:
+                self.state = "STOPPED"
+            else:
+                self.state = "FAILED"
+                self.last_error = "Something went wrong while filling this portal. Please try again or use the official portal directly."
+                traceback.print_exc()
+                await self.emit_event(
+                    "DECIDE",
+                    self.last_error,
+                    "Kuch technical dikkat aa gayi. Dobara koshish karein ya official portal par khud apply karein.",
+                    force_screenshot=True,
+                )
         finally:
             self.is_running = False
             if self.state not in {"AWAITING_PAYMENT", "INSPECT_READY"}:
@@ -229,15 +237,46 @@ class FormPilotOrchestrator:
             )
 
     async def stop(self):
+        self._stop_requested = True
         self.is_running = False
+        self.paused = False
+        self._is_paused = False
         self.state = "STOPPED"
         if self.active_event_future and not self.active_event_future.done():
             self.active_event_future.set_result({"action": "STOPPED"})
         self.active_event_future = None
+        self.active_gate = None
         await self._cleanup()
         if self.run_id:
             self.run_store.finish(self.run_id, "STOPPED")
         await self.emit_event("DECIDE", "Application stopped.", "Application stop ho gayi.")
+
+    async def reset_session(self) -> bool:
+        """Return a finished session to a clean launcher state.
+
+        Only allowed when nothing is running; a live run must be stopped first
+        so this can never silently discard an in-flight application.
+        """
+        if self.is_running:
+            return False
+        await self._cleanup()
+        self.state = "IDLE"
+        self.run_id = None
+        self.query = ""
+        self.target_url = ""
+        self.oracle_result = None
+        self.form_map = None
+        self._recipe_status = None
+        self.current_section = 1
+        self.filled_audit = []
+        self.last_error = None
+        self.active_gate = None
+        self._pending_user_response = None
+        self._stop_requested = False
+        self.paused = False
+        self._is_paused = False
+        self.run_mode = "fill"
+        return True
 
     def pause(self):
         self._is_paused = True
@@ -425,6 +464,7 @@ class FormPilotOrchestrator:
             "state": self.state,
             "mode": self.mode,
             "run_mode": self.run_mode,
+            "last_error": self.last_error,
             "live_session": self.live.public_info() if self.live and not self.live.closed else None,
             "form_map": self.form_map,
             "recipe": self._recipe_status,
@@ -1892,15 +1932,29 @@ class FormPilotOrchestrator:
         except Exception:
             return False
 
+    def _stopped_gate_result(self) -> Dict[str, Any]:
+        """Keep a stop request authoritative even if a gate opened mid-teardown."""
+        self.state = "STOPPED"
+        self.active_gate = None
+        return {"action": "STOPPED"}
+
     async def _wait_for_user_response(self) -> Dict[str, Any]:
+        if self._stop_requested or not self.is_running:
+            return self._stopped_gate_result()
         if self._pending_user_response is not None:
             result = self._pending_user_response
             self._pending_user_response = None
             return result
         loop = asyncio.get_running_loop()
         self.active_event_future = loop.create_future()
+        # Close the race where stop() lands between the check above and the
+        # future being created: either this check sees the stop request, or
+        # stop() sees the future and resolves it.
+        if self._stop_requested or not self.is_running:
+            self.active_event_future = None
+            return self._stopped_gate_result()
         try:
-            return await asyncio.wait_for(self.active_event_future, timeout=settings.GATE_TIMEOUT_SECONDS)
+            result = await asyncio.wait_for(self.active_event_future, timeout=settings.GATE_TIMEOUT_SECONDS)
         except asyncio.TimeoutError:
             self.active_event_future = None
             await self.emit_event(
@@ -1911,4 +1965,7 @@ class FormPilotOrchestrator:
             return {"action": "TIMEOUT"}
         finally:
             self.active_event_future = None
+        if result.get("action") == "STOPPED":
+            return self._stopped_gate_result()
+        return result
 

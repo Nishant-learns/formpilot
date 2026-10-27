@@ -7,13 +7,19 @@ import {
   Maximize2,
   Minimize2,
   MousePointer2,
+  Pause,
+  Play,
   Power,
   Radio,
   RefreshCw,
   ScanSearch,
   Shield,
+  ShieldCheck,
+  Sparkles,
   Unplug,
   Wifi,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
 
 function wsUrlFor(path) {
@@ -41,15 +47,20 @@ export default function LiveViewport({
   currentSection,
   onStop,
   onRescan,
+  onPauseToggle,
+  onPractice,
   runMode,
   runState,
+  paused,
   pendingGate,
   onOpenGate,
+  className = '',
 }) {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [frame, setFrame] = useState('');
   const [viewport, setViewport] = useState({ width: 1280, height: 800 });
   const [pageInfo, setPageInfo] = useState({ url: '', title: '' });
+  const [zoom, setZoom] = useState(100);
   const [control, setControl] = useState({
     enabled: runMode === 'inspect',
     reason: runMode === 'inspect'
@@ -365,16 +376,21 @@ export default function LiveViewport({
   const live = Boolean(wsPath);
   const canControl = Boolean(connected && control.enabled);
   const active = agentRunning || runState === 'WAITING_FOR_USER';
+  const finished = ['STOPPED', 'FAILED', 'COMPLETED'].includes(runState);
   const sessionLabel = runMode === 'inspect'
     ? 'INSPECT · NOTHING WILL BE FILLED'
-    : active
-      ? 'AGENT SESSION · HUMAN TAKEOVER ALLOWED AT CHECKPOINTS'
-      : 'LIVE PORTAL VIEW';
+    : finished
+      ? 'SESSION FINISHED · BROWSER CLOSED'
+      : runState === 'AWAITING_PAYMENT'
+        ? 'YOUR REVIEW · NOTHING SUBMITTED'
+        : active
+          ? 'AGENT SESSION · HUMAN TAKEOVER ALLOWED AT CHECKPOINTS'
+          : 'LIVE PORTAL VIEW';
 
   return (
     <div
       className={`bg-slate-900 border border-slate-800 rounded-2xl flex flex-col overflow-hidden shadow-xl ${
-        isFullscreen ? 'fixed inset-4 z-40 bg-slate-950/95 backdrop-blur-xl border-amber-500/50' : 'h-[640px]'
+        isFullscreen ? 'fixed inset-2 z-50 bg-slate-950/95 backdrop-blur-xl border-amber-500/50 md:inset-4' : className || 'h-[640px]'
       }`}
     >
       {/* Browser chrome */}
@@ -391,7 +407,7 @@ export default function LiveViewport({
             <span className="text-[11px] font-semibold text-slate-300 font-mono tracking-wide truncate">
               {sessionLabel}
             </span>
-            {runMode !== 'inspect' && (
+            {runMode !== 'inspect' && (active || live) && (
               <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-800 text-amber-300 border border-slate-700 shrink-0">
                 Section {currentSection || 1}
               </span>
@@ -409,6 +425,21 @@ export default function LiveViewport({
               >
                 <ScanSearch className={`w-3.5 h-3.5 ${rescanning ? 'animate-pulse' : ''}`} />
                 <span>{rescanning ? 'Scanning…' : 'Rescan'}</span>
+              </button>
+            )}
+            {runMode !== 'inspect' && agentRunning && runState !== 'WAITING_FOR_USER' && onPauseToggle && (
+              <button
+                type="button"
+                onClick={onPauseToggle}
+                className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition-all ${
+                  paused
+                    ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25'
+                    : 'border-slate-700 bg-slate-800 text-slate-200 hover:bg-slate-700'
+                }`}
+                title={paused ? 'Resume the agent' : 'Pause the agent at the next safe point'}
+              >
+                {paused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
+                <span>{paused ? 'Resume' : 'Pause'}</span>
               </button>
             )}
             {(active || live) && (
@@ -510,7 +541,10 @@ export default function LiveViewport({
         }`}
       >
         {imageSource ? (
-          <div className="relative">
+          <div
+            className="relative mx-auto transition-[width] duration-200"
+            style={{ width: `${zoom}%` }}
+          >
             <img
               ref={imageRef}
               src={imageSource}
@@ -518,29 +552,67 @@ export default function LiveViewport({
               draggable={false}
               className="w-full h-auto rounded-lg border border-slate-800 shadow-2xl select-none"
             />
+            {paused && (
+              <div className="absolute left-3 top-3 flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-slate-950/90 px-2.5 py-1 text-[10px] font-bold text-amber-300">
+                <Pause className="h-3 w-3" />
+                Paused by you
+              </div>
+            )}
             {!connected && live && (
               <div className="absolute top-3 right-3 flex items-center gap-1.5 text-[11px] font-mono px-2 py-1 rounded-md bg-slate-950/90 border border-amber-500/40 text-amber-300">
                 <Unplug className="w-3.5 h-3.5" />
                 <span>Reconnecting to the live page…</span>
               </div>
             )}
-            {active && (
+            {active && !paused && (
               <div className="absolute inset-0 pointer-events-none overflow-hidden rounded-lg">
                 <div className="w-full h-1 bg-gradient-to-r from-transparent via-amber-400/50 to-transparent animate-scanline opacity-75" />
               </div>
             )}
           </div>
         ) : (
-          <div className="h-full flex items-center justify-center">
-            <div className="text-center p-8 max-w-md">
-              <div className="w-16 h-16 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center mx-auto mb-4 text-slate-600 shadow-inner">
-                <Eye className="w-8 h-8" />
+          <div className="flex h-full items-center justify-center p-6">
+            <div className="w-full max-w-md text-center">
+              <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-slate-800 bg-slate-900 text-slate-500 shadow-inner">
+                <Eye className="h-7 w-7" />
               </div>
-              <h3 className="text-sm font-bold text-slate-300">No portal open yet</h3>
-              <p className="text-xs text-slate-500 mt-2 leading-relaxed">
-                Start an application or open a real portal in inspect-only mode. The page
-                appears here as the real, interactive browser the agent is using.
+              <h3 className="text-sm font-bold text-slate-200">
+                {finished ? 'This session has ended' : 'No portal open yet'}
+              </h3>
+              <p className="mx-auto mt-2 max-w-xs text-xs leading-relaxed text-slate-500">
+                {finished
+                  ? 'The live browser was closed and nothing was submitted. Your saved details are unchanged — start again whenever you are ready.'
+                  : 'The real, interactive browser appears here. Open a portal to fill it with guidance, or use inspect-only to map it without touching anything.'}
               </p>
+
+              <div className="mt-5 grid grid-cols-3 gap-2 text-left">
+                <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-2.5">
+                  <Globe2 className="h-3.5 w-3.5 text-sky-400" />
+                  <div className="mt-1.5 text-[10px] font-bold text-slate-300">Open</div>
+                  <div className="text-[9px] leading-tight text-slate-500">Official page loads here</div>
+                </div>
+                <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-2.5">
+                  <Sparkles className="h-3.5 w-3.5 text-amber-400" />
+                  <div className="mt-1.5 text-[10px] font-bold text-slate-300">Fill</div>
+                  <div className="text-[9px] leading-tight text-slate-500">Profile values, step by step</div>
+                </div>
+                <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-2.5">
+                  <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
+                  <div className="mt-1.5 text-[10px] font-bold text-slate-300">Review</div>
+                  <div className="text-[9px] leading-tight text-slate-500">You handle checks and submit</div>
+                </div>
+              </div>
+
+              {onPractice && (
+                <button
+                  type="button"
+                  onClick={onPractice}
+                  className="mt-5 inline-flex items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/15 px-4 py-2 text-xs font-bold text-amber-300 transition-colors hover:bg-amber-500/25"
+                >
+                  <Play className="h-3.5 w-3.5" />
+                  Try the practice portal
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -568,7 +640,7 @@ export default function LiveViewport({
         <div className="flex items-center gap-3 min-w-0">
           <span className="flex items-center gap-1.5">
             {connected ? <Wifi className="w-3.5 h-3.5 text-emerald-400" /> : <Unplug className="w-3.5 h-3.5 text-slate-500" />}
-            {connected ? 'live page stream' : live ? 'disconnected' : 'viewer only'}
+            {connected ? 'live page stream' : live ? 'disconnected' : finished ? 'session closed' : 'viewer only'}
           </span>
           <span>•</span>
           <span className="truncate" title={pageInfo.url || ''}>
@@ -582,6 +654,36 @@ export default function LiveViewport({
           )}
         </div>
         <div className="flex items-center gap-3">
+          {imageSource && (
+            <div className="flex items-center gap-0.5 rounded-md border border-slate-800 bg-slate-900 p-0.5">
+              <button
+                type="button"
+                onClick={() => setZoom((value) => Math.max(50, value - 25))}
+                disabled={zoom <= 50}
+                className="rounded p-1 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200 disabled:opacity-30"
+                title="Zoom out"
+              >
+                <ZoomOut className="h-3 w-3" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setZoom(100)}
+                className="min-w-[38px] rounded px-1 text-[10px] font-bold text-slate-400 hover:text-slate-200"
+                title="Reset zoom"
+              >
+                {zoom}%
+              </button>
+              <button
+                type="button"
+                onClick={() => setZoom((value) => Math.min(200, value + 25))}
+                disabled={zoom >= 200}
+                className="rounded p-1 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200 disabled:opacity-30"
+                title="Zoom in"
+              >
+                <ZoomIn className="h-3 w-3" />
+              </button>
+            </div>
+          )}
           {!canControl && live && (
             <button
               type="button"

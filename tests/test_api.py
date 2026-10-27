@@ -96,6 +96,28 @@ def test_agent_state_has_live_browser_and_form_map_fields(client):
     assert payload["browser_open"] is False
 
 
+def test_pause_and_resume_require_an_active_run(client):
+    paused = client.post("/api/agent/pause")
+    assert paused.status_code == 200
+    assert paused.json()["success"] is False
+
+    resumed = client.post("/api/agent/resume")
+    assert resumed.status_code == 200
+    assert resumed.json()["success"] is False
+
+
+def test_reset_returns_the_launcher_to_idle(client):
+    response = client.post("/api/agent/reset")
+
+    assert response.status_code == 200
+    assert response.json() == {"success": True, "state": "IDLE"}
+    state = client.get("/api/agent/state").json()
+    assert state["state"] == "IDLE"
+    assert state["run_id"] is None
+    assert state["form_map"] is None
+    assert state["active_gate"] is None
+
+
 def test_launch_mode_is_validated(client):
     response = client.post(
         "/api/agent/start",

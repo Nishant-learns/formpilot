@@ -52,6 +52,7 @@ function recipeBadge(recipe) {
 export default function FormMapPanel({ formMap, recipe, runMode, onRescan, rescanning }) {
   const [expanded, setExpanded] = useState(null);
   const [showAll, setShowAll] = useState(false);
+  const [statusFilter, setStatusFilter] = useState('all');
 
   if (!formMap) {
     return (
@@ -70,12 +71,33 @@ export default function FormMapPanel({ formMap, recipe, runMode, onRescan, resca
   }
 
   const fields = formMap.fields || [];
-  const visibleFields = showAll ? fields : fields.slice(0, 12);
+  const knownCount = fields.filter((field) => !field.challenge && field.value_source === 'vault').length;
+  const missingCount = fields.filter((field) => !field.challenge && field.value_source === 'missing').length;
+  const humanCount = fields.filter((field) => Boolean(field.challenge)).length;
+  const unknownCount = Math.max(0, fields.length - knownCount - missingCount - humanCount);
+  const filterDefs = [
+    { id: 'all', label: 'All', count: fields.length, tone: 'text-slate-300' },
+    { id: 'profile', label: 'Profile', count: knownCount, tone: 'text-emerald-300' },
+    { id: 'missing', label: 'Needs you', count: missingCount, tone: 'text-amber-300' },
+    { id: 'human', label: 'Human-only', count: humanCount, tone: 'text-sky-300' },
+    { id: 'unknown', label: 'Unknown', count: unknownCount, tone: 'text-rose-300' },
+  ];
+  const filteredFields = fields.filter((field) => {
+    if (statusFilter === 'profile') return !field.challenge && field.value_source === 'vault';
+    if (statusFilter === 'missing') return !field.challenge && field.value_source === 'missing';
+    if (statusFilter === 'human') return Boolean(field.challenge);
+    if (statusFilter === 'unknown') {
+      return !field.challenge && field.value_source !== 'vault' && field.value_source !== 'missing';
+    }
+    return true;
+  });
+  const visibleFields = showAll ? filteredFields : filteredFields.slice(0, 12);
+  const coverage = fields.length ? Math.round((knownCount / fields.length) * 100) : 0;
   const badge = recipeBadge(recipe);
   const drift = recipe?.drift;
 
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden flex flex-col max-h-[640px]">
+    <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden flex flex-col h-full min-h-[460px]">
       <div className="bg-slate-950 px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <ScanSearch className="w-4 h-4 text-sky-400 shrink-0" />
@@ -101,7 +123,7 @@ export default function FormMapPanel({ formMap, recipe, runMode, onRescan, resca
         )}
       </div>
 
-      <div className="p-4 space-y-3 overflow-y-auto">
+      <div className="p-4 space-y-3 overflow-y-auto flex-1 min-h-0">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-950 text-slate-200 border border-slate-700 uppercase tracking-wider">
             {formMap.page_type || 'unknown'}
@@ -149,6 +171,21 @@ export default function FormMapPanel({ formMap, recipe, runMode, onRescan, resca
           ))}
         </div>
 
+        {fields.length > 0 && (
+          <div className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2">
+            <div className="flex items-center justify-between gap-2 text-[10px]">
+              <span className="font-semibold uppercase tracking-wider text-slate-500">Profile coverage</span>
+              <span className="font-mono font-bold text-slate-300">{knownCount}/{fields.length} fields · {coverage}%</span>
+            </div>
+            <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-slate-800">
+              <div
+                className={`h-full rounded-full transition-all ${coverage >= 80 ? 'bg-emerald-500' : coverage >= 40 ? 'bg-amber-500' : 'bg-rose-500'}`}
+                style={{ width: `${coverage}%` }}
+              />
+            </div>
+          </div>
+        )}
+
         {drift && (
           <div className="rounded-xl bg-amber-500/10 border border-amber-500/30 px-3 py-2 text-[11px] text-amber-200">
             <div className="font-bold flex items-center gap-1.5">
@@ -192,19 +229,40 @@ export default function FormMapPanel({ formMap, recipe, runMode, onRescan, resca
         )}
 
         <div>
-          <div className="flex items-center justify-between mb-2">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
             <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
               Fields and locators
             </span>
-            {fields.length > 12 && (
+            {filteredFields.length > 12 && (
               <button
                 type="button"
                 onClick={() => setShowAll(!showAll)}
                 className="text-[10px] font-semibold text-sky-300 hover:text-sky-200"
               >
-                {showAll ? 'Show fewer' : `Show all ${fields.length}`}
+                {showAll ? 'Show fewer' : `Show all ${filteredFields.length}`}
               </button>
             )}
+          </div>
+          <div className="mb-2 flex flex-wrap gap-1">
+            {filterDefs.map((filter) => (
+              <button
+                key={filter.id}
+                type="button"
+                onClick={() => {
+                  setStatusFilter(filter.id);
+                  setShowAll(false);
+                  setExpanded(null);
+                }}
+                className={`flex items-center gap-1 rounded-lg border px-2 py-1 text-[10px] font-semibold transition-colors ${
+                  statusFilter === filter.id
+                    ? 'border-slate-600 bg-slate-800 text-slate-100'
+                    : 'border-slate-800 bg-slate-950/60 text-slate-500 hover:text-slate-300'
+                }`}
+              >
+                <span>{filter.label}</span>
+                <span className={`font-mono ${filter.tone}`}>{filter.count}</span>
+              </button>
+            ))}
           </div>
           <div className="space-y-1.5">
             {visibleFields.map((field) => {
@@ -272,8 +330,12 @@ export default function FormMapPanel({ formMap, recipe, runMode, onRescan, resca
                 </div>
               );
             })}
-            {fields.length === 0 && (
-              <p className="text-xs text-slate-500">No form fields on this page.</p>
+            {visibleFields.length === 0 && (
+              <p className="text-xs text-slate-500">
+                {fields.length === 0
+                  ? 'No form fields on this page.'
+                  : 'No fields in this category. Try another filter.'}
+              </p>
             )}
           </div>
         </div>

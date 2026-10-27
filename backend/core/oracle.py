@@ -27,6 +27,7 @@ class OracleResult(BaseModel):
     hindi_advisory: str
     source_citation: str
     official_verified: bool
+    is_practice: bool = False
     confidence: int = 100
     resolved_via: str = "registry"
     candidates: List[Dict[str, Any]] = Field(default_factory=list)
@@ -128,7 +129,7 @@ def _hostname(url: str) -> str:
 
 def is_official_host(hostname: str) -> bool:
     hostname = (hostname or "").lower()
-    return hostname in {"localhost", "127.0.0.1"} or hostname.endswith(OFFICIAL_SUFFIXES)
+    return hostname.endswith(OFFICIAL_SUFFIXES)
 
 
 class PortalOracle:
@@ -180,18 +181,21 @@ class PortalOracle:
         resolved_via: str = "registry",
         confidence: int = 100,
     ) -> OracleResult:
+        audit = cls.audit_url(entry["url"])
+        is_practice = bool(audit["is_local"])
         return OracleResult(
             query=query,
             official_name=entry["name"],
             target_url=entry["url"],
-            is_gov_domain=True,
+            is_gov_domain=bool(audit["is_gov"]),
             domain_trust_score=int(entry["trust"]),
             authority_type=entry["authority"],
             domain_suffix=entry["tld"],
             advisory=advisory or entry["advisory"],
             hindi_advisory=hindi_advisory or entry["hindi_advisory"],
             source_citation=source_citation,
-            official_verified=True,
+            official_verified=bool(audit["is_gov"]),
+            is_practice=is_practice,
             confidence=confidence,
             resolved_via=resolved_via,
         )
@@ -206,6 +210,24 @@ class PortalOracle:
         if cleaned.startswith(("http://", "https://")):
             audit = cls.audit_url(cleaned)
             hostname = audit["hostname"]
+
+            if audit["is_local"]:
+                return OracleResult(
+                    query=cleaned,
+                    official_name="FormPilot Practice Portal (Demo)",
+                    target_url=cleaned,
+                    is_gov_domain=False,
+                    domain_trust_score=100,
+                    authority_type="Practice / local demo",
+                    domain_suffix="local",
+                    advisory="This is a local practice portal, not a government website. No real application is submitted.",
+                    hindi_advisory="Yeh ek local practice portal hai, asli government website nahi. Koi asli application submit nahi hoti.",
+                    source_citation="Local practice environment",
+                    official_verified=False,
+                    is_practice=True,
+                    confidence=100,
+                    resolved_via="practice_url",
+                )
 
             # A third-party link that clearly references a known recruitment
             # body is redirected to the authoritative registry entry.

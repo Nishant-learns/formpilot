@@ -1,137 +1,193 @@
 import React from 'react';
 import {
-  ShieldCheck,
   Bot,
-  Volume2,
-  VolumeX,
   Cloud,
-  Settings,
   FileText,
   Image as ImageIcon,
+  Pause,
+  Play,
+  Settings,
+  ShieldCheck,
+  Volume2,
+  VolumeX,
 } from 'lucide-react';
+
+function ReadinessRing({ percent }) {
+  const value = Math.max(0, Math.min(100, Number(percent) || 0));
+  const radius = 9;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference - (value / 100) * circumference;
+  return (
+    <span className="relative flex h-7 w-7 items-center justify-center">
+      <svg viewBox="0 0 24 24" className="h-7 w-7 -rotate-90">
+        <circle cx="12" cy="12" r={radius} fill="none" stroke="currentColor" strokeWidth="2.4" className="text-slate-700" />
+        <circle
+          cx="12"
+          cy="12"
+          r={radius}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.4"
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={offset}
+          className={value >= 80 ? 'text-emerald-400' : value >= 50 ? 'text-amber-400' : 'text-rose-400'}
+        />
+      </svg>
+      <span className="absolute text-[8px] font-extrabold text-slate-200">{value}</span>
+    </span>
+  );
+}
 
 export default function Header({
   agentRunning,
+  paused,
+  runState,
   engineConfig,
+  readiness,
   onOpenSettings,
   onOpenVault,
   onOpenBiometrics,
+  onPauseToggle,
   voiceEnabled,
   setVoiceEnabled,
   currentGate,
 }) {
   const cloudActive = engineConfig?.effective_mode === 'cloud' || engineConfig?.mode === 'cloud';
   const paymentReview = currentGate?.gate_type === 'PRE_PAYMENT_SAFETY_LOCK';
+  const inspectReady = runState === 'INSPECT_READY';
+  const finished = ['STOPPED', 'FAILED', 'COMPLETED'].includes(runState);
+  const active = agentRunning && !paused;
 
   return (
-    <header className="border-b border-slate-800 bg-slate-900/90 backdrop-blur-md px-5 py-3 sticky top-0 z-40 flex items-center justify-between">
-      {/* Brand */}
-      <div className="flex items-center gap-3">
-        <div className="relative">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-amber-600 via-orange-500 to-amber-400 flex items-center justify-center text-slate-950 font-black text-xl shadow-lg shadow-orange-500/20 border border-amber-300/30">
-            FP
+    <header className="sticky top-0 z-40 border-b border-slate-800/90 bg-slate-950/85 px-3 py-2.5 backdrop-blur-xl sm:px-5">
+      <div className="mx-auto flex w-full max-w-[1560px] items-center justify-between gap-3">
+        {/* Brand */}
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="relative shrink-0">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-amber-300/30 bg-gradient-to-tr from-amber-600 via-orange-500 to-amber-400 text-xl font-black text-slate-950 shadow-lg shadow-orange-500/20">
+              FP
+            </div>
+            <span className={`absolute -bottom-1 -right-1 h-3.5 w-3.5 rounded-full border-2 border-slate-950 ${active ? 'animate-pulse bg-emerald-500' : paused ? 'bg-amber-400' : 'bg-slate-600'}`} />
           </div>
-          <span className="absolute -bottom-1 -right-1 w-3.5 h-3.5 bg-emerald-500 rounded-full border-2 border-slate-900 animate-pulse" />
-        </div>
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="font-extrabold text-base tracking-tight text-white flex items-center gap-1.5">
-              Form<span className="text-amber-400">Pilot</span>
-            </h1>
-            <span className="text-[10px] font-bold uppercase tracking-wider bg-amber-500/10 text-amber-400 border border-amber-500/25 px-2 py-0.5 rounded-full">
-              Guided applications
-            </span>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h1 className="text-base font-extrabold tracking-tight text-white">
+                Form<span className="text-amber-400">Pilot</span>
+              </h1>
+              <span className="hidden rounded-full border border-amber-500/25 bg-amber-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-amber-400 sm:inline">
+                Guided applications
+              </span>
+            </div>
+            <p className="hidden items-center gap-1.5 text-[11px] text-slate-400 sm:flex">
+              <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
+              <span>You stay in control</span>
+              <span className="text-slate-700">•</span>
+              <span className={cloudActive ? 'text-sky-300' : 'text-slate-500'}>
+                <Cloud className="mr-0.5 inline h-3 w-3" />
+                {cloudActive ? 'Cloud browser' : 'On this device'}
+              </span>
+            </p>
           </div>
-          <p className="text-xs text-slate-400 flex items-center gap-1.5">
-            <span>Fill official forms with confidence</span>
-            <span className="text-slate-600">•</span>
-            <span className="text-emerald-400 font-medium flex items-center gap-0.5">
-              <ShieldCheck className="w-3.5 h-3.5" /> You stay in control
-            </span>
-          </p>
         </div>
-      </div>
 
-      {/* Status */}
-      <div className="hidden lg:flex items-center gap-3">
+        {/* Live state */}
         <div
-          className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold border ${
+          className={`hidden items-center gap-2 rounded-full border px-3 py-1.5 text-[11px] font-semibold md:flex ${
             paymentReview
-              ? 'bg-amber-500/10 text-amber-400 border-amber-500/30'
-              : agentRunning
-              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30 animate-pulse'
-              : 'bg-slate-800 text-slate-400 border-slate-700'
+              ? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+              : paused
+                ? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+                : inspectReady
+                  ? 'border-sky-500/30 bg-sky-500/10 text-sky-300'
+                  : active
+                    ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                    : 'border-slate-700 bg-slate-900 text-slate-400'
           }`}
         >
-          <Bot className="w-3.5 h-3.5" />
+          <Bot className="h-3.5 w-3.5" />
           <span>
             {paymentReview
               ? currentGate?.final_action === 'submission'
                 ? 'Review before submitting'
                 : 'Review before payment'
-              : agentRunning
-              ? 'Filling the form with you'
-              : 'Ready when you are'}
+              : paused
+                ? 'Paused — take your time'
+                : inspectReady
+                  ? 'Inspect-only · nothing touched'
+                  : finished
+                    ? 'Session finished'
+                    : active
+                      ? 'Filling the form with you'
+                      : 'Ready when you are'}
           </span>
+          {(active || inspectReady) && (
+            <span className={`h-1.5 w-1.5 animate-pulse rounded-full ${inspectReady ? 'bg-sky-400' : 'bg-emerald-400'}`} />
+          )}
         </div>
 
-        <button
-          onClick={onOpenSettings}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-cyan-950/40 hover:bg-cyan-900/50 border border-cyan-500/40 text-cyan-300 transition-colors shadow-sm"
-          title="Open connection settings"
-        >
-          <Cloud className="w-3.5 h-3.5 text-cyan-400" />
-          <span>{cloudActive ? 'Cloud browser connected' : 'Using this device'}</span>
-        </button>
-      </div>
-
-      {/* Controls */}
-      <div className="flex items-center gap-2.5">
-        <button
-          onClick={() => setVoiceEnabled(!voiceEnabled)}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
-            voiceEnabled
-              ? 'bg-amber-500/10 text-amber-300 border-amber-500/30 shadow-sm'
-              : 'bg-slate-800/60 text-slate-400 border-slate-700 hover:text-slate-200'
-          }`}
-          title="Turn spoken guidance on or off"
-        >
-          {voiceEnabled ? (
-            <>
-              <Volume2 className="w-3.5 h-3.5 text-amber-400" />
-              <span>Voice guidance: on</span>
-            </>
-          ) : (
-            <>
-              <VolumeX className="w-3.5 h-3.5" />
-              <span>Voice guidance: off</span>
-            </>
+        {/* Controls */}
+        <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
+          {agentRunning && !currentGate && onPauseToggle && (
+            <button
+              type="button"
+              onClick={onPauseToggle}
+              className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition-colors ${
+                paused
+                  ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20'
+                  : 'border-slate-700 bg-slate-800/70 text-slate-200 hover:bg-slate-700'
+              }`}
+              title={paused ? 'Resume the agent' : 'Pause the agent'}
+            >
+              {paused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
+              <span className="hidden xl:inline">{paused ? 'Resume' : 'Pause'}</span>
+            </button>
           )}
-        </button>
 
-        <button
-          onClick={onOpenBiometrics}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-colors"
-        >
-          <ImageIcon className="w-3.5 h-3.5 text-violet-400" />
-          <span>Photo &amp; signature</span>
-        </button>
+          <button
+            type="button"
+            onClick={onOpenVault}
+            className="flex items-center gap-2 rounded-xl border border-amber-500/35 bg-gradient-to-r from-amber-500/15 to-orange-500/10 px-2 py-1.5 text-[11px] font-bold text-amber-200 transition-colors hover:from-amber-500/25 hover:to-orange-500/20"
+            title={readiness ? `Profile ${readiness.percent}% ready — ${readiness.filled} of ${readiness.total} core details saved` : 'Open your saved details'}
+          >
+            {readiness ? <ReadinessRing percent={readiness.percent} /> : <FileText className="h-4 w-4 text-amber-300" />}
+            <span className="hidden sm:inline">My details</span>
+            {readiness && <span className="hidden font-mono text-[10px] text-amber-300/80 lg:inline">{readiness.percent}%</span>}
+          </button>
 
-        <button
-          onClick={onOpenVault}
-          className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-gradient-to-r from-amber-500/20 to-orange-500/20 hover:from-amber-500/30 hover:to-orange-500/30 text-amber-300 border border-amber-500/40 transition-all shadow-sm"
-        >
-          <FileText className="w-3.5 h-3.5 text-amber-400" />
-          <span>My details</span>
-        </button>
+          <button
+            type="button"
+            onClick={() => setVoiceEnabled(!voiceEnabled)}
+            className={`hidden items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition-colors sm:flex ${
+              voiceEnabled
+                ? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+                : 'border-slate-700 bg-slate-800/60 text-slate-400 hover:text-slate-200'
+            }`}
+            title="Spoken guidance"
+          >
+            {voiceEnabled ? <Volume2 className="h-3.5 w-3.5" /> : <VolumeX className="h-3.5 w-3.5" />}
+            <span className="hidden xl:inline">{voiceEnabled ? 'Voice on' : 'Voice off'}</span>
+          </button>
 
-        <button
-          onClick={onOpenSettings}
-          className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 border border-slate-700 transition-colors"
-          title="Connection settings"
-        >
-          <Settings className="w-4 h-4" />
-        </button>
+          <button
+            type="button"
+            onClick={onOpenBiometrics}
+            className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-[11px] font-semibold text-slate-200 transition-colors hover:bg-slate-700"
+            title="Photo and signature studio"
+          >
+            <ImageIcon className="h-3.5 w-3.5 text-violet-400" />
+            <span className="hidden xl:inline">Photo &amp; signature</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            className="rounded-lg border border-slate-700 bg-slate-800 p-2 text-slate-400 transition-colors hover:bg-slate-700 hover:text-slate-200"
+            title="Connection settings"
+          >
+            <Settings className="h-4 w-4" />
+          </button>
+        </div>
       </div>
     </header>
   );
