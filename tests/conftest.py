@@ -48,15 +48,20 @@ import pytest  # noqa: E402  (import after environment setup)
 
 @pytest.fixture(autouse=True)
 def clean_facts_store():
-    """Give every test an empty semantic fact store."""
+    """Give every test an empty semantic fact and portal-account store."""
     from backend.core import settings
     from backend.core.facts import FactBook
+    from backend.core.portal_accounts import PortalAccountStore
 
+    for path in (settings.DATA_DIR / "facts.json", settings.DATA_DIR / "portal_accounts.json"):
+        path.unlink(missing_ok=True)
     FactBook.reset_instance()
-    (settings.DATA_DIR / "facts.json").unlink(missing_ok=True)
+    PortalAccountStore.reset_instance()
     yield
     FactBook.reset_instance()
-    (settings.DATA_DIR / "facts.json").unlink(missing_ok=True)
+    PortalAccountStore.reset_instance()
+    for path in (settings.DATA_DIR / "facts.json", settings.DATA_DIR / "portal_accounts.json"):
+        path.unlink(missing_ok=True)
 
 
 @pytest.fixture()

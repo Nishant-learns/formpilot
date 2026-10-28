@@ -13,6 +13,7 @@ import difflib
 import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from . import concepts, decision_policy, field_registry, settings
 from .dom_scanner import DOMScanner
@@ -20,6 +21,7 @@ from .facts import FactBook
 from .llm_client import LLMClient, LLMError
 from .page_brief import build_deterministic_brief
 from .perception import Perception
+from .portal_accounts import PortalAccountStore
 from .tinyfish_client import TinyFishClient, TinyFishError
 from .vault import VaultManager
 
@@ -236,6 +238,7 @@ class FormPilotChatAssistant:
             else None,
             "fields_missing": missing,
             "page_brief": brief_context,
+            "portal_account": state.get("portal_account") or {},
             "gate": {
                 "type": gate.get("gate_type"),
                 "title": gate.get("title"),
@@ -280,6 +283,11 @@ class FormPilotChatAssistant:
             "Ask the candidate to confirm it; do not present it as saved truth.\n"
             "11. A question with fact_status 'known_absent' is already answered: the "
             "candidate has no value there. Do not ask for it again.\n"
+            "12. Portal account memory is separate from the candidate's profile. When "
+            "portal_account.account_exists is 'unknown', ask once whether the candidate "
+            "has registered on this portal before. You may read the visible login and "
+            "recovery options, but never submit credentials, request an OTP or reset a "
+            "password to find out.\n"
             f"\nCurrent state (JSON):\n{json.dumps(self._state_context(), ensure_ascii=False, indent=2)}"
         )
 
@@ -501,6 +509,43 @@ class FormPilotChatAssistant:
             {
                 "type": "function",
                 "function": {
+                    "name": "get_portal_account",
+                    "description": (
+                        "Read what is remembered about this portal: whether the candidate "
+                        "has an account, the last path, step and visible sign-in options."
+                    ),
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "remember_portal_account",
+                    "description": (
+                        "Record a portal-account fact the candidate stated, such as whether "
+                        "they have registered before. Never probe the portal to fill this in."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "account_exists": {
+                                "type": "string",
+                                "enum": ["yes", "no", "unknown"],
+                            },
+                            "login_method": {"type": "string"},
+                            "registration_status": {
+                                "type": "string",
+                                "enum": ["not_started", "in_progress", "submitted", "unknown"],
+                            },
+                            "identifier_type": {"type": "string"},
+                            "identifier_value": {"type": "string"},
+                        },
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": "search_web",
                     "description": (
                         "Search the live web for portal news, dates, notifications or "
@@ -540,6 +585,10 @@ class FormPilotChatAssistant:
                 return self._tool_pause()
             if name == "resume_application":
                 return self._tool_resume()
+            if name == "get_portal_account":
+                return self._tool_portal_account()
+            if name == "remember_portal_account":
+                return self._tool_remember_portal_account(args)
             if name == "search_web":
                 return await self._tool_search(str(args.get("query") or ""))
         except Exception as exc:  # never crash the chat on one bad tool call
@@ -549,6 +598,36 @@ class FormPilotChatAssistant:
     def _tool_status(self) -> Dict[str, Any]:
         context = self._state_context()
         return {"ok": True, **context}
+
+    def _tool_portal_account(self) -> Dict[str, Any]:
+        state = self.orchestrator.get_state() if self.orchestrator else {}
+        gate = state.get("active_gate") or {}
+        return {
+            "ok": True,
+            "account": state.get("portal_account") or {},
+            "login_inspection": gate.get("login_inspection"),
+        }
+
+    def _tool_remember_portal_account(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        page = getattr(self.orchestrator, "page", None) if self.orchestrator else None
+        if not page:
+            return {"ok": False, "error": "Open the portal first so the account can be scoped to it."}
+        domain = urlparse(str(getattr(page, "url", "") or "")).netloc.lower()
+        if not domain:
+            return {"ok": False, "error": "The portal address is not known yet."}
+        try:
+            account = PortalAccountStore.get_instance().record(
+                domain,
+                identifier_type=str(args.get("identifier_type") or "unknown"),
+                identifier_value=str(args.get("identifier_value") or ""),
+                account_exists=args.get("account_exists"),
+                login_method=args.get("login_method"),
+                registration_status=args.get("registration_status"),
+                confirmed_by_human=True,
+            )
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "account": account.public()}
 
     def _tool_page(self) -> Dict[str, Any]:
         state = self.orchestrator.get_state() if self.orchestrator else {}

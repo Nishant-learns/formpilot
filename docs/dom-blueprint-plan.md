@@ -1621,3 +1621,63 @@ Deliberately not run in this slice: the live practice-portal end-to-end flow.
 The user cannot supply OTP/human steps right now, so portal verification is
 deferred until they are available. The automated suite and the evaluation
 harness cover the semantic layer offline.
+
+### 16.29 Portal account memory (2026-10-28)
+
+`backend/core/portal_accounts.py` stores what is known about a candidate's
+account on one portal. It is deliberately separate from the vault: "I have an
+account on regn.hpsc.gov.in" is not a global profile fact.
+
+Records:
+
+- keyed by `(domain, identifier_type, identifier_value)`,
+- `account_exists`: `yes | no | unknown`,
+- `identifiers_seen`, `login_method`, `registration_status`,
+  `last_known_step`, `last_path_choice`,
+- `confirmed_by_human_at` and `updated_at`.
+
+A domain-level summary aggregates accounts so FormPilot can say "you have an
+in-progress application here" without guessing which identifier it belongs to.
+Identifier values are masked in every public view.
+
+Read-only inspection:
+
+- `PortalAccountStore.inspect_login_ui` reads the visible page or DOM and
+  reports the login methods, recovery links and hints.
+- It never submits a credential, requests an OTP or resets a password.
+- `GET /api/page/login-options` exposes the inspection for the current page.
+
+Integration:
+
+- The entry/next-step gate now carries `account_memory` and
+  `login_inspection`. The cockpit shows what is remembered and the visible
+  sign-in options, labelled as a read-only check.
+- When the account status is unknown, the gate asks once: "Have you registered
+  on this portal before?" The answer is stored with
+  `confirmed_by_human_at`. "Not sure" is stored as unknown and is not asked
+  again in the same gate.
+- Choosing an entry path, a login method, an account identifier or approving a
+  section records the corresponding memory. Path choice is not turned into an
+  `account_exists` guess; only an explicit answer does that.
+- The chat has `get_portal_account` and `remember_portal_account` tools and a
+  prompt rule that forbids probing the portal to discover an account.
+- API: `GET /api/portal-accounts`, `PUT/DELETE
+  /api/portal-accounts/{domain}`.
+
+Decisions:
+
+- **Domain plus identifier, with a domain summary.** This matches the locked
+  decision in 16.21.
+- **Explicit answers only.** A path choice is recorded as a choice, not as
+  proof that an account exists.
+- **The store is encrypted at rest** with the same envelope as the vault and
+  facts when `FORMPILOT_VAULT_KEY` is set.
+
+Acceptance for this slice:
+
+- A portal fact is scoped to its domain and identifier.
+- A domain summary aggregates identifiers without revealing them.
+- Unknown stays unknown until a human confirms it.
+- Inspection reports methods and recovery paths without touching the page.
+- The gate and chat can read and record the memory.
+- Invalid values and domains are refused.

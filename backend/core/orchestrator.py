@@ -35,6 +35,7 @@ from .navigator import ResilientNavigator
 from .oracle import OracleResult, PortalOracle
 from .page_brief import PageInterpreter
 from .perception import Perception
+from .portal_accounts import PortalAccountStore
 from .portal_adapter import BasePortalAdapter, get_adapter
 from .recipe import RecipeStore
 from .run_store import RunStore
@@ -178,6 +179,7 @@ class FormPilotOrchestrator:
             "last_error": self.last_error,
             "oracle": self.oracle_result.model_dump() if self.oracle_result else None,
             "takeover": self.takeover_state(),
+            "portal_account": self._portal_account_summary(),
         }
 
     async def start_application(self, query_or_url: str, run_mode: str = "fill"):
@@ -533,6 +535,56 @@ class FormPilotOrchestrator:
             return
         self.live.set_allow_control(False, reason)
 
+    # ------------------------------------------------------------ portal memory
+
+    def _current_domain(self) -> str:
+        url = self.page.url if self.page else (self.target_url or "")
+        return urlparse(str(url or "")).netloc.lower()
+
+    def _remember_portal_account(self, **fields: Any) -> None:
+        domain = self._current_domain()
+        if not domain:
+            return
+        try:
+            PortalAccountStore.get_instance().record(domain, **fields)
+        except Exception:
+            traceback.print_exc()
+
+    def _portal_account_summary(self) -> Dict[str, Any]:
+        domain = self._current_domain()
+        if not domain:
+            return {}
+        try:
+            return PortalAccountStore.get_instance().domain_summary(domain)
+        except Exception:
+            return {}
+
+    def _set_login_method(self, method: str) -> None:
+        self._login_method = str(method or "")
+        if self._login_method:
+            self._remember_portal_account(
+                login_method=self._login_method, confirmed_by_human=True
+            )
+
+    def _set_login_identifier(self, key: str) -> None:
+        self._login_identifier = str(key or "")
+        if not self._login_identifier:
+            return
+        kind = self._login_identifier
+        if kind not in {"mobile", "email", "urn", "aadhaar", "registration_id"}:
+            kind = "unknown"
+        value = ""
+        try:
+            value = str(self.vault_mgr.vault.find_field_value(self._login_identifier) or "")
+        except Exception:
+            value = ""
+        self._remember_portal_account(
+            identifier_type=kind,
+            identifier_value=value,
+            identifiers_seen=[kind],
+            confirmed_by_human=True,
+        )
+
     def submit_user_response(self, data: Dict[str, Any]):
         if self.active_event_future and not self.active_event_future.done():
             self.active_event_future.set_result(data)
@@ -575,6 +627,9 @@ class FormPilotOrchestrator:
                     "success": False,
                     "message": "The portal does not offer that entry path on this page.",
                 }
+            self._remember_portal_account(
+                last_path_choice=normalized, confirmed_by_human=True
+            )
             self.submit_user_response(
                 {
                     "action": "GATEWAY_CHOICE",
@@ -612,6 +667,9 @@ class FormPilotOrchestrator:
                     "message": "The portal does not offer that entry path on this page.",
                 }
         self._requested_entry_mode = normalized
+        self._remember_portal_account(
+            last_path_choice=normalized, confirmed_by_human=True
+        )
         return {
             "success": True,
             "mode": normalized,
@@ -1171,6 +1229,25 @@ class FormPilotOrchestrator:
         }
         return self.page_brief
 
+    async def inspect_login_options(self) -> Dict[str, Any]:
+        """Read the visible login/recovery options without touching the page.
+
+        This is the read-only inspection used when the candidate is not sure
+        whether they registered.  It never submits a credential, requests an
+        OTP or resets anything.
+        """
+        if not self.page or self.page.is_closed():
+            raise AgentRunError("There is no live browser to inspect. Open a portal first.")
+        try:
+            dom, _blueprint = await DOMScanner.scan(self.page)
+        except Exception as exc:
+            raise AgentRunError(
+                "The page is still loading. Please wait a moment and inspect it again."
+            ) from exc
+        inspection = PortalAccountStore.inspect_login_ui(dom).model_dump()
+        inspection["account_memory"] = self._portal_account_summary()
+        return inspection
+
     async def attach_upload(self, path: str, field_key: str) -> Dict[str, Any]:
         """Attach a user-provided file to the correct file input.
 
@@ -1457,6 +1534,18 @@ class FormPilotOrchestrator:
         )
         gate["live_session"] = self.live.public_info() if self.live and not self.live.closed else None
         gate["can_takeover"] = bool(self.live)
+        try:
+            domain = self._current_domain() or urlparse(str(dom.get("url") or "")).netloc
+            store = PortalAccountStore.get_instance()
+            gate["domain"] = domain
+            gate["account_memory"] = store.domain_summary(domain)
+            gate["account_answered"] = bool(
+                gate["account_memory"].get("account_exists") != "unknown"
+                or gate["account_memory"].get("confirmed")
+            )
+            gate["login_inspection"] = store.inspect_login_ui(dom).model_dump()
+        except Exception:
+            traceback.print_exc()
 
         while self.is_running:
             self.active_gate = gate
@@ -1494,6 +1583,22 @@ class FormPilotOrchestrator:
                 )
                 continue
 
+            if response.get("action") == "ACCOUNT_STATUS":
+                value = str(response.get("account_exists") or "unknown")
+                if value not in {"yes", "no", "unknown"}:
+                    value = "unknown"
+                self._remember_portal_account(
+                    account_exists=value, confirmed_by_human=True
+                )
+                gate["account_memory"] = self._portal_account_summary()
+                gate["account_answered"] = True
+                await self.emit_event(
+                    "SENSE",
+                    "Thanks. I'll remember that for this portal.",
+                    "Dhanyavaad. Is portal ke liye yaad rakhunga.",
+                )
+                continue
+
             selected = decision_policy.match_entry_response(response, options)
             if selected:
                 self.state = "RUNNING"
@@ -1512,6 +1617,7 @@ class FormPilotOrchestrator:
                 "The portal's entry path could not be identified. Please choose it in the live browser."
             )
         self._entry_mode = mode
+        self._remember_portal_account(last_path_choice=mode, confirmed_by_human=True)
         if option.get("source") == "current_page":
             await self.emit_event(
                 "DECIDE",
@@ -1729,7 +1835,7 @@ class FormPilotOrchestrator:
                 "The login method could not be selected. Please choose it in the live browser and continue."
             )
         await self.page.wait_for_timeout(350)
-        self._login_method = str(option.get("method") or "")
+        self._set_login_method(str(option.get("method") or ""))
         await self.emit_event(
             "ACT",
             f"Sign-in method selected: {option.get('label') or option.get('text')}.",
@@ -1759,7 +1865,7 @@ class FormPilotOrchestrator:
                 selection,
             )
             if match:
-                self._login_method = str(match.get("method") or "")
+                self._set_login_method(str(match.get("method") or ""))
                 if current_value != str(match.get("value") or ""):
                     await self._select_login_method(field, match)
                     return True
@@ -1788,7 +1894,7 @@ class FormPilotOrchestrator:
 
         if len(options) == 1:
             option = options[0]
-            self._login_method = str(option.get("method") or "")
+            self._set_login_method(str(option.get("method") or ""))
             if current_value != str(option.get("value") or ""):
                 await self._select_login_method(field, option)
                 return True
@@ -1859,7 +1965,7 @@ class FormPilotOrchestrator:
                 None,
             )
             if match:
-                self._login_identifier = requested
+                self._set_login_identifier(requested)
                 await self.emit_event(
                     "THINK",
                     f"Using {match.get('label')} to identify this account.",
@@ -1876,7 +1982,7 @@ class FormPilotOrchestrator:
             return False
 
         if len(options) == 1:
-            self._login_identifier = str(options[0].get("key") or "")
+            self._set_login_identifier(str(options[0].get("key") or ""))
             return False
 
         gate = decision_policy.build_identifier_gate(selection)
@@ -1913,7 +2019,7 @@ class FormPilotOrchestrator:
                 continue
             selected = decision_policy.match_identifier_response(response, selection)
             if selected:
-                self._login_identifier = str(selected.get("key") or "")
+                self._set_login_identifier(str(selected.get("key") or ""))
                 await self.emit_event(
                     "THINK",
                     f"Using {selected.get('label')} to identify this account.",
@@ -3717,6 +3823,12 @@ class FormPilotOrchestrator:
             return False
         self.state = "RUNNING"
         approved = bool(response.get("approved")) or response.get("action") in {"SECTION_APPROVAL", "CONTINUE"}
+        if approved:
+            self._remember_portal_account(
+                registration_status="in_progress",
+                last_known_step=f"section_{step}",
+                confirmed_by_human=True,
+            )
         if not approved:
             await self.emit_event(
                 "THINK",

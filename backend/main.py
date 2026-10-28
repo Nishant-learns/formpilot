@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field
 from .core import field_registry, settings
 from .core.biometrics import BiometricCompressor
 from .core.facts import FactBook
+from .core.portal_accounts import PortalAccountStore
 from .core.chat_assistant import FormPilotChatAssistant
 from .core.llm_client import LLMConfig
 from .core.live_browser import live_sessions
@@ -122,6 +123,20 @@ class FactInput(BaseModel):
     constraints: Optional[Dict[str, Any]] = None
     notes: Optional[str] = Field(None, max_length=1000)
     known_absent: bool = False
+
+
+class PortalAccountInput(BaseModel):
+    identifier_type: str = Field("unknown", max_length=40)
+    identifier_value: str = Field("", max_length=255)
+    account_exists: Optional[str] = Field(None, pattern="^(yes|no|unknown)$")
+    login_method: Optional[str] = Field(None, max_length=40)
+    registration_status: Optional[str] = Field(
+        None, pattern="^(not_started|in_progress|submitted|unknown)$"
+    )
+    last_known_step: Optional[str] = Field(None, max_length=200)
+    last_path_choice: Optional[str] = Field(None, max_length=40)
+    identifiers_seen: Optional[List[str]] = None
+    confirmed_by_human: bool = True
 
 
 # --------------------------------------------------------------------------- security
@@ -249,6 +264,71 @@ def delete_fact(concept: str, domain: Optional[str] = None):
     scope = {"kind": "portal", "domain": domain} if domain else {"kind": "global"}
     removed = FactBook.get_instance().delete_fact(concept, scope=scope)
     return {"success": removed, "concept": concept}
+
+
+@app.get("/api/portal-accounts")
+def list_portal_accounts(domain: Optional[str] = None):
+    """Portal account memory: what is known per portal and per identifier."""
+    store = PortalAccountStore.get_instance()
+    if domain:
+        return {
+            "domain": domain.lower(),
+            "summary": store.domain_summary(domain),
+            "accounts": [account.public() for account in store.accounts_for(domain)],
+        }
+    accounts = store.all_accounts()
+    domains = sorted({account.domain for account in accounts})
+    return {
+        "domains": [
+            {
+                "domain": item,
+                "summary": store.domain_summary(item),
+            }
+            for item in domains
+        ],
+        "accounts": [account.public() for account in accounts],
+    }
+
+
+@app.put("/api/portal-accounts/{domain}")
+def set_portal_account(domain: str, payload: PortalAccountInput):
+    """Record what the human confirmed about a portal account.
+
+    The record is scoped to the portal domain (and optionally the identifier).
+    Nothing here probes the portal.
+    """
+    if not re.match(r"^[a-z0-9.\-]{1,255}$", domain.lower()):
+        raise HTTPException(status_code=422, detail="Invalid portal domain.")
+    try:
+        account = PortalAccountStore.get_instance().record(
+            domain,
+            identifier_type=payload.identifier_type,
+            identifier_value=payload.identifier_value,
+            account_exists=payload.account_exists,
+            identifiers_seen=payload.identifiers_seen,
+            login_method=payload.login_method,
+            registration_status=payload.registration_status,
+            last_known_step=payload.last_known_step,
+            last_path_choice=payload.last_path_choice,
+            confirmed_by_human=payload.confirmed_by_human,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"success": True, "account": account.public()}
+
+
+@app.delete("/api/portal-accounts/{domain}")
+def delete_portal_account(
+    domain: str,
+    identifier_type: str = "unknown",
+    identifier_value: str = "",
+):
+    removed = PortalAccountStore.get_instance().delete(
+        domain,
+        identifier_type=identifier_type,
+        identifier_value=identifier_value,
+    )
+    return {"success": removed, "domain": domain}
 
 
 @app.get("/api/vault")
@@ -569,6 +649,16 @@ async def get_page_brief(refresh: bool = Query(False)):
     except AgentRunError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return JSONResponse(content=brief, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/page/login-options")
+async def get_login_options():
+    """Read-only inspection of visible login/recovery options."""
+    try:
+        inspection = await orchestrator.inspect_login_options()
+    except AgentRunError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return JSONResponse(content=inspection, headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/agent/upload")

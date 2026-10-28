@@ -356,6 +356,62 @@ function CheckpointContent({ activeGate, onSubmitResponse, onClose, onDismissGat
           {activeGate.gate_type === 'GATEWAY_DECISION' && (
             <div>
               <p className="text-sm text-slate-300 mb-4 leading-relaxed">{activeGate.description}</p>
+              {(activeGate.account_memory?.accounts > 0 || activeGate.login_inspection?.login_methods?.length > 0) && (
+                <div className="mb-4 rounded-xl border border-sky-500/30 bg-sky-500/10 p-3 text-[11px] leading-relaxed text-sky-200">
+                  <div className="font-bold text-sky-100">What I remember about this portal</div>
+                  {activeGate.account_memory?.accounts > 0 ? (
+                    <div className="mt-1">
+                      {activeGate.account_memory.account_exists === 'yes'
+                        ? 'You have used this portal before.'
+                        : activeGate.account_memory.account_exists === 'no'
+                          ? 'You told me this is your first time here.'
+                          : 'I do not know yet whether you have an account here.'}
+                      {activeGate.account_memory.registration_status === 'in_progress' && (
+                        <span> An application is in progress.</span>
+                      )}
+                      {activeGate.account_memory.last_known_step && (
+                        <span> Last known step: {activeGate.account_memory.last_known_step.replaceAll('_', ' ')}.</span>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="mt-1">No earlier visit is recorded for this portal.</div>
+                  )}
+                  {activeGate.login_inspection?.login_methods?.length > 0 && (
+                    <div className="mt-1 text-sky-300/90">
+                      Visible sign-in options:{' '}
+                      {activeGate.login_inspection.login_methods
+                        .map((method) => method.replaceAll('_', ' '))
+                        .join(', ')}
+                      . <span className="text-sky-300/70">Read-only check; nothing was submitted.</span>
+                    </div>
+                  )}
+                </div>
+              )}
+              {activeGate.account_memory?.account_exists === 'unknown' && !activeGate.account_answered && (
+                <div className="mb-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3">
+                  <div className="text-[11px] font-bold text-amber-200">
+                    Have you registered on this portal before?
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {[
+                      { value: 'yes', label: 'Yes, I have an account' },
+                      { value: 'no', label: 'No, this is my first time' },
+                      { value: 'unknown', label: "I'm not sure" },
+                    ].map((option) => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() =>
+                          onSubmitResponse({ action: 'ACCOUNT_STATUS', account_exists: option.value })
+                        }
+                        className="rounded-lg border border-amber-500/40 bg-slate-950/70 px-3 py-1.5 text-[11px] font-semibold text-amber-200 transition-colors hover:bg-amber-500/20"
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 {activeGate.options?.map((option, index) => (
                   <button
