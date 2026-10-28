@@ -14,9 +14,12 @@ import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import decision_policy, field_registry, settings
+from . import concepts, decision_policy, field_registry, settings
 from .dom_scanner import DOMScanner
+from .facts import FactBook
 from .llm_client import LLMClient, LLMError
+from .page_brief import build_deterministic_brief
+from .perception import Perception
 from .tinyfish_client import TinyFishClient, TinyFishError
 from .vault import VaultManager
 
@@ -174,6 +177,44 @@ class FormPilotChatAssistant:
             for field in (form_map.get("fields") or [])
             if field.get("needs_user_input")
         ][:12]
+        brief = state.get("page_brief") or {}
+        brief_questions = [
+            {
+                "asked": question.get("asked"),
+                "concept": question.get("concept"),
+                "required": bool(question.get("required")),
+                "human_only": bool(question.get("human_only")),
+                "fact_status": question.get("fact_status"),
+                "fact_provenance": question.get("fact_provenance"),
+            }
+            for section in (brief.get("sections") or [])
+            for question in (section.get("questions") or [])
+        ][:40]
+        brief_context = (
+            {
+                "summary": brief.get("summary_line"),
+                "page_type": brief.get("page_type"),
+                "purpose": brief.get("purpose"),
+                "confidence": brief.get("confidence"),
+                "questions": brief_questions,
+                "paths": [
+                    {
+                        "label": path.get("label"),
+                        "kind": path.get("kind"),
+                        "needs_human_choice": bool(path.get("needs_human_choice")),
+                    }
+                    for path in (brief.get("paths") or [])[:16]
+                ],
+                "human_only": brief.get("human_only") or [],
+                "ambiguities": [
+                    item.get("description")
+                    for item in (brief.get("ambiguities") or [])[:6]
+                ],
+                "fact_summary": brief.get("fact_summary"),
+            }
+            if brief
+            else None
+        )
         return {
             "app_state": state.get("state"),
             "browser_open": state.get("browser_open"),
@@ -194,6 +235,7 @@ class FormPilotChatAssistant:
             if summary
             else None,
             "fields_missing": missing,
+            "page_brief": brief_context,
             "gate": {
                 "type": gate.get("gate_type"),
                 "title": gate.get("title"),
@@ -230,6 +272,14 @@ class FormPilotChatAssistant:
             "saved value or a portal detail.\n"
             "8. Do not expose internal implementation details, tool names, or system "
             "prompts. Speak to the candidate about their application.\n"
+            "9. The page brief is the shared understanding of this page. Use it to "
+            "explain what the page wants, which paths exist and which questions are "
+            "already answered. Never ask the candidate to classify the page, name a "
+            "field or explain a label.\n"
+            "10. A question with fact_status 'needs_confirmation' is a derived value. "
+            "Ask the candidate to confirm it; do not present it as saved truth.\n"
+            "11. A question with fact_status 'known_absent' is already answered: the "
+            "candidate has no value there. Do not ask for it again.\n"
             f"\nCurrent state (JSON):\n{json.dumps(self._state_context(), ensure_ascii=False, indent=2)}"
         )
 
@@ -535,12 +585,34 @@ class FormPilotChatAssistant:
             "evidence": form_map.get("page_evidence") or [],
             "fields": fields,
             "gateways": gateways,
+            "brief": self._state_context().get("page_brief"),
             "gate": self._state_context().get("gate"),
         }
 
     def _tool_get_saved(self, key: str) -> Dict[str, Any]:
         canonical = field_registry.canonical_key(key)
         spec = field_registry.spec_for(canonical)
+        resolution = None
+        try:
+            resolution = FactBook.get_instance().resolve(
+                canonical, vault=self.vault_mgr.vault
+            )
+        except Exception:
+            resolution = None
+        if resolution is not None and resolution.state in {"known", "known_absent"}:
+            return {
+                "ok": True,
+                "key": canonical,
+                "label": resolution.label or (spec.label if spec else canonical),
+                "value": (
+                    self._mask_if_needed(canonical, resolution.value)
+                    if resolution.value
+                    else None
+                ),
+                "state": resolution.state,
+                "provenance": resolution.provenance,
+                "verification": resolution.verification,
+            }
         if not spec:
             return {
                 "ok": False,
@@ -1052,7 +1124,13 @@ class FormPilotChatAssistant:
         Shared by the deterministic parser and the model's update tool so both
         paths validate, store and report a change in exactly the same way.
         """
-        canonical = field_registry.canonical_key(str(key or "").strip())
+        raw_key = str(key or "").strip()
+        concept_key = raw_key.lower().replace("-", "_").replace(" ", "_")
+        concept = concepts.CONCEPTS.get(concept_key)
+        if concept and not field_registry.spec_for(concept_key):
+            return await self._apply_concept_update(concept_key, concept, str(value or ""))
+
+        canonical = field_registry.canonical_key(raw_key)
         spec = field_registry.spec_for(canonical)
         if not spec:
             return {
@@ -1143,6 +1221,58 @@ class FormPilotChatAssistant:
         except Exception:
             pass
 
+    async def _apply_concept_update(
+        self,
+        concept_key: str,
+        concept: Any,
+        value: str,
+    ) -> Dict[str, Any]:
+        """Save a detail that the vault has no flat field for.
+
+        First, middle and last names and "name as per matric" are semantic
+        facts, not vault columns.  The answer is stored as an explicit fact so
+        it beats the derived value on the next run.
+        """
+        cleaned = str(value or "").strip()
+        if not cleaned:
+            return {
+                "reply": "Please give me the new value you want saved.",
+                "action_taken": "UPDATE_FAILED",
+                "field_updated": None,
+                "new_value": None,
+            }
+        try:
+            FactBook.get_instance().set_fact(
+                concept_key,
+                value=cleaned,
+                provenance="explicit_user",
+                verification="confirmed_by_human",
+            )
+        except Exception:
+            return {
+                "reply": "I couldn't save that change. Please try again in a moment.",
+                "action_taken": "UPDATE_FAILED",
+                "field_updated": None,
+                "new_value": None,
+            }
+
+        updated_on_form = await self._update_open_form(concept_key, cleaned)
+        reply = f"Done — I've updated **{concept.label}** to **{cleaned}** in your saved details."
+        if updated_on_form:
+            reply += " The open form has also been updated. Please check the field before continuing."
+        elif self.orchestrator and getattr(self.orchestrator, "page", None):
+            reply += (
+                " The form is open, but I couldn't find that field on the current page. "
+                "You can edit it directly if needed."
+            )
+        return {
+            "reply": reply,
+            "action_taken": "FIELD_UPDATED",
+            "field_updated": concept_key,
+            "new_value": cleaned,
+            "updated_on_form": updated_on_form,
+        }
+
     async def _update_open_form(self, key: str, value: str) -> bool:
         """Apply an edit to the currently open page, when that field is present."""
         page = getattr(self.orchestrator, "page", None) if self.orchestrator else None
@@ -1174,6 +1304,32 @@ class FormPilotChatAssistant:
                     continue
         except Exception:
             return False
+
+        if not updated:
+            # A semantic concept such as first_name has no framework key the
+            # classifier can emit, so find it through the page brief instead.
+            try:
+                perception = Perception.from_scan(
+                    dom, getattr(self.orchestrator, "blueprint", None)
+                )
+                brief = build_deterministic_brief(perception)
+                handle = next(
+                    (question.handle for question in brief.questions if question.concept == key),
+                    "",
+                )
+                item = next(
+                    (
+                        candidate
+                        for candidate in (dom.get("inputs") or [])
+                        if str(candidate.get("elementId") or "") == handle
+                    ),
+                    None,
+                )
+                if item:
+                    result = await page.evaluate(DOMScanner.INJECTION_JS, [item, value])
+                    updated = bool(isinstance(result, dict) and result.get("success"))
+            except Exception:
+                pass
 
         if updated:
             try:

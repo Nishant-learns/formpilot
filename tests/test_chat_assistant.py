@@ -335,3 +335,80 @@ def test_status_report_never_claims_an_incomplete_fill(vault_manager):
     assert "1 failed" in response["reply"]
     assert "Entry path: register" in response["reply"]
 
+
+
+def test_saved_detail_reads_a_derived_name_part(vault_manager):
+    assistant = _assistant(vault_manager)
+
+    result = assistant._tool_get_saved("middle_name")
+
+    assert result["ok"] is True
+    assert result["value"] == "Kumar"
+    assert result["provenance"] == "derived"
+
+
+def test_editing_a_name_part_stores_an_explicit_fact(vault_manager):
+    from backend.core.facts import FactBook
+
+    assistant = _assistant(vault_manager)
+
+    response = asyncio.run(assistant.apply_field_update("first_name", "Nishant"))
+
+    assert response["action_taken"] == "FIELD_UPDATED"
+    assert response["field_updated"] == "first_name"
+    assert FactBook.get_instance().resolve("first_name").value == "Nishant"
+    # The profile itself is not rewritten; the explicit fact wins instead.
+    assert vault_manager.vault.full_name == "Aman Kumar Sharma"
+
+
+def test_status_context_and_page_tool_include_the_page_brief(vault_manager):
+    class BriefOrchestrator(FakeOrchestrator):
+        def get_state(self):
+            state = super().get_state()
+            state["page_brief"] = {
+                "summary_line": "Personal Details · section_form · 1 question",
+                "page_type": "SECTION_FORM",
+                "purpose": "Collect identity details.",
+                "confidence": 0.9,
+                "sections": [
+                    {
+                        "heading": "Personal Details",
+                        "questions": [
+                            {
+                                "asked": "First Name",
+                                "concept": "first_name",
+                                "required": True,
+                                "fact_status": "known",
+                                "fact_provenance": "derived",
+                            }
+                        ],
+                    }
+                ],
+                "paths": [
+                    {"label": "Save & Next", "kind": "application_action", "needs_human_choice": False}
+                ],
+                "human_only": ["final_submit"],
+                "ambiguities": [],
+                "fact_summary": {"total": 3, "explicit": 1, "derived": 2, "unverified": 0},
+            }
+            return state
+
+    assistant = _assistant(vault_manager, orchestrator=BriefOrchestrator())
+
+    context = assistant._state_context()
+    page = assistant._tool_page()
+
+    assert context["page_brief"]["page_type"] == "SECTION_FORM"
+    assert context["page_brief"]["questions"][0]["fact_status"] == "known"
+    assert page["brief"]["paths"][0]["label"] == "Save & Next"
+
+
+def test_system_prompt_uses_the_shared_brief_without_asking_the_human_to_classify(vault_manager):
+    assistant = _assistant(vault_manager)
+
+    prompt = assistant._system_prompt()
+
+    assert "page brief" in prompt.lower()
+    assert "needs_confirmation" in prompt
+    assert "known_absent" in prompt
+    assert "Never ask the candidate to classify the page" in prompt

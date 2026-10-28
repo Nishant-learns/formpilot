@@ -1487,3 +1487,43 @@ Acceptance for Slice C:
 - A date is typed in the page's format.
 - A select without a matching option asks instead of failing.
 - Existing registry-based fills and read-only-field handling still pass.
+
+### 16.26 Chat binding to the shared brief (2026-10-28)
+
+The chat assistant now reads the same page brief the cockpit shows. There is
+one understanding of the page, not a separate chat-only guess.
+
+Decisions:
+
+1. **The brief is part of the chat state.** `_state_context` carries the brief
+   summary, page type, purpose, confidence, questions, paths, human-only steps,
+   ambiguities and fact summary. The model explains the page from that brief
+   instead of re-deriving it from raw fields.
+2. **The page tool returns the brief.** `explain_current_page` includes the
+   brief, so a question about the page and a question about a field resolve
+   against the same object.
+3. **The prompt forbids asking the human to do the interpreter's job.** Rules
+   9-11 tell the model never to ask the candidate to classify the page, name a
+   field or explain a label; `needs_confirmation` is presented as a derived
+   value awaiting confirmation; `known_absent` is already answered and is not
+   asked again.
+4. **Saved details resolve semantically.** `get_saved_detail` asks the fact
+   book first, so a derived name part (`first_name`, `middle_name`,
+   `last_name`) and a confirmation field can be read even though the vault has
+   no flat column for them. Values stay masked for sensitive concepts.
+5. **Editing a name part stores an explicit fact.** A concept with no vault
+   column is saved through the fact book with `provenance: explicit_user` and
+   `verification: confirmed_by_human`; the vault profile is not rewritten.
+6. **The open form is updated through the brief when the registry cannot map
+   the field.** The classifier's semantic key is tried first; if it cannot see
+   a concept such as `first_name`, the field is found by its brief handle and
+   updated in place. A successful page edit is reported, a failed one is
+   reported as "edit it directly", never as saved.
+
+Acceptance for this slice:
+
+- The chat state and the page tool both expose the brief.
+- The system prompt carries the brief/fact-status rules.
+- `get_saved_detail` returns a derived name part with its provenance.
+- Editing `first_name` stores an explicit fact and leaves the vault untouched.
+- Existing chat behaviour and the full suite still pass.
