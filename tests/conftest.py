@@ -25,6 +25,11 @@ os.environ["FORMPILOT_NTFY_TOPIC"] = "formpilot_test_otp"
 os.environ["FORMPILOT_DEMO_OTP"] = "492015"
 os.environ["TINYFISH_API_KEY"] = ""
 os.environ["TINYFISH_MODE"] = "local"
+# Tests exercise the deterministic fallback unless they inject a fake model.
+os.environ["FORMPILOT_LLM_API_KEY"] = ""
+os.environ["OPENAI_API_KEY"] = ""
+os.environ["FORMPILOT_LLM_BASE_URL"] = "https://api.openai.com/v1"
+os.environ["FORMPILOT_LLM_MODEL"] = "gpt-4o-mini"
 
 for _directory in (
     _TEST_ROOT / "data",

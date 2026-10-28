@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field
 from .core import field_registry, settings
 from .core.biometrics import BiometricCompressor
 from .core.chat_assistant import FormPilotChatAssistant
+from .core.llm_client import LLMConfig
 from .core.live_browser import live_sessions
 from .core.oracle import PortalOracle
 from .core.orchestrator import AgentRunError, FormPilotOrchestrator
@@ -637,6 +638,18 @@ async def post_chat_message(req: ChatMessageRequest):
 @app.get("/api/chat/history")
 def get_chat_history():
     return chat_assistant.chat_history
+
+
+@app.get("/api/chat/config")
+def get_chat_config():
+    """Public view of the assistant model (never returns the raw key)."""
+    return chat_assistant.llm.public_config()
+
+
+@app.post("/api/chat/config")
+def update_chat_config(config: LLMConfig):
+    chat_assistant.llm.save_config(config)
+    return chat_assistant.llm.public_config()
 
 
 # --------------------------------------------------------------------------- websocket

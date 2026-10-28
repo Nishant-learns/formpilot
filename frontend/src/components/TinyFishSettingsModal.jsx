@@ -37,11 +37,37 @@ function SettingsContent({ onClose, onConfigSaved }) {
   const [showKey, setShowKey] = useState(false);
   const [wallet, setWallet] = useState(null);
   const [loadError, setLoadError] = useState('');
+  const [llm, setLlm] = useState({
+    model: '',
+    base_url: '',
+    api_key: '',
+    configured: false,
+    local: false,
+  });
+  const [llmShowKey, setLlmShowKey] = useState(false);
 
   useEffect(() => {
     fetchConfig();
     fetchWallet();
+    fetchLlmConfig();
   }, []);
+
+  const fetchLlmConfig = async () => {
+    try {
+      const res = await fetch('/api/chat/config');
+      if (!res.ok) return;
+      const data = await res.json();
+      setLlm({
+        model: data.model || '',
+        base_url: data.base_url || '',
+        api_key: '',
+        configured: Boolean(data.configured),
+        local: Boolean(data.local),
+      });
+    } catch (err) {
+      // The assistant section is optional until a model is configured.
+    }
+  };
 
   const fetchConfig = async () => {
     try {
@@ -108,6 +134,26 @@ function SettingsContent({ onClose, onConfigSaved }) {
       });
       if (!res.ok) throw new Error('Save failed');
       const data = await res.json();
+
+      const llmRes = await fetch('/api/chat/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: llm.model,
+          base_url: llm.base_url,
+          api_key: llm.api_key || '***',
+          timeout_seconds: 45,
+        }),
+      });
+      if (llmRes.ok) {
+        const llmData = await llmRes.json();
+        setLlm((current) => ({
+          ...current,
+          configured: Boolean(llmData.configured),
+          api_key: '',
+        }));
+      }
+
       if (onConfigSaved) onConfigSaved(data.config);
       onClose();
     } catch (err) {
@@ -370,6 +416,78 @@ function SettingsContent({ onClose, onConfigSaved }) {
                   )}
                 </div>
               )}
+            </div>
+          </div>
+
+          <div className="p-4 rounded-2xl bg-slate-950 border border-violet-500/25 space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-violet-300 uppercase tracking-wider flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>AI assistant (chat)</span>
+              </span>
+              <span
+                className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
+                  llm.configured
+                    ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                    : 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                }`}
+              >
+                {llm.configured ? 'Model connected' : 'Not configured'}
+              </span>
+            </div>
+
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              The assistant reads the live page state and takes actions through tools. Use any
+              OpenAI-compatible endpoint. For a local model, enter
+              <span className="font-mono text-slate-300"> http://127.0.0.1:11434/v1 </span>
+              and leave the key blank.
+            </p>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+              <div>
+                <label className="text-slate-400 font-semibold block mb-1">Model</label>
+                <input
+                  type="text"
+                  value={llm.model || ''}
+                  onChange={(e) => setLlm({ ...llm, model: e.target.value })}
+                  placeholder="gpt-4o-mini"
+                  className="w-full px-3 py-2.5 rounded-xl bg-slate-900 border border-slate-700 focus:border-violet-500 text-white font-mono outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-slate-400 font-semibold block mb-1">Base URL</label>
+                <input
+                  type="text"
+                  value={llm.base_url || ''}
+                  onChange={(e) => setLlm({ ...llm, base_url: e.target.value })}
+                  placeholder="https://api.openai.com/v1"
+                  className="w-full px-3 py-2.5 rounded-xl bg-slate-900 border border-slate-700 focus:border-violet-500 text-white font-mono text-[11px] outline-none"
+                />
+              </div>
+            </div>
+
+            <div className="text-xs">
+              <label className="text-slate-400 font-semibold block mb-1">API key</label>
+              <div className="relative">
+                <input
+                  type={llmShowKey ? 'text' : 'password'}
+                  value={llm.api_key || ''}
+                  onChange={(e) => setLlm({ ...llm, api_key: e.target.value })}
+                  placeholder={llm.configured ? 'A key is saved. Leave blank to keep it.' : 'Paste the model API key'}
+                  className="w-full pl-3 pr-20 py-2.5 rounded-xl bg-slate-900 border border-slate-700 focus:border-violet-500 text-white font-mono outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => setLlmShowKey(!llmShowKey)}
+                  className="absolute right-2 top-2 px-2 py-1 text-[10px] font-semibold text-slate-400 hover:text-slate-200 bg-slate-800 rounded border border-slate-700"
+                >
+                  {llmShowKey ? 'Hide' : 'Show'}
+                </button>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-1">
+                The key stays on this device. Candidate details are sent to the model only when
+                you ask about them.
+              </p>
             </div>
           </div>
 

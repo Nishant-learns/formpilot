@@ -31,10 +31,26 @@ export default function LiveChat({
 }) {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [aiConfigured, setAiConfigured] = useState(null);
   const scrollRef = useRef(null);
   const lastSpokenRef = useRef(WELCOME.text);
 
   const messages = chatMessages?.length ? chatMessages : [WELCOME];
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/chat/config')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && data) setAiConfigured(Boolean(data.configured));
+      })
+      .catch(() => {
+        if (!cancelled) setAiConfigured(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -193,6 +209,12 @@ export default function LiveChat({
       </div>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3.5 bg-slate-950/40">
+        {aiConfigured === false && (
+          <div className="rounded-xl border border-violet-500/30 bg-violet-500/10 px-3 py-2 text-[11px] text-violet-200">
+            The AI model is not configured yet. Add a model key in Settings → AI assistant to
+            enable free-form questions and actions.
+          </div>
+        )}
         {messages.map((m, i) => {
           const isUser = m.sender === 'Candidate';
           return (
@@ -287,7 +309,7 @@ export default function LiveChat({
         {loading && (
           <div className="flex items-center gap-2 text-xs text-amber-400 animate-pulse py-1">
             <Sparkles className="w-3.5 h-3.5" />
-            <span>FormPilot is checking…</span>
+            <span>FormPilot is thinking…</span>
           </div>
         )}
       </div>

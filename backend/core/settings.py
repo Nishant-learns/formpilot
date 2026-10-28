@@ -54,6 +54,14 @@ TINYFISH_AGENT_URL = os.getenv("TINYFISH_AGENT_URL", "https://agent.tinyfish.ai/
 TINYFISH_PROXY_COUNTRY = os.getenv("TINYFISH_PROXY_COUNTRY", "IN").strip().upper()
 TINYFISH_TIMEOUT_SECONDS = int(os.getenv("TINYFISH_TIMEOUT_SECONDS", "90"))
 
+# Candidate assistant model. Any OpenAI-compatible endpoint works; a local
+# server (for example Ollama at http://127.0.0.1:11434/v1) needs no key.
+LLM_API_KEY = os.getenv("FORMPILOT_LLM_API_KEY", os.getenv("OPENAI_API_KEY", "")).strip()
+LLM_BASE_URL = os.getenv("FORMPILOT_LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+LLM_MODEL = os.getenv("FORMPILOT_LLM_MODEL", "gpt-4o-mini").strip()
+LLM_TIMEOUT_SECONDS = int(os.getenv("FORMPILOT_LLM_TIMEOUT_SECONDS", "45"))
+LLM_MAX_HISTORY = int(os.getenv("FORMPILOT_LLM_MAX_HISTORY", "16"))
+
 # OTP relay. The default topic is intentionally demo-only; deployments should
 # set FORMPILOT_NTFY_TOPIC to a private, unguessable topic.
 NTFY_TOPIC = os.getenv("FORMPILOT_NTFY_TOPIC", "formpilot_demo_otp").strip()
