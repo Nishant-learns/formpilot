@@ -1437,3 +1437,53 @@ Acceptance for Slice B:
 - Facts survive a reload and are encrypted when a vault key is set.
 - Every field-registry key maps to a concept.
 - The brief tells the human which questions already have a fact.
+
+### 16.25 Slice C: filling from concepts (2026-10-28)
+
+`backend/core/fill_plan.py` turns one perception plus the fact book into one
+instruction per field. The operator still does the typing and the fresh-scan
+verification; the plan only decides *whether* and *what* may be typed.
+
+Instruction states:
+
+- `fill` — a fact exists and is safe to type.
+- `leave_blank` — the human said the value does not exist (for example, no
+  middle name). The field is skipped and is not treated as missing.
+- `confirm` — only a derived value exists (currently `name_as_matric`). The
+  operator asks the human to confirm it instead of typing it silently.
+- `ask_human` — no fact, or a select has no matching option.
+- `human_only` — OTP, CAPTCHA, live photo, payment.
+- `upload` — a document upload handled by the upload pipeline.
+- `fallback` — the question is not in the concept dictionary; the existing
+  registry fast path decides.
+
+Decisions:
+
+1. **The plan is built from the same scan as the fill.** Handles are per-scan,
+   so building the plan from a cached brief would be unsafe. The brief handles
+   are never reused across scans.
+2. **The plan uses the deterministic interpreter.** No model call is made
+   during filling. A model read is for the human-facing brief; the fast path
+   must stay fast and offline-safe.
+3. **Dates are formatted from the page's own format.** `DD/MM/YYYY` in the
+   label or placeholder is honoured; a value is never reformatted from a guess.
+4. **Selects are checked against the page's options.** If the page does not
+   offer the fact's value, the field becomes `ask_human` instead of a failed
+   type.
+5. **Answers become explicit facts.** When the human supplies a value for a
+   known concept during a run, it is stored with
+   `provenance: explicit_user` and `verification: confirmed_by_human`, so it
+   beats derived values on the next run. Unknown questions keep the existing
+   custom-field path until a human confirms a concept.
+6. **Verification is unchanged.** Every filled value is still checked against
+   a fresh scan; a value the portal drops is a failure, not a success.
+
+Acceptance for Slice C:
+
+- First, middle and last names fill from the full name without asking.
+- A known-absent middle name stays empty and is reported as skipped, not
+  missing.
+- `name_as_matric` asks once instead of being typed from a derived value.
+- A date is typed in the page's format.
+- A select without a matching option asks instead of failing.
+- Existing registry-based fills and read-only-field handling still pass.

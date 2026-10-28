@@ -28,6 +28,7 @@ from .biometrics import BiometricCompressor
 from .blueprint import BlueprintElement, PageBlueprint
 from .dom_scanner import DOMScanner
 from .facts import FactBook
+from .fill_plan import build_fill_plan
 from .form_model import FormModel
 from .live_browser import LiveBrowserSession, live_sessions
 from .navigator import ResilientNavigator
@@ -1913,6 +1914,23 @@ class FormPilotOrchestrator:
         targets: List[Dict[str, Any]] = []
         skipped: List[Dict[str, Any]] = []
         vault = self.vault_mgr.vault
+        plan: Dict[str, Any] = {}
+        try:
+            perception = Perception.from_scan(dom, self.blueprint)
+            domain = urlparse(
+                str(dom.get("url") or (self.page.url if self.page else ""))
+            ).netloc
+            plan = build_fill_plan(
+                perception,
+                FactBook.get_instance(),
+                vault=vault,
+                domain=domain,
+            )
+        except Exception:
+            # A page that cannot be perceived still fills through the registry
+            # fast path; the semantic layer must never block a run.
+            traceback.print_exc()
+            plan = {}
         login_selection = decision_policy.login_method_options(dom)
         login_field = (login_selection or {}).get("field") or {}
         page_type = str((self.form_map or {}).get("page_type") or "").lower()
@@ -1992,23 +2010,59 @@ class FormPilotOrchestrator:
                     )
                     continue
 
-                value = vault.find_field_value(sem_key)
-                if sem_key == "dob" and value:
-                    value = vault.get_formatted_dob("DD/MM/YYYY")
-
-                if not value:
-                    value = await self._ask_for_missing_field(item, sem_key)
+                instruction = plan.get(str(item.get("elementId") or ""))
+                if instruction is not None and instruction.state == "leave_blank":
+                    skipped.append(
+                        {
+                            "item": item,
+                            "sem_key": sem_key,
+                            "label": label,
+                            "reason": instruction.reason
+                            or "You told me there is no value for this field.",
+                        }
+                    )
+                    continue
+                if instruction is not None and instruction.state == "fill":
+                    # Meaning already decided the value; do not re-derive it
+                    # from the framework name.
+                    value = instruction.value or ""
+                elif instruction is not None and instruction.state in {"ask_human", "confirm"}:
+                    value = await self._ask_for_missing_field(
+                        item, sem_key, concept=instruction.concept
+                    )
                     if not value:
                         skipped.append(
                             {
                                 "item": item,
                                 "sem_key": sem_key,
                                 "label": label,
-                                "reason": "No value was available for this field.",
+                                "reason": (
+                                    "This needs your confirmation."
+                                    if instruction.state == "confirm"
+                                    else "No value was available for this field."
+                                ),
                             }
                         )
                         continue
                     vault = self.vault_mgr.vault
+                else:
+                    value = vault.find_field_value(sem_key)
+                    if sem_key == "dob" and value:
+                        value = vault.get_formatted_dob("DD/MM/YYYY")
+
+                    if not value:
+                        value = await self._ask_for_missing_field(item, sem_key)
+                        if not value:
+                            skipped.append(
+                                {
+                                    "item": item,
+                                    "sem_key": sem_key,
+                                    "label": label,
+                                    "reason": "No value was available for this field.",
+                                }
+                            )
+                            continue
+                        vault = self.vault_mgr.vault
 
             # Portals commonly lock fields after a step succeeds (for example,
             # HPSC marks the mobile/email/password fields read-only once the
@@ -2490,7 +2544,13 @@ class FormPilotOrchestrator:
         )
         return value
 
-    async def _ask_for_missing_field(self, item: Dict[str, Any], sem_key: str) -> str:
+    async def _ask_for_missing_field(
+        self,
+        item: Dict[str, Any],
+        sem_key: str,
+        *,
+        concept: Optional[str] = None,
+    ) -> str:
         label = item.get("label") or sem_key
         await self.emit_event(
             "THINK",
@@ -2534,10 +2594,24 @@ class FormPilotOrchestrator:
             return ""
         value = str(response.get("value") or response.get("text") or "").strip()
         if value:
-            try:
-                self.vault_mgr.set_semantic_field(sem_key, value)
-            except Exception:
-                self.vault_mgr.add_custom_field(sem_key, value)
+            stored_as_fact = False
+            if concept:
+                try:
+                    FactBook.get_instance().set_fact(
+                        concept,
+                        value=value,
+                        provenance="explicit_user",
+                        verification="confirmed_by_human",
+                        scope={"kind": "global"},
+                    )
+                    stored_as_fact = True
+                except Exception:
+                    traceback.print_exc()
+            if not stored_as_fact:
+                try:
+                    self.vault_mgr.set_semantic_field(sem_key, value)
+                except Exception:
+                    self.vault_mgr.add_custom_field(sem_key, value)
         return value
 
     async def _handle_upload(self, item: Dict[str, Any], sem_key: str) -> bool:

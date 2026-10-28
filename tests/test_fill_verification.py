@@ -220,3 +220,76 @@ def test_fill_incomplete_gate_requires_a_choice_not_a_dismissal():
         assert orchestrator.active_gate is None
 
     asyncio.run(scenario())
+
+
+def test_concept_aware_fill_uses_name_parts_from_the_full_name():
+    async def scenario(page):
+        await page.set_content(
+            """
+            <html><body>
+              <label for="first">First Name</label>
+              <input id="first" name="firstName" type="text">
+              <label for="middle">Middle Name</label>
+              <input id="middle" name="middleName" type="text">
+              <label for="last">Last Name</label>
+              <input id="last" name="lastName" type="text">
+            </body></html>
+            """
+        )
+        orchestrator = _orchestrator(page, {"full_name": "Aman Kumar Sharma"})
+        dom = await orchestrator._scan_dom()
+
+        verified = await orchestrator._fill_form(dom)
+
+        assert verified == 3
+        assert await page.input_value("#first") == "Aman"
+        assert await page.input_value("#middle") == "Kumar"
+        assert await page.input_value("#last") == "Sharma"
+
+    run_with_page(scenario)
+
+
+def test_a_known_absent_middle_name_is_left_blank_and_not_asked():
+    from backend.core.facts import FactBook
+
+    async def scenario(page):
+        await page.set_content(
+            """
+            <html><body>
+              <label for="first">First Name</label>
+              <input id="first" name="firstName" type="text">
+              <label for="middle">Middle Name</label>
+              <input id="middle" name="middleName" type="text">
+              <label for="last">Last Name</label>
+              <input id="last" name="lastName" type="text">
+            </body></html>
+            """
+        )
+        FactBook.get_instance().set_fact(
+            "full_name",
+            value="Nishant Kumar",
+            parts={
+                "first": "Nishant",
+                "middle": None,
+                "middle_known_absent": True,
+                "last": "Kumar",
+            },
+        )
+        orchestrator = _orchestrator(page, {})
+        dom = await orchestrator._scan_dom()
+
+        verified = await orchestrator._fill_form(dom)
+
+        assert verified == 2
+        assert await page.input_value("#first") == "Nishant"
+        assert await page.input_value("#middle") == ""
+        assert await page.input_value("#last") == "Kumar"
+        assert orchestrator.fill_summary["skipped"] == 1
+        skipped = [
+            failure
+            for failure in orchestrator.fill_failures
+            if failure.get("status") == "SKIPPED"
+        ]
+        assert "no middle name" in skipped[0]["reason"].lower()
+
+    run_with_page(scenario)

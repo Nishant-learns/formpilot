@@ -368,6 +368,9 @@ class FactBook:
         profile = self._vault(vault)
         vault_key = concepts.vault_key_for(concept) or concept
         raw = field_registry.resolve_value(profile, vault_key)
+        if raw in (None, "") and hasattr(profile, "find_field_value"):
+            # Small test doubles and older adapters expose only this method.
+            raw = profile.find_field_value(vault_key)
         if raw not in (None, ""):
             return FactResolution(
                 concept=concept,
