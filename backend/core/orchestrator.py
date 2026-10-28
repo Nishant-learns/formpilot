@@ -13,7 +13,7 @@ import traceback
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from playwright.async_api import (
     Browser,
@@ -27,6 +27,7 @@ from .action_resolver import ActionResolver, ActionResult
 from .biometrics import BiometricCompressor
 from .blueprint import BlueprintElement, PageBlueprint
 from .dom_scanner import DOMScanner
+from .facts import FactBook
 from .form_model import FormModel
 from .live_browser import LiveBrowserSession, live_sessions
 from .navigator import ResilientNavigator
@@ -990,9 +991,13 @@ class FormPilotOrchestrator:
             ) from exc
         perception = Perception.from_scan(dom, blueprint)
         brief = await self.page_interpreter.interpret(perception, force=refresh)
+        domain = urlparse(brief.url).netloc
+        fact_book = FactBook.get_instance()
+        fact_book.annotate_brief(brief, domain=domain)
         self.page_brief = {
             **brief.model_dump(),
             "summary_line": brief.summary_line(),
+            "fact_summary": fact_book.summary(domain=domain),
         }
         return self.page_brief
 

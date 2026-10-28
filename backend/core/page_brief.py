@@ -61,6 +61,12 @@ class BriefQuestion(BaseModel):
     constraints: Dict[str, Any] = Field(default_factory=dict)
     human_only: bool = False
     reason: str = ""
+    # Fact availability is filled in by the fact book after interpretation.
+    # The brief never carries the value itself; it only says whether a fact
+    # exists, where it came from and whether a human confirmed it.
+    fact_status: str = "missing"
+    fact_provenance: str = ""
+    fact_verification: str = ""
 
 
 class BriefSection(BaseModel):

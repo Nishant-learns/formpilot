@@ -1374,3 +1374,66 @@ Acceptance for Slice A:
 - The same page signature reuses the cached brief; a changed page does not.
 - If the model is unavailable, a deterministic brief is still produced and is
   labelled as such.
+
+### 16.24 Slice B: semantic facts (2026-10-28)
+
+Slice B adds the fact layer behind the vault. The vault still stores the
+candidate's profile; `backend/core/facts.py` gives every value a concept, a
+label, a provenance, a verification state and a scope.
+
+Decisions taken while implementing:
+
+1. **The saved profile is an explicit human statement.** A value read from the
+   vault is reported as `provenance: explicit_user` and
+   `verification: confirmed_by_human`. The candidate entered and saved it in
+   their own profile, so it does not need to be re-confirmed on every run.
+   A fact the chat learns later is stored the same way, with
+   `source: explicit`.
+2. **Derived facts are labelled.** Name parts split from a full name are
+   `provenance: derived`. They never overwrite an explicit part. The split is
+   mechanical, so the parts are usable; a derived value that requires judgment
+   is not.
+3. **`name_as_matric` requires one confirmation.** The certificate may print
+   the name differently from the current profile. When only a full name is
+   known, the brief marks `name_as_matric` as `needs_confirmation` instead of
+   silently filling it.
+4. **Absence is stored.** `middle_known_absent: true` makes `middle_name`
+   resolve to `known_absent` with no value. It is not a missing fact, so the
+   gate must not ask for it again.
+5. **Confirmation fields are aliases of their parent.** `verify_full_name`,
+   `verify_father_name` and `verify_mother_name` resolve to the parent fact and
+   are never stored twice. `confirm_email` is copied mechanically from `email`.
+6. **Scope is explicit.** A fact is either global or portal-scoped by domain.
+   A portal fact wins on its own domain and nowhere else.
+7. **Sensitive values stay masked in views.** `GET /api/facts` and
+   `GET /api/facts/resolve` mask Aadhaar, mobile and password values the same
+   way the vault view does. The operator reads the raw value internally.
+8. **Facts are encrypted with the vault key.** `data/facts.json` uses the same
+   AES-256-GCM envelope and atomic write as `candidate_vault.json`.
+9. **Unknown concepts are refused.** A concept must exist in the dictionary
+   before it can be stored. A new question becomes a concept only after a human
+   confirms the mapping; it is never persisted from a model guess.
+
+The page brief now carries `fact_status`, `fact_provenance` and
+`fact_verification` per question, plus a `fact_summary` on the brief payload.
+The brief still never contains the value itself: it says whether a fact exists,
+where it came from and whether a human confirmed it.
+
+API added in this slice:
+
+- `GET /api/facts?domain=` — every known fact, masked, with a summary.
+- `GET /api/facts/resolve?concept=&domain=` — one resolution, including why it
+  is missing.
+- `PUT /api/facts/{concept}` — store an explicit fact, optional parts, aliases,
+  verification and portal scope.
+- `DELETE /api/facts/{concept}?domain=` — remove an explicit fact so the
+  derived or profile value applies again.
+
+Acceptance for Slice B:
+
+- An explicit first name beats a name derived from the full name.
+- "No middle name" is `known_absent`, not `missing`.
+- A portal-scoped value wins only on that domain.
+- Facts survive a reload and are encrypted when a vault key is set.
+- Every field-registry key maps to a concept.
+- The brief tells the human which questions already have a fact.

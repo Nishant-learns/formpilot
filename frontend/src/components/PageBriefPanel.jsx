@@ -42,6 +42,24 @@ function conceptTone(question) {
   return 'text-amber-300 bg-amber-500/10 border-amber-500/30';
 }
 
+function factTone(status) {
+  if (status === 'known') return 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30';
+  if (status === 'known_absent') return 'text-sky-300 bg-sky-500/10 border-sky-500/30';
+  if (status === 'needs_confirmation') return 'text-amber-300 bg-amber-500/10 border-amber-500/30';
+  return 'text-rose-300 bg-rose-500/10 border-rose-500/30';
+}
+
+function factLabel(question) {
+  if (question.fact_status === 'human_only') return 'you enter this';
+  if (question.fact_status === 'known') {
+    if (question.fact_provenance === 'derived') return 'derived from your profile';
+    return 'in your vault';
+  }
+  if (question.fact_status === 'known_absent') return 'you have no middle name';
+  if (question.fact_status === 'needs_confirmation') return 'confirm once';
+  return 'not in your vault';
+}
+
 function pathTone(kind) {
   if (kind === 'application_action') return 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30';
   if (kind === 'account_action') return 'text-amber-300 bg-amber-500/10 border-amber-500/30';
@@ -145,6 +163,16 @@ export default function PageBriefPanel({ pageBrief, runState, onRefresh, refresh
             {pageBrief.summary_line || pageBrief.title}
           </div>
           <p className="mt-1 text-[11px] leading-relaxed text-slate-400">{pageBrief.purpose}</p>
+          {pageBrief.fact_summary && (
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-[9px] font-mono text-slate-500">
+              <span>{pageBrief.fact_summary.total} facts known</span>
+              <span>· {pageBrief.fact_summary.explicit} from you</span>
+              <span>· {pageBrief.fact_summary.derived} derived</span>
+              {pageBrief.fact_summary.unverified > 0 && (
+                <span className="text-amber-300">· {pageBrief.fact_summary.unverified} to confirm</span>
+              )}
+            </div>
+          )}
         </div>
 
         {(pageBrief.information || []).length > 0 && (
@@ -203,6 +231,9 @@ export default function PageBriefPanel({ pageBrief, runState, onRefresh, refresh
                         {question.constraints?.confirmation && (
                           <span className="text-[9px] font-mono text-sky-400">confirmation</span>
                         )}
+                        <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded border ${factTone(question.fact_status)}`}>
+                          {factLabel(question)}
+                        </span>
                         <Confidence value={question.concept_confidence} />
                       </div>
                       {question.reason && (

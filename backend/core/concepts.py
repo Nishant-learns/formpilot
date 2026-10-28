@@ -95,6 +95,40 @@ CONCEPTS: Dict[str, Concept] = {
     "is_ex_serviceman": _c(
         "is_ex_serviceman", "Ex-serviceman", "select", "is_ex_serviceman"
     ),
+    "disability_type": _c("disability_type", "Disability type", "text", "disability_type"),
+    "disability_percentage": _c(
+        "disability_percentage", "Disability percentage", "text", "disability_percentage"
+    ),
+    "caste_certificate_number": _c(
+        "caste_certificate_number", "Caste certificate number", vault_key="caste_certificate_number"
+    ),
+    "caste_cert_issue_date": _c(
+        "caste_cert_issue_date", "Caste certificate issue date", "date", "caste_cert_issue_date"
+    ),
+    "caste_cert_authority": _c(
+        "caste_cert_authority", "Caste certificate authority", vault_key="caste_cert_authority"
+    ),
+    "domicile_certificate_number": _c(
+        "domicile_certificate_number",
+        "Domicile certificate number",
+        vault_key="domicile_certificate_number",
+    ),
+    "has_aadhaar": _c("has_aadhaar", "Has Aadhaar", "select", "has_aadhaar"),
+    "same_as_permanent": _c(
+        "same_as_permanent", "Present address same as permanent", "select", "same_as_permanent"
+    ),
+    # Confirmation fields repeat an existing fact.  They keep their own concept
+    # so the page brief can say "confirmation", but the fact resolves to the
+    # parent concept rather than being stored twice.
+    "verify_full_name": _c(
+        "verify_full_name", "Confirm full name", vault_key="verify_full_name"
+    ),
+    "verify_father_name": _c(
+        "verify_father_name", "Confirm father's name", vault_key="verify_father_name"
+    ),
+    "verify_mother_name": _c(
+        "verify_mother_name", "Confirm mother's name", vault_key="verify_mother_name"
+    ),
     # Identifiers and credentials
     "registration_id": _c(
         "registration_id", "Registration / OTR ID", vault_key="registration_id"

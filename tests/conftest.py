@@ -46,6 +46,19 @@ def pytest_sessionfinish(session, exitstatus):  # pragma: no cover - cleanup hoo
 import pytest  # noqa: E402  (import after environment setup)
 
 
+@pytest.fixture(autouse=True)
+def clean_facts_store():
+    """Give every test an empty semantic fact store."""
+    from backend.core import settings
+    from backend.core.facts import FactBook
+
+    FactBook.reset_instance()
+    (settings.DATA_DIR / "facts.json").unlink(missing_ok=True)
+    yield
+    FactBook.reset_instance()
+    (settings.DATA_DIR / "facts.json").unlink(missing_ok=True)
+
+
 @pytest.fixture()
 def vault_manager(tmp_path):
     """An isolated vault backed by a temporary file."""

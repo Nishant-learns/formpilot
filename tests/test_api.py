@@ -355,3 +355,90 @@ def test_unknown_run_is_404(client):
     response = client.get("/api/runs/not-a-real-run")
 
     assert response.status_code == 404
+
+
+def test_facts_endpoint_lists_profile_facts_with_provenance(client):
+    response = client.get("/api/facts")
+
+    assert response.status_code == 200
+    payload = response.json()
+    facts = {fact["concept"]: fact for fact in payload["facts"]}
+    assert facts["full_name"]["value"] == "Aman Kumar Sharma"
+    assert facts["first_name"]["provenance"] == "derived"
+    assert facts["first_name"]["value"] == "Aman"
+    # Sensitive values are masked in the fact view, exactly like the vault.
+    assert facts["aadhaar_number"]["value"].endswith("9012")
+    assert "12345678" not in facts["aadhaar_number"]["value"]
+
+
+def test_setting_a_fact_overrides_derived_without_touching_the_vault(client):
+    put = client.put("/api/facts/first_name", json={"value": "Nishant"})
+
+    assert put.status_code == 200
+    assert put.json()["fact"]["provenance"] == "explicit_user"
+
+    resolved = client.get("/api/facts/resolve", params={"concept": "first_name"}).json()
+    assert resolved["value"] == "Nishant"
+    assert resolved["source"] == "explicit"
+
+    vault = client.get("/api/vault").json()
+    assert vault["full_name"] == "Aman Kumar Sharma"
+
+
+def test_a_fact_can_record_that_a_middle_name_does_not_exist(client):
+    client.put(
+        "/api/facts/full_name",
+        json={
+            "value": "Nishant Kumar",
+            "parts": {
+                "first": "Nishant",
+                "middle": None,
+                "middle_known_absent": True,
+                "last": "Kumar",
+            },
+        },
+    )
+
+    resolved = client.get("/api/facts/resolve", params={"concept": "middle_name"}).json()
+
+    assert resolved["state"] == "known_absent"
+    assert resolved["value"] is None
+
+
+def test_a_portal_fact_only_applies_to_its_domain(client):
+    client.put(
+        "/api/facts/mobile",
+        json={"value": "9000000001", "domain": "regn.example.gov.in"},
+    )
+
+    on_portal = client.get(
+        "/api/facts/resolve",
+        params={"concept": "mobile", "domain": "regn.example.gov.in"},
+    ).json()
+    elsewhere = client.get(
+        "/api/facts/resolve",
+        params={"concept": "mobile", "domain": "other.example.gov.in"},
+    ).json()
+
+    # Mobile is sensitive, so the resolve endpoint returns it masked.
+    assert on_portal["value"].endswith("0001")
+    assert elsewhere["value"].endswith("3210")
+    assert on_portal["scope"]["kind"] == "portal"
+    assert elsewhere["scope"]["kind"] == "global"
+
+
+def test_an_unknown_concept_cannot_be_stored(client):
+    response = client.put("/api/facts/made_up_question", json={"value": "x"})
+
+    assert response.status_code == 422
+
+
+def test_deleting_a_fact_restores_the_derived_value(client):
+    client.put("/api/facts/first_name", json={"value": "Nishant"})
+
+    deleted = client.delete("/api/facts/first_name")
+    resolved = client.get("/api/facts/resolve", params={"concept": "first_name"}).json()
+
+    assert deleted.json()["success"] is True
+    assert resolved["value"] == "Aman"
+    assert resolved["provenance"] == "derived"

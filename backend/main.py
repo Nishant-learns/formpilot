@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field
 
 from .core import field_registry, settings
 from .core.biometrics import BiometricCompressor
+from .core.facts import FactBook
 from .core.chat_assistant import FormPilotChatAssistant
 from .core.llm_client import LLMConfig
 from .core.live_browser import live_sessions
@@ -104,6 +105,25 @@ orchestrator = FormPilotOrchestrator(broadcast_fn=broadcast_to_cockpits)
 chat_assistant = FormPilotChatAssistant(orchestrator=orchestrator)
 
 
+class FactInput(BaseModel):
+    value: Optional[str] = Field(None, max_length=2000)
+    label: Optional[str] = Field(None, max_length=200)
+    value_type: Optional[str] = Field(None, max_length=40)
+    parts: Optional[Dict[str, Any]] = None
+    aliases: Optional[List[str]] = None
+    provenance: str = Field(
+        "explicit_user", pattern="^(explicit_user|derived|portal_confirmed|imported)$"
+    )
+    verification: str = Field(
+        "confirmed_by_human",
+        pattern="^(unverified|confirmed_by_human|verified_on_page)$",
+    )
+    domain: Optional[str] = Field(None, max_length=255)
+    constraints: Optional[Dict[str, Any]] = None
+    notes: Optional[str] = Field(None, max_length=1000)
+    known_absent: bool = False
+
+
 # --------------------------------------------------------------------------- security
 
 
@@ -168,6 +188,67 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 
 # --------------------------------------------------------------------------- vault
+
+
+@app.get("/api/facts")
+def list_facts(domain: Optional[str] = None):
+    """The candidate's facts with provenance and verification.
+
+    Values are masked for sensitive concepts, exactly like the vault view.
+    """
+    book = FactBook.get_instance()
+    return {
+        "domain": domain,
+        "summary": book.summary(domain=domain),
+        "facts": [fact.public() for fact in book.all_facts(domain=domain)],
+    }
+
+
+@app.get("/api/facts/resolve")
+def resolve_fact(concept: str, domain: Optional[str] = None):
+    """Resolve one concept to a value, or say why it is missing."""
+    book = FactBook.get_instance()
+    resolution = book.resolve(concept, domain=domain)
+    data = resolution.model_dump()
+    data["value"] = field_registry.mask_value(concept, data.get("value"))
+    return data
+
+
+@app.put("/api/facts/{concept}")
+def set_fact(concept: str, payload: FactInput):
+    """Store an explicit fact.  The human said it, so it beats derived data."""
+    if not re.match(r"^[a-z0-9_]{1,60}$", concept):
+        raise HTTPException(status_code=422, detail="Invalid concept name.")
+    scope = (
+        {"kind": "portal", "domain": payload.domain}
+        if payload.domain
+        else {"kind": "global"}
+    )
+    try:
+        fact = FactBook.get_instance().set_fact(
+            concept,
+            value=payload.value,
+            label=payload.label,
+            value_type=payload.value_type,
+            parts=payload.parts,
+            aliases=payload.aliases,
+            provenance=payload.provenance,
+            verification=payload.verification,
+            scope=scope,
+            constraints=payload.constraints,
+            notes=payload.notes,
+            known_absent=payload.known_absent,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"success": True, "fact": fact.public()}
+
+
+@app.delete("/api/facts/{concept}")
+def delete_fact(concept: str, domain: Optional[str] = None):
+    scope = {"kind": "portal", "domain": domain} if domain else {"kind": "global"}
+    removed = FactBook.get_instance().delete_fact(concept, scope=scope)
+    return {"success": removed, "concept": concept}
 
 
 @app.get("/api/vault")
