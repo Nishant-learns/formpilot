@@ -447,6 +447,60 @@ function CheckpointContent({ activeGate, onSubmitResponse, onClose, onDismissGat
             </div>
           )}
 
+          {/* Existing account conflict */}
+          {activeGate.gate_type === 'ACCOUNT_CONFLICT' && (
+            <div className="space-y-4">
+              <p className="text-sm text-slate-300 leading-relaxed">{activeGate.description}</p>
+              {activeGate.evidence && (
+                <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-[11px] leading-relaxed text-rose-200">
+                  <div className="font-bold text-rose-100">What the portal showed</div>
+                  <div className="mt-1 italic">“{activeGate.evidence}”</div>
+                  <div className="mt-1 text-rose-300/70">
+                    Read-only: nothing was submitted, no OTP requested, no password reset.
+                  </div>
+                </div>
+              )}
+              {activeGate.login_inspection?.login_methods?.length > 0 && (
+                <div className="rounded-xl border border-sky-500/30 bg-sky-500/10 p-3 text-[11px] leading-relaxed text-sky-200">
+                  <div className="font-bold text-sky-100">Sign-in options visible on this page</div>
+                  <div className="mt-1">
+                    {activeGate.login_inspection.login_methods
+                      .map((method) => method.replaceAll('_', ' '))
+                      .join(', ')}
+                    {activeGate.login_inspection.recovery_paths?.length > 0 && (
+                      <span>
+                        {' '}
+                        · Recovery: {activeGate.login_inspection.recovery_paths.join(', ')}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+              <div className="grid grid-cols-1 gap-2">
+                {activeGate.options?.map((option, index) => (
+                  <button
+                    key={option.choice || index}
+                    type="button"
+                    onClick={() =>
+                      onSubmitResponse({ action: 'ACCOUNT_CONFLICT', choice: option.choice })
+                    }
+                    className="p-3.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-amber-500/60 text-left transition-all flex items-center justify-between gap-3"
+                  >
+                    <div>
+                      <div className="text-sm font-bold text-slate-100">{option.text}</div>
+                      <div className="text-[11px] text-slate-500 mt-0.5">{option.description}</div>
+                    </div>
+                    <ArrowRight className="w-4 h-4 text-amber-400 shrink-0" />
+                  </button>
+                ))}
+              </div>
+              <p className="text-[11px] text-slate-500">
+                Nothing is selected automatically. FormPilot will not fill the registration form
+                over an existing account.
+              </p>
+            </div>
+          )}
+
           {/* Login method */}
           {activeGate.gate_type === 'LOGIN_METHOD' && (
             <div className="space-y-4">
@@ -1305,7 +1359,7 @@ function CheckpointContent({ activeGate, onSubmitResponse, onClose, onDismissGat
 
           {/* Fallback */}
           {!LIVE_GATES.has(activeGate.gate_type)
-            && !['GATEWAY_DECISION', 'LOGIN_METHOD', 'ACCOUNT_IDENTIFIER', 'FILL_INCOMPLETE', 'MISSING_FIELD', 'CAPTCHA_SOLVE', 'OTP_RELAY', 'SECTION_APPROVAL', 'PRE_PAYMENT_SAFETY_LOCK', 'ERROR_DIAGNOSIS'].includes(activeGate.gate_type) && (
+            && !['GATEWAY_DECISION', 'ACCOUNT_CONFLICT', 'LOGIN_METHOD', 'ACCOUNT_IDENTIFIER', 'FILL_INCOMPLETE', 'MISSING_FIELD', 'CAPTCHA_SOLVE', 'OTP_RELAY', 'SECTION_APPROVAL', 'PRE_PAYMENT_SAFETY_LOCK', 'ERROR_DIAGNOSIS'].includes(activeGate.gate_type) && (
               <div className="space-y-4 text-center py-2">
                 <p className="text-sm text-slate-300">
                   {activeGate.description || 'FormPilot is waiting for your confirmation to continue.'}

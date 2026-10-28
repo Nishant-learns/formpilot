@@ -43,9 +43,104 @@ LOGIN_METHODS = {
 }
 IDENTIFIER_TYPES = {"mobile", "email", "urn", "aadhaar", "registration_id", "unknown"}
 
+# Phrases a portal uses when the identifier is already tied to an account.
+# They are evidence that the earlier answer may be wrong, not proof of who
+# owns the account, so the operator surfaces them and asks the human.
+REGISTRATION_CONFLICT_PHRASES = (
+    "already registered",
+    "already been registered",
+    "already exists",
+    "already exist",
+    "already in use",
+    "already used",
+    "already linked",
+    "already associated",
+    "user already exists",
+    "account already exists",
+    "duplicate registration",
+    "number is already registered",
+    "mobile number is already",
+    "email id is already",
+    "email is already",
+)
+
+CONFLICT_CHOICES = (
+    {
+        "choice": "login",
+        "text": "Sign in to the existing account",
+        "description": "I will use the portal's sign-in path with the identifier you already gave me.",
+    },
+    {
+        "choice": "recover",
+        "text": "Recover the account",
+        "description": "I will show the recovery options the page offers and wait for you.",
+    },
+    {
+        "choice": "register",
+        "text": "Register with a different number",
+        "description": "Keep registering, but with an identifier that is not already in use.",
+    },
+    {
+        "choice": "stop",
+        "text": "Stop here",
+        "description": "Stop the run and leave the browser where it is.",
+    },
+)
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _extract(source: Any) -> tuple[str, str, List[str], List[Any]]:
+    """Return ``(domain, visible text, action labels, fields)``.
+
+    Accepts either a ``Perception`` or the legacy DOM dict so the same
+    read-only helpers work before and after the perception layer is built.
+    """
+    from urllib.parse import urlparse
+
+    if isinstance(source, Perception):
+        domain = _domain(urlparse(source.url).netloc)
+        text = " ".join(
+            [
+                source.title or "",
+                source.visible_text or "",
+                " ".join(field.label_text or "" for field in source.fields),
+                " ".join(action.text or "" for action in source.actions),
+                " ".join(str(action.href or "") for action in source.actions),
+            ]
+        )
+        actions = [action.text or "" for action in source.actions]
+        fields = list(source.fields)
+        return domain, text, actions, fields
+
+    dom = source or {}
+    domain = _domain(urlparse(str(dom.get("url") or "")).netloc)
+    gateways = dom.get("gateways") or []
+    inputs = dom.get("inputs") or []
+    text = " ".join(
+        [
+            str(dom.get("title") or ""),
+            str(dom.get("visibleText") or ""),
+            " ".join(str(item.get("text") or "") for item in gateways),
+            " ".join(str(item.get("label") or "") for item in inputs),
+        ]
+    )
+    actions = [str(item.get("text") or "") for item in gateways]
+    return domain, text, actions, []
+
+
+def _sentence_around(text: str, index: int, phrase: str) -> str:
+    start = max(
+        text.rfind(".", 0, index),
+        text.rfind("!", 0, index),
+        text.rfind("?", 0, index),
+    )
+    end_candidates = [pos for pos in (text.find(".", index + len(phrase)), text.find("!", index + len(phrase)), text.find("?", index + len(phrase))) if pos != -1]
+    end = min(end_candidates) if end_candidates else len(text)
+    sentence = " ".join(text[start + 1 : end + 1].split())
+    return sentence[:240] or phrase
 
 
 def _default_path() -> Path:
@@ -78,6 +173,7 @@ class PortalAccount(BaseModel):
     registration_status: str = "unknown"
     last_known_step: str = ""
     last_path_choice: str = ""
+    conflict_evidence: str = ""
     confirmed_by_human_at: Optional[str] = None
     updated_at: str = ""
 
@@ -245,6 +341,39 @@ class PortalAccountStore:
         self.save()
         return account
 
+    def mark_conflict(
+        self,
+        domain: str,
+        *,
+        evidence: str = "",
+    ) -> PortalAccount:
+        """Record that the page contradicts what the human told us.
+
+        The earlier answer ("this is my first time") is no longer trustworthy,
+        so it drops back to ``unknown`` and its confirmation is cleared until a
+        human resolves the conflict.  The page text is kept as evidence.  The
+        most recently touched record for the domain is the one corrected,
+        because that is the identifier the run is using.
+        """
+        domain = _domain(domain)
+        if not domain:
+            raise ValueError("A portal account needs a domain.")
+        candidates = [item for item in self._accounts if item.domain == domain]
+        account = max(candidates, key=lambda item: item.updated_at) if candidates else None
+        if account is None:
+            account = self.record(
+                domain,
+                account_exists="unknown",
+                last_known_step="registration_conflict",
+            )
+        account.account_exists = "unknown"
+        account.last_known_step = "registration_conflict"
+        account.conflict_evidence = str(evidence or "")[:400]
+        account.confirmed_by_human_at = None
+        account.updated_at = _now()
+        self.save()
+        return account
+
     def delete(self, domain: str, *, identifier_type: str = "unknown", identifier_value: str = "") -> bool:
         key = _key(_domain(domain), identifier_type, identifier_value)
         before = len(self._accounts)
@@ -332,6 +461,14 @@ class PortalAccountStore:
                 if item.identifier_value
             ],
             "confirmed": any(item.confirmed_by_human_at for item in accounts),
+            "conflict_evidence": next(
+                (
+                    item.conflict_evidence
+                    for item in reversed(accounts)
+                    if item.conflict_evidence
+                ),
+                "",
+            ),
             "updated_at": accounts[-1].updated_at if accounts else None,
         }
 
@@ -340,39 +477,7 @@ class PortalAccountStore:
     @staticmethod
     def inspect_login_ui(source: Any) -> LoginInspection:
         """Describe the visible login/recovery options.  Read-only by design."""
-        if isinstance(source, Perception):
-            from urllib.parse import urlparse
-
-            domain = _domain(urlparse(source.url).netloc)
-            text = " ".join(
-                [
-                    source.title or "",
-                    source.visible_text or "",
-                    " ".join(field.label_text or "" for field in source.fields),
-                    " ".join(action.text or "" for action in source.actions),
-                    " ".join(str(action.href or "") for action in source.actions),
-                ]
-            )
-            actions = [action.text or "" for action in source.actions]
-            fields = source.fields
-        else:
-            dom = source or {}
-            from urllib.parse import urlparse
-
-            domain = _domain(urlparse(str(dom.get("url") or "")).netloc)
-            gateways = dom.get("gateways") or []
-            inputs = dom.get("inputs") or []
-            text = " ".join(
-                [
-                    str(dom.get("title") or ""),
-                    str(dom.get("visibleText") or ""),
-                    " ".join(str(item.get("text") or "") for item in gateways),
-                    " ".join(str(item.get("label") or "") for item in inputs),
-                ]
-            )
-            actions = [str(item.get("text") or "") for item in gateways]
-            fields = []
-
+        domain, text, actions, fields = _extract(source)
         lowered = text.lower()
         methods: List[str] = []
         if "otp" in lowered or "one-time" in lowered or "one time" in lowered:
@@ -413,3 +518,84 @@ class PortalAccountStore:
             hints=hints,
             inspected_at=_now(),
         )
+
+    # ------------------------------------------------------------------ conflict
+
+    @staticmethod
+    def detect_registration_conflict(source: Any) -> Optional[Dict[str, Any]]:
+        """Return the portal's "already registered" message, if one is visible.
+
+        Read-only: this looks at text the page already shows.  It never submits
+        the identifier, requests an OTP or resets anything to test existence.
+        """
+        domain, text, _actions, _fields = _extract(source)
+        normalized = " ".join(text.split())
+        lowered = normalized.lower()
+        for phrase in REGISTRATION_CONFLICT_PHRASES:
+            index = lowered.find(phrase)
+            if index == -1:
+                continue
+            return {
+                "detected": True,
+                "domain": domain,
+                "signal": phrase,
+                "evidence": _sentence_around(normalized, index, phrase),
+                "read_only": True,
+                "detected_at": _now(),
+            }
+        return None
+
+
+def build_conflict_gate(
+    conflict: Dict[str, Any],
+    memory: Optional[Dict[str, Any]] = None,
+    *,
+    domain: str = "",
+    live_session: Optional[Dict[str, Any]] = None,
+    can_takeover: bool = False,
+) -> Dict[str, Any]:
+    """Ask the human to resolve an "already registered" conflict.
+
+    The gate carries the evidence, the memory that conflicts with it and the
+    four honest choices.  Nothing is selected by default.
+    """
+    memory = memory or {}
+    evidence = str((conflict or {}).get("evidence") or "").strip()
+    description = (
+        "You told me this was your first time on this portal, but the page says "
+        "this identifier is already registered."
+    )
+    if evidence:
+        description += f' The page shows: "{evidence}"'
+    description += (
+        " I will not guess, and I will not probe the account by submitting an OTP or "
+        "resetting a password. Choose how you want to continue."
+    )
+    return {
+        "gate_type": "ACCOUNT_CONFLICT",
+        "title": "This account already exists on the portal",
+        "hindi_title": "Is portal par yeh account pehle se hai",
+        "description": description,
+        "hindi_description": (
+            "Aapne kaha tha pehli baar register kar rahe hain, lekin portal keh raha hai "
+            "yeh number pehle se registered hai. Main guess nahi karunga. Aap batayein aage kya karein."
+        ),
+        "why": "The portal reports the identifier as already registered.",
+        "evidence": evidence,
+        "signal": (conflict or {}).get("signal"),
+        "domain": domain or (conflict or {}).get("domain") or "",
+        "account_memory": memory,
+        "requires_explicit_choice": True,
+        "no_default": True,
+        "options": [
+            {
+                "action": "ACCOUNT_CONFLICT",
+                "choice": item["choice"],
+                "text": item["text"],
+                "description": item["description"],
+            }
+            for item in CONFLICT_CHOICES
+        ],
+        "live_session": live_session,
+        "can_takeover": can_takeover,
+    }

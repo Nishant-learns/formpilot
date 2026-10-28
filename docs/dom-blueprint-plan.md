@@ -1681,3 +1681,59 @@ Acceptance for this slice:
 - Inspection reports methods and recovery paths without touching the page.
 - The gate and chat can read and record the memory.
 - Invalid values and domains are refused.
+
+### 16.30 Portal account conflicts (2026-10-28)
+
+Rule 16.18 says: if the human says "first time" but the portal reports the
+identifier as already registered, do not fail silently. This slice implements
+that rule.
+
+Detection (`PortalAccountStore.detect_registration_conflict`):
+
+- reads only text the page already shows (Perception or legacy DOM),
+- matches explicit phrases: "already registered", "already exists", "already
+  in use", "already linked", "duplicate registration", and the mobile/email
+  variants,
+- returns the matched phrase plus the sentence around it as evidence,
+- never submits the identifier, requests an OTP or resets anything.
+
+Correction (`PortalAccountStore.mark_conflict`):
+
+- the earlier "no" answer is contradicted by the page, so the fact drops back
+  to `account_exists: unknown` and `confirmed_by_human_at` is cleared,
+- `last_known_step` becomes `registration_conflict` and the page sentence is
+  kept in `conflict_evidence`,
+- the identifier itself is not erased: the record still belongs to the same
+  mobile/email.
+
+Gate (`build_conflict_gate`, `gate_type: ACCOUNT_CONFLICT`):
+
+- quotes the portal's sentence, states what the human said earlier, and lists
+  the visible sign-in options as a read-only check,
+- four explicit choices, no default: sign in, recover the account, register
+  with a different identifier, stop,
+- sign-in records `account_exists: yes` with the visible login method and
+  applies the login entry path when the page offers one; otherwise the human
+  finishes the step in the live browser,
+- recover hands the browser over with the visible recovery links and never
+  resets anything,
+- register-with-another-identifier records `needs_other_identifier` and asks
+  the human to enter a different number in the browser,
+- stop ends the run and leaves the browser where it is.
+
+Integration:
+
+- `_account_conflict_checkpoint` runs in the drive loop after every scan, and
+  only when memory says `account_exists: no`. Each detected conflict is
+  handled once per run (signature includes domain, phrase and evidence).
+- The cockpit renders the conflict block with the evidence, the read-only
+  sign-in options and the four buttons.
+- Chat prompt rule 13 tells the assistant to surface the conflict and never
+  fill the registration form over it.
+- `domain_summary` exposes `conflict_evidence` so the chat and cockpit can
+  explain what happened later.
+
+Deliberately not run in this slice: the live practice-portal conflict flow.
+The user cannot supply OTP/human steps right now. The automated tests cover
+detection, correction, gate shape and both orchestrator outcomes (stop, and
+switch to login) offline.

@@ -288,6 +288,11 @@ class FormPilotChatAssistant:
             "has registered on this portal before. You may read the visible login and "
             "recovery options, but never submit credentials, request an OTP or reset a "
             "password to find out.\n"
+            "13. If the portal reports that an identifier is already registered while "
+            "portal_account.account_exists is 'no', say so plainly, quote the page text "
+            "as evidence, and ask whether to sign in, recover the account, register with "
+            "a different identifier, or stop. Never probe the account and never fill the "
+            "registration form over the conflict.\n"
             f"\nCurrent state (JSON):\n{json.dumps(self._state_context(), ensure_ascii=False, indent=2)}"
         )
 

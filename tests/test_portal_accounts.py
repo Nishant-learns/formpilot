@@ -214,3 +214,165 @@ def test_chat_reads_and_records_portal_account_memory(vault_manager):
     assert written["ok"] is True
     assert written["account"]["account_exists"] == "yes"
     assert written["account"]["identifier_value"] == ""
+
+
+# ---------------------------------------------------------------- conflicts
+
+_CONFLICT_DOM = {
+    "url": "https://regn.hpsc.gov.in/register",
+    "title": "New registration",
+    "visibleText": (
+        "Enter your details to register. This mobile number is already registered. "
+        "Please sign in or recover your account."
+    ),
+    "gateways": [{"text": "Sign in"}, {"text": "Forgot password?"}],
+    "inputs": [{"label": "Mobile number"}],
+}
+
+
+def test_a_registration_conflict_is_detected_from_visible_text():
+    conflict = PortalAccountStore.detect_registration_conflict(_CONFLICT_DOM)
+
+    assert conflict is not None
+    assert conflict["detected"] is True
+    assert conflict["signal"] == "already registered"
+    assert "already registered" in conflict["evidence"]
+    assert conflict["domain"] == "regn.hpsc.gov.in"
+    assert conflict["read_only"] is True
+
+
+def test_a_normal_registration_page_has_no_conflict():
+    dom = {
+        "url": "https://regn.hpsc.gov.in/register",
+        "title": "New registration",
+        "visibleText": "Enter your name, date of birth and mobile number to register.",
+        "gateways": [],
+        "inputs": [],
+    }
+
+    assert PortalAccountStore.detect_registration_conflict(dom) is None
+
+
+def test_conflict_detection_accepts_a_perception():
+    perception = Perception(
+        page_signature="sha256:register",
+        url="https://regn.hpsc.gov.in/register",
+        title="Registration",
+        visible_text="The email id is already in use. Sign in instead.",
+        fields=[],
+        actions=[],
+    )
+
+    conflict = PortalAccountStore.detect_registration_conflict(perception)
+
+    assert conflict is not None
+    assert conflict["signal"] == "already in use"
+    assert "already in use" in conflict["evidence"]
+
+
+def test_mark_conflict_drops_the_first_time_answer_back_to_unknown(tmp_path):
+    store = _store(tmp_path)
+    store.record(
+        "regn.hpsc.gov.in",
+        identifier_type="mobile",
+        identifier_value="9876543210",
+        account_exists="no",
+        confirmed_by_human=True,
+    )
+
+    account = store.mark_conflict(
+        "regn.hpsc.gov.in",
+        evidence="This mobile number is already registered.",
+    )
+
+    assert account.account_exists == "unknown"
+    assert account.confirmed_by_human_at is None
+    assert account.identifier_value == "9876543210"
+    assert account.conflict_evidence == "This mobile number is already registered."
+    summary = store.domain_summary("regn.hpsc.gov.in")
+    assert summary["account_exists"] == "unknown"
+    assert summary["conflict_evidence"].startswith("This mobile")
+
+
+def test_conflict_gate_offers_four_choices_and_no_default():
+    from backend.core.portal_accounts import build_conflict_gate
+
+    gate = build_conflict_gate(
+        {"evidence": "This number is already registered.", "signal": "already registered"},
+        {"account_exists": "unknown", "accounts": 1},
+        domain="regn.hpsc.gov.in",
+    )
+
+    assert gate["gate_type"] == "ACCOUNT_CONFLICT"
+    assert gate["no_default"] is True
+    assert gate["requires_explicit_choice"] is True
+    assert gate["domain"] == "regn.hpsc.gov.in"
+    assert gate["evidence"] == "This number is already registered."
+    assert [option["choice"] for option in gate["options"]] == [
+        "login",
+        "recover",
+        "register",
+        "stop",
+    ]
+    assert all(option["action"] == "ACCOUNT_CONFLICT" for option in gate["options"])
+
+
+def test_orchestrator_surfaces_the_conflict_and_stops_on_request():
+    from backend.core.orchestrator import FormPilotOrchestrator
+
+    store = PortalAccountStore.get_instance()
+    store.record("regn.hpsc.gov.in", account_exists="no", confirmed_by_human=True)
+
+    orchestrator = FormPilotOrchestrator()
+    orchestrator.target_url = "https://regn.hpsc.gov.in/register"
+    orchestrator.is_running = True
+    orchestrator._pending_user_response = {"action": "ACCOUNT_CONFLICT", "choice": "stop"}
+
+    handled = asyncio.run(orchestrator._account_conflict_checkpoint(_CONFLICT_DOM))
+
+    assert handled is True
+    assert orchestrator.state == "STOPPED"
+    account = store.get("regn.hpsc.gov.in")
+    assert account is not None
+    assert account.account_exists == "unknown"
+    assert account.conflict_evidence
+
+
+def test_orchestrator_switches_to_login_when_the_human_chooses_it():
+    from backend.core.orchestrator import FormPilotOrchestrator
+
+    store = PortalAccountStore.get_instance()
+    store.record("regn.hpsc.gov.in", account_exists="no", confirmed_by_human=True)
+
+    orchestrator = FormPilotOrchestrator()
+    orchestrator.target_url = "https://regn.hpsc.gov.in/register"
+    orchestrator.is_running = True
+    orchestrator._entry_options = [
+        {"mode": "login", "element_id": "fp-9", "text": "Sign in", "source": "current_page"}
+    ]
+    orchestrator._pending_user_response = {"action": "ACCOUNT_CONFLICT", "choice": "login"}
+
+    handled = asyncio.run(orchestrator._account_conflict_checkpoint(_CONFLICT_DOM))
+
+    assert handled is True
+    assert orchestrator._entry_mode == "login"
+    assert orchestrator.state == "RUNNING"
+    account = store.get("regn.hpsc.gov.in")
+    assert account.account_exists == "yes"
+    assert account.last_path_choice == "login"
+
+
+def test_orchestrator_ignores_conflicts_when_the_human_has_an_account():
+    from backend.core.orchestrator import FormPilotOrchestrator
+
+    store = PortalAccountStore.get_instance()
+    store.record("regn.hpsc.gov.in", account_exists="yes", confirmed_by_human=True)
+
+    orchestrator = FormPilotOrchestrator()
+    orchestrator.target_url = "https://regn.hpsc.gov.in/register"
+    orchestrator.is_running = True
+
+    handled = asyncio.run(orchestrator._account_conflict_checkpoint(_CONFLICT_DOM))
+
+    assert handled is False
+    assert orchestrator.state != "STOPPED"

@@ -35,7 +35,7 @@ from .navigator import ResilientNavigator
 from .oracle import OracleResult, PortalOracle
 from .page_brief import PageInterpreter
 from .perception import Perception
-from .portal_accounts import PortalAccountStore
+from .portal_accounts import CONFLICT_CHOICES, PortalAccountStore, build_conflict_gate
 from .portal_adapter import BasePortalAdapter, get_adapter
 from .recipe import RecipeStore
 from .run_store import RunStore
@@ -119,6 +119,7 @@ class FormPilotOrchestrator:
         self._last_error_signature = ""
         self._last_gateway_signature = ""
         self._last_scan_key = ""
+        self._handled_conflicts: set = set()
         self._last_screenshot_at = 0.0
         self._idle_cycles = 0
 
@@ -230,6 +231,7 @@ class FormPilotOrchestrator:
         self._last_error_signature = ""
         self._last_gateway_signature = ""
         self._last_scan_key = ""
+        self._handled_conflicts: set = set()
         self._idle_cycles = 0
         self.run_id = f"run-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
         self.state = "RESOLVING"
@@ -1348,6 +1350,9 @@ class FormPilotOrchestrator:
             step = adapter.current_step(self.page, dom)
             self.current_section = step
 
+            if await self._account_conflict_checkpoint(dom):
+                continue
+
             if adapter.is_payment_page(self.page, dom):
                 await self._trigger_pre_payment_lock()
                 return
@@ -1609,6 +1614,191 @@ class FormPilotOrchestrator:
                 "That choice did not match an entry path on this page. Please choose one of the listed options.",
                 "Yeh choice is page ke kisi raste se match nahi hui. Options mein se ek chunein.",
             )
+
+    async def _account_conflict_checkpoint(self, dom: Dict[str, Any]) -> bool:
+        """Surface a portal "already registered" message instead of filling on.
+
+        Only fires when the human previously said this was their first time on
+        the portal.  The page is evidence that the earlier answer may be wrong,
+        not proof of who owns the account, so the fact drops back to unknown
+        and the human chooses how to continue.
+        """
+        domain = self._current_domain()
+        if not domain:
+            return False
+        try:
+            store = PortalAccountStore.get_instance()
+            memory = store.domain_summary(domain)
+            if memory.get("account_exists") != "no":
+                return False
+            conflict = store.detect_registration_conflict(dom)
+            if not conflict:
+                return False
+            signature = f"{domain}|{conflict.get('signal')}|{conflict.get('evidence')}"
+            if signature in self._handled_conflicts:
+                return False
+            self._handled_conflicts.add(signature)
+            store.mark_conflict(domain, evidence=str(conflict.get("evidence") or ""))
+        except Exception:
+            traceback.print_exc()
+            return False
+
+        inspection = store.inspect_login_ui(dom)
+        gate = build_conflict_gate(
+            conflict,
+            store.domain_summary(domain),
+            domain=domain,
+            live_session=self.live.public_info() if self.live and not self.live.closed else None,
+            can_takeover=bool(self.live),
+        )
+        gate["login_inspection"] = inspection.model_dump()
+        await self.emit_event(
+            "THINK",
+            "The portal says this identifier is already registered. Asking you before doing anything.",
+            "Portal keh raha hai yeh number pehle se registered hai. Aap se pooch rahe hain.",
+        )
+        if self.live:
+            self.live.set_allow_control(True, "Choose how to handle the existing account.")
+
+        while self.is_running:
+            self.active_gate = gate
+            self.state = "WAITING_FOR_USER"
+            await self.emit_event(
+                "DECIDE",
+                "The portal reports an existing account. Choose how to continue.",
+                "Portal par account pehle se hai. Aage ka rasta aap chunein.",
+                gate,
+                force_screenshot=True,
+            )
+            response = await self._wait_for_user_response()
+            self.active_gate = None
+            if self.live:
+                self._release_live_control("The agent is driving again.")
+            if response.get("action") in {"STOPPED", "TIMEOUT"}:
+                self.is_running = False
+                return True
+            if response.get("action") == "DISMISS":
+                await self.emit_event(
+                    "SENSE",
+                    "The account conflict is still open. Choose one of the options.",
+                    "Account ka sawaal abhi khula hai. Options mein se ek chunein.",
+                )
+                continue
+
+            choice = str(response.get("choice") or response.get("value") or "").strip().lower()
+            if response.get("action") != "ACCOUNT_CONFLICT" or choice not in {
+                item["choice"] for item in CONFLICT_CHOICES
+            }:
+                await self.emit_event(
+                    "SENSE",
+                    "That choice did not match one of the account options. Please pick one.",
+                    "Yeh choice account options se match nahi hui. Ek option chunein.",
+                )
+                continue
+
+            if choice == "login":
+                login_method = next(
+                    (item for item in inspection.login_methods if item != "unknown"), "unknown"
+                )
+                self._remember_portal_account(
+                    account_exists="yes",
+                    login_method=login_method,
+                    last_path_choice="login",
+                    confirmed_by_human=True,
+                )
+                self._requested_entry_mode = "login"
+                option = decision_policy.match_entry_response(
+                    {"mode": "login"}, list(self._entry_options or [])
+                )
+                if option:
+                    self.state = "RUNNING"
+                    await self._apply_entry_option(option)
+                    return True
+                await self._conflict_handoff(
+                    "Use the live browser to open the sign-in page, then continue.",
+                    "Live browser mein sign-in page kholein, phir continue karein.",
+                    inspection,
+                )
+                return True
+
+            if choice == "recover":
+                self._remember_portal_account(
+                    account_exists="yes",
+                    last_path_choice="recover",
+                    confirmed_by_human=True,
+                )
+                paths = ", ".join(inspection.recovery_paths) or "the portal's recovery link"
+                await self._conflict_handoff(
+                    f"Recover the account in the live browser using {paths}, then continue. "
+                    "I will not reset anything for you.",
+                    "Live browser mein account recover karein, phir continue karein. Main kuch reset nahi karunga.",
+                    inspection,
+                )
+                return True
+
+            if choice == "register":
+                self._remember_portal_account(
+                    last_path_choice="register_other_identifier",
+                    last_known_step="needs_other_identifier",
+                    confirmed_by_human=True,
+                )
+                await self._conflict_handoff(
+                    "Enter a different mobile number or email in the live browser, then continue. "
+                    "I will not reuse an identifier the portal already rejected.",
+                    "Live browser mein doosra number ya email daalein, phir continue karein.",
+                    inspection,
+                )
+                return True
+
+            self.is_running = False
+            self.state = "STOPPED"
+            await self.emit_event(
+                "DECIDE",
+                "Stopped at your request. The browser is left where it is.",
+                "Aapke kehne par ruk gaya. Browser wahin khula hai.",
+            )
+            return True
+        return True
+
+    async def _conflict_handoff(
+        self,
+        english: str,
+        hindi: str,
+        inspection: Any = None,
+    ) -> None:
+        """Hand the browser to the human after a conflict choice, then rescan."""
+        gate = {
+            "gate_type": "LIVE_HANDOFF",
+            "handoff_type": "account_conflict",
+            "title": "This step needs you",
+            "hindi_title": "Yeh step aapke liye hai",
+            "description": english,
+            "live_session": self.live.public_info() if self.live and not self.live.closed else None,
+            "can_takeover": bool(self.live),
+            "instructions": [
+                "Use the live browser. It is the same page the agent is using.",
+                "Nothing is submitted or reset for you.",
+                "When the page shows what you need, click 'I completed this step'.",
+            ],
+            "solver_policy": "human_handoff_only",
+        }
+        if inspection is not None:
+            gate["login_inspection"] = inspection.model_dump()
+        if self.live:
+            self.live.set_allow_control(True, "Finish this step in the live browser.")
+        self.active_gate = gate
+        self.state = "WAITING_FOR_USER"
+        await self.emit_event("DECIDE", english, hindi, gate, force_screenshot=True)
+        response = await self._wait_for_user_response()
+        self.active_gate = None
+        if self.live:
+            self._release_live_control("The agent is driving again.")
+        if response.get("action") in {"STOPPED", "TIMEOUT"}:
+            self.is_running = False
+            return
+        self.state = "RUNNING" if self.is_running else self.state
+        if response.get("action") in {"HANDOFF_COMPLETE", "CONTINUE"}:
+            await self._rescan_blueprint()
 
     async def _apply_entry_option(self, option: Dict[str, Any]) -> None:
         mode = str(option.get("mode") or decision_policy.normalize_mode(option.get("type")) or "")
