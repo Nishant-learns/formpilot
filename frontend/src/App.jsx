@@ -6,12 +6,13 @@ import CognitiveStream from './components/CognitiveStream';
 import LiveChat from './components/LiveChat';
 import HumanCheckpointModal from './components/HumanCheckpointModal';
 import FormMapPanel from './components/FormMapPanel';
+import PageBriefPanel from './components/PageBriefPanel';
 import OneVaultDrawer from './components/OneVaultDrawer';
 import BiometricsStudio from './components/BiometricsStudio';
 import TinyFishSettingsModal from './components/TinyFishSettingsModal';
 import SessionStrip from './components/SessionStrip';
 import Toasts from './components/Toasts';
-import { AlertTriangle, MessageSquare, ScanSearch, Terminal } from 'lucide-react';
+import { AlertTriangle, FileText, MessageSquare, ScanSearch, Terminal } from 'lucide-react';
 
 const ACTIVE_STATES = new Set(['RESOLVING', 'RUNNING', 'WAITING_FOR_USER', 'PAUSED']);
 const TERMINAL_STATES = new Set(['STOPPED', 'FAILED', 'COMPLETED', 'AWAITING_PAYMENT', 'DONE']);
@@ -53,6 +54,8 @@ export default function App() {
   const [currentSection, setCurrentSection] = useState(1);
   const [liveSession, setLiveSession] = useState(null);
   const [formMap, setFormMap] = useState(null);
+  const [pageBrief, setPageBrief] = useState(null);
+  const [briefRefreshing, setBriefRefreshing] = useState(false);
   const [recipe, setRecipe] = useState(null);
   const [fillSummary, setFillSummary] = useState(null);
   const [fillFailures, setFillFailures] = useState([]);
@@ -148,6 +151,21 @@ export default function App() {
     }
   }, []);
 
+  const fetchPageBrief = useCallback(async (refresh = false) => {
+    try {
+      const res = await fetch(`/api/page/brief${refresh ? '?refresh=true' : ''}`);
+      if (res.ok) {
+        setPageBrief(await res.json());
+        return;
+      }
+      if (res.status === 409) {
+        setPageBrief(null);
+      }
+    } catch (err) {
+      console.error('Page brief fetch error:', err);
+    }
+  }, []);
+
   // Keep the elapsed timer moving only while the agent is active.
   useEffect(() => {
     if (!started) return undefined;
@@ -209,6 +227,7 @@ export default function App() {
       setRunMode(data.run_mode || 'fill');
       setLiveSession(data.live_session || null);
       setFormMap(data.form_map || null);
+      setPageBrief(data.page_brief || null);
       setRecipe(data.recipe || null);
       setFillSummary(data.fill_summary || null);
       setFillFailures(data.fill_failures || []);
@@ -302,6 +321,9 @@ export default function App() {
               : data.form_map
           ));
         }
+        if ('page_brief' in data) {
+          setPageBrief(data.page_brief || null);
+        }
         if ('recipe' in data) {
           setRecipe(data.recipe || null);
         }
@@ -384,6 +406,7 @@ export default function App() {
     setScreenshot('');
     setLiveSession(null);
     setFormMap(null);
+    setPageBrief(null);
     setRecipe(null);
     setFillSummary(null);
     setFillFailures([]);
@@ -578,8 +601,24 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (runState === 'INSPECT_READY') setRightTab('map');
+    if (runState === 'INSPECT_READY') setRightTab('brief');
   }, [runState]);
+
+  useEffect(() => {
+    if (['INSPECT_READY', 'RUNNING', 'WAITING_FOR_USER', 'PAUSED'].includes(runState)) {
+      fetchPageBrief(false);
+    }
+  }, [runState, fetchPageBrief]);
+
+  const handleRefreshBrief = async () => {
+    setBriefRefreshing(true);
+    try {
+      await fetchPageBrief(true);
+      notify('Page brief refreshed.', 'success');
+    } finally {
+      setBriefRefreshing(false);
+    }
+  };
 
   const viewportHeightClass = sessionVisible
     ? 'h-[560px] sm:h-[620px] lg:h-[calc(100vh-278px)] lg:min-h-[560px] lg:max-h-[900px]'
@@ -593,6 +632,16 @@ export default function App() {
       count: null,
       hint: 'Questions and saved details',
       activeClass: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
+    },
+    {
+      id: 'brief',
+      label: 'Page brief',
+      icon: FileText,
+      count: pageBrief
+        ? (pageBrief.sections || []).reduce((total, section) => total + (section.questions?.length || 0), 0)
+        : null,
+      hint: 'What this page wants',
+      activeClass: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',
     },
     {
       id: 'map',
@@ -744,6 +793,14 @@ export default function App() {
                   loginMethod={loginMethod}
                   loginIdentifier={loginIdentifier}
                   activeGate={currentGate}
+                />
+              )}
+              {rightTab === 'brief' && (
+                <PageBriefPanel
+                  pageBrief={pageBrief}
+                  runState={runState}
+                  onRefresh={handleRefreshBrief}
+                  refreshing={briefRefreshing}
                 />
               )}
               {rightTab === 'map' && (

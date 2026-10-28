@@ -31,6 +31,8 @@ from .form_model import FormModel
 from .live_browser import LiveBrowserSession, live_sessions
 from .navigator import ResilientNavigator
 from .oracle import OracleResult, PortalOracle
+from .page_brief import PageInterpreter
+from .perception import Perception
 from .portal_adapter import BasePortalAdapter, get_adapter
 from .recipe import RecipeStore
 from .run_store import RunStore
@@ -91,6 +93,8 @@ class FormPilotOrchestrator:
         self.run_mode = "fill"
         self.oracle_result: Optional[OracleResult] = None
         self.form_map: Optional[Dict[str, Any]] = None
+        self.page_brief: Optional[Dict[str, Any]] = None
+        self.page_interpreter = PageInterpreter()
         self.blueprint: Optional[PageBlueprint] = None
         self._last_action_result: Optional[ActionResult] = None
         self.recipe_store = RecipeStore()
@@ -150,6 +154,7 @@ class FormPilotOrchestrator:
             "live_session": self.live.public_info() if self.live and not self.live.closed else None,
             "engine_session": self._engine_session_info(),
             "form_map": self.form_map,
+            "page_brief": self.page_brief,
             "blueprint": self.blueprint.summary() if self.blueprint else None,
             "recipe": self._recipe_status,
             "current_section": self.current_section,
@@ -203,6 +208,7 @@ class FormPilotOrchestrator:
         self.oracle_result = None
         self.run_mode = run_mode
         self.form_map = None
+        self.page_brief = None
         self._recipe_status = None
         self._last_form_fingerprint = ""
         self._last_recipe_event = ""
@@ -328,6 +334,7 @@ class FormPilotOrchestrator:
         self.target_url = ""
         self.oracle_result = None
         self.form_map = None
+        self.page_brief = None
         self._recipe_status = None
         self.current_section = 1
         self.filled_audit = []
@@ -703,6 +710,7 @@ class FormPilotOrchestrator:
         self.browser = None
         self.context = None
         self.page = None
+        self.page_brief = None
 
         try:
             if self._session and self._session.is_cloud:
@@ -763,6 +771,7 @@ class FormPilotOrchestrator:
             "live_session": self.live.public_info() if self.live and not self.live.closed else None,
             "engine_session": self._engine_session_info(),
             "form_map": self.form_map,
+            "page_brief": self.page_brief,
             "blueprint": self.blueprint.summary() if self.blueprint else None,
             "recipe": self._recipe_status,
             "fill_summary": self.fill_summary,
@@ -961,6 +970,31 @@ class FormPilotOrchestrator:
             force_screenshot=True,
         )
         return form_map
+
+    async def get_page_brief(self, *, refresh: bool = False) -> Dict[str, Any]:
+        """Read the live page and return a human-readable brief.
+
+        This is read-only.  It never fills, clicks, uploads or submits.  The
+        scan is local to this call so an explicit refresh cannot replace the
+        operator's current blueprint mid-action.
+        """
+        if not self.page or self.page.is_closed():
+            if self.page_brief and not refresh:
+                return self.page_brief
+            raise AgentRunError("There is no live browser to read. Open a portal first.")
+        try:
+            dom, blueprint = await DOMScanner.scan(self.page)
+        except Exception as exc:
+            raise AgentRunError(
+                "The page is still loading. Please wait a moment and read it again."
+            ) from exc
+        perception = Perception.from_scan(dom, blueprint)
+        brief = await self.page_interpreter.interpret(perception, force=refresh)
+        self.page_brief = {
+            **brief.model_dump(),
+            "summary_line": brief.summary_line(),
+        }
+        return self.page_brief
 
     async def attach_upload(self, path: str, field_key: str) -> Dict[str, Any]:
         """Attach a user-provided file to the correct file input.

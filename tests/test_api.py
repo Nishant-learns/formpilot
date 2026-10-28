@@ -92,6 +92,7 @@ def test_agent_state_has_live_browser_and_form_map_fields(client):
     assert payload["run_mode"] in {"fill", "inspect"}
     assert payload["live_session"] is None
     assert payload["form_map"] is None
+    assert payload["page_brief"] is None
     assert "recipe" in payload
     assert payload["browser_open"] is False
 
@@ -129,6 +130,13 @@ def test_launch_mode_is_validated(client):
 
 def test_inspect_scan_without_a_browser_is_a_clear_conflict(client):
     response = client.post("/api/agent/inspect/scan")
+
+    assert response.status_code == 409
+    assert "no live browser" in response.json()["detail"].lower()
+
+
+def test_page_brief_without_a_browser_is_a_clear_conflict(client):
+    response = client.get("/api/page/brief")
 
     assert response.status_code == 409
     assert "no live browser" in response.json()["detail"].lower()

@@ -82,6 +82,8 @@ class BlueprintElement:
     role: str = ""
     name: str = ""
     text: str = ""
+    label_text: str = ""
+    helper_text: str = ""
     attributes: Dict[str, Any] = field(default_factory=dict)
     css: str = ""
     css_unique: bool = False
@@ -118,6 +120,8 @@ class BlueprintElement:
             role=str(data.get("role") or "").lower(),
             name=str(data.get("name") or data.get("accessible_name") or ""),
             text=str(data.get("text") or ""),
+            label_text=str(data.get("label_text") or data.get("labelText") or ""),
+            helper_text=str(data.get("helper_text") or data.get("helperText") or ""),
             attributes=dict(data.get("attributes") or {}),
             css=str(data.get("css") or ""),
             css_unique=_as_bool(data.get("css_unique") or data.get("cssUnique")),
@@ -164,6 +168,8 @@ class BlueprintElement:
             "role": self.role,
             "name": self.name,
             "text": self.text,
+            "label_text": self.label_text,
+            "helper_text": self.helper_text,
             "attributes": dict(self.attributes),
             "css": self.css,
             "css_unique": self.css_unique,

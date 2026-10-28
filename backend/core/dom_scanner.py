@@ -843,6 +843,50 @@ class DOMScanner:
             if (name && ["input", "select", "textarea", "form", "iframe"].includes(tag)) return name;
             return "";
         };
+        // The human-facing question, without falling back to the placeholder
+        // or the framework's field name.  Those are format hints and machine
+        // identifiers; treating them as labels is what made the old scanner
+        // announce date fields as "DD-MM-YYYY".
+        const getLabelText = (el) => {
+            let text = "";
+            if (el.id) {
+                try {
+                    const label = document.querySelector('label[for="' + cssAttr(el.id) + '"]');
+                    if (label) text += " " + (label.innerText || label.textContent || "");
+                } catch (e) {}
+            }
+            try {
+                const parentLabel = el.closest("label");
+                if (parentLabel) text += " " + (parentLabel.innerText || parentLabel.textContent || "");
+            } catch (e) {}
+            const aria = normalize(attr(el, "aria-label"));
+            if (aria) text += " " + aria;
+            const labelledBy = normalize(attr(el, "aria-labelledby"));
+            if (labelledBy) {
+                for (const id of labelledBy.split(/\s+/)) {
+                    const node = document.getElementById(id);
+                    if (node) text += " " + (node.innerText || node.textContent || "");
+                }
+            }
+            try {
+                const td = el.closest("td");
+                if (td && td.previousElementSibling) {
+                    text += " " + (td.previousElementSibling.innerText || td.previousElementSibling.textContent || "");
+                }
+            } catch (e) {}
+            return truncate(text, 300);
+        };
+        const getHelperText = (el) => {
+            let text = "";
+            const describedBy = normalize(attr(el, "aria-describedby"));
+            if (describedBy) {
+                for (const id of describedBy.split(/\s+/)) {
+                    const node = document.getElementById(id);
+                    if (node) text += " " + (node.innerText || node.textContent || "");
+                }
+            }
+            return truncate(text, 500);
+        };
         const ownText = (el) => {
             let text = "";
             for (const node of el.childNodes) {
@@ -1134,6 +1178,8 @@ class DOMScanner:
                     role: role,
                     name: name,
                     text: text,
+                    labelText: getLabelText(el),
+                    helperText: getHelperText(el),
                     attributes: getAttributes(el),
                     css: css.css,
                     cssUnique: css.unique,

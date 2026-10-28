@@ -480,6 +480,16 @@ async def inspect_current_page():
     return {"success": True, "form_map": form_map, "recipe": orchestrator._recipe_status}
 
 
+@app.get("/api/page/brief")
+async def get_page_brief(refresh: bool = Query(False)):
+    """Read-only human brief for the current page. Never fills or clicks."""
+    try:
+        brief = await orchestrator.get_page_brief(refresh=refresh)
+    except AgentRunError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return JSONResponse(content=brief, headers={"Cache-Control": "no-store"})
+
+
 @app.post("/api/agent/upload")
 async def upload_for_portal(
     field_key: str = Form(..., min_length=1, max_length=80),
