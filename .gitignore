@@ -35,6 +35,7 @@ uploads/*
 # Runtime state and personal data (created on first run)
 data/candidate_vault.json
 data/engine_config.json
+data/llm_config.json
 data/portal_registrations.json
 data/recipes/
 data/runs/

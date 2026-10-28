@@ -271,6 +271,17 @@ Copy `.env.example` to `.env` and adjust as needed. Important variables:
 | `FORMPILOT_MASK_PII` | `false` | Mask sensitive values in API responses |
 | `FORMPILOT_NTFY_TOPIC` | `formpilot_demo_otp` | ntfy topic used by the OTP relay |
 | `FORMPILOT_DEMO_OTP` | `492015` | Fallback code for the practice flow |
+| `FORMPILOT_LLM_API_KEY` | empty | Enables the model-driven chat assistant |
+| `FORMPILOT_LLM_BASE_URL` | `https://api.openai.com/v1` | Any OpenAI-compatible endpoint |
+| `FORMPILOT_LLM_MODEL` | `gpt-4o-mini` | Model used for chat replies and actions |
+| `FORMPILOT_LLM_TIMEOUT_SECONDS` | `45` | Per-call model timeout |
+
+The chat assistant is model-driven: it reads the live page state and acts
+through tools. Without a key it falls back to a clearly labelled deterministic
+helper. Any OpenAI-compatible endpoint works, including Gemini's OpenAI shim
+(`https://generativelanguage.googleapis.com/v1beta/openai`) and a local Ollama
+server (`http://127.0.0.1:11434/v1`, no key). The same values can be saved from
+**Settings → AI assistant**; that file (`data/llm_config.json`) is gitignored.
 
 Generate a profile-encryption key:
 
