@@ -407,7 +407,9 @@ class FormModel:
             evidence.append("The portal is showing an error message.")
 
         if any(token in text for token in ("dashboard", "sign out", "logout", "registration id", "logged in")):
-            scores["dashboard"] = 78
+            # Signed-in language is strong evidence only when the page is not
+            # itself a form.  A form page keeps its application_form score.
+            scores["dashboard"] = 60 if inputs else 95
             evidence.append("Dashboard or signed-in language is visible.")
 
         if captcha_elements and not inputs:

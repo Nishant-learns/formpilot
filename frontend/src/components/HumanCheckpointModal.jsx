@@ -50,6 +50,7 @@ function statusClass(status) {
 }
 
 function entryOptionDescription(option) {
+  if (option.description) return option.description;
   const mode = option.mode || option.type;
   if (mode === 'register') return 'Create a new account and start a fresh application';
   if (mode === 'login') return 'Sign in to an existing account';

@@ -79,6 +79,8 @@ export default function LiveViewport({
   const reconnectRef = useRef(null);
   const errorTimerRef = useRef(null);
   const moveRef = useRef({ pending: null, lastSent: 0, raf: null });
+  // A page/frame update must not overwrite an address the human is typing.
+  const addressEditingRef = useRef(false);
   const wsPath = liveSession?.ws_path || '';
 
   const flashError = useCallback((message) => {
@@ -98,6 +100,7 @@ export default function LiveViewport({
     let disposed = false;
     let stopReconnect = false;
     let attempts = 0;
+    addressEditingRef.current = false;
     setFrame('');
     setFrameCount(0);
     setControl({
@@ -139,7 +142,7 @@ export default function LiveViewport({
             enabled: Boolean(data.control_enabled),
             reason: data.control_reason || '',
           });
-          if (data.url) setAddress(data.url);
+          if (data.url && !addressEditingRef.current) setAddress(data.url);
           return;
         }
         if (data.type === 'frame' && data.data) {
@@ -159,7 +162,7 @@ export default function LiveViewport({
             title: data.title || '',
           });
           if (data.viewport) setViewport(data.viewport);
-          if (data.url) setAddress(data.url);
+          if (data.url && !addressEditingRef.current) setAddress(data.url);
           return;
         }
         if (data.type === 'control') {
@@ -359,6 +362,9 @@ export default function LiveViewport({
     const value = address.trim();
     if (!value) return;
     const url = /^https?:\/\//i.test(value) ? value : `https://${value}`;
+    // Keep the human's address visible while the navigation is in flight.
+    addressEditingRef.current = false;
+    setAddress(url);
     navigate('navigate', { url });
   };
 
@@ -376,11 +382,13 @@ export default function LiveViewport({
   const live = Boolean(wsPath);
   const canControl = Boolean(connected && control.enabled);
   const active = agentRunning || runState === 'WAITING_FOR_USER';
-  const finished = ['STOPPED', 'FAILED', 'COMPLETED'].includes(runState);
+  const finished = ['STOPPED', 'FAILED', 'COMPLETED', 'DONE'].includes(runState);
   const sessionLabel = runMode === 'inspect'
     ? 'INSPECT · NOTHING WILL BE FILLED'
     : finished
-      ? 'SESSION FINISHED · BROWSER CLOSED'
+      ? runState === 'DONE'
+        ? 'SIGNED IN · BROWSER CLOSED'
+        : 'SESSION FINISHED · BROWSER CLOSED'
       : runState === 'AWAITING_PAYMENT'
         ? 'YOUR REVIEW · NOTHING SUBMITTED'
         : active
@@ -498,7 +506,24 @@ export default function LiveViewport({
                 <Globe2 className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
                 <input
                   value={address}
-                  onChange={(event) => setAddress(event.target.value)}
+                  onChange={(event) => {
+                    addressEditingRef.current = true;
+                    setAddress(event.target.value);
+                  }}
+                  onFocus={() => {
+                    addressEditingRef.current = true;
+                  }}
+                  onBlur={() => {
+                    addressEditingRef.current = false;
+                    if (!address.trim()) setAddress(pageInfo.url || '');
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape') {
+                      addressEditingRef.current = false;
+                      setAddress(pageInfo.url || '');
+                      event.currentTarget.blur();
+                    }
+                  }}
                   disabled={!canControl}
                   spellCheck={false}
                   className="w-full pl-8 pr-3 py-1.5 rounded-md bg-slate-900 border border-slate-800 focus:border-amber-500/70 text-[11px] font-mono text-slate-300 outline-none disabled:opacity-60"

@@ -86,8 +86,8 @@ export default function SessionStrip({
   const inspect = runMode === 'inspect';
   const busy = ACTIVE_STATES.has(runState);
   const waiting = runState === 'WAITING_FOR_USER';
-  const finished = ['AWAITING_PAYMENT', 'COMPLETED', 'STOPPED', 'FAILED'].includes(runState);
-  const canRestart = ['STOPPED', 'FAILED', 'COMPLETED'].includes(runState);
+  const finished = ['AWAITING_PAYMENT', 'COMPLETED', 'STOPPED', 'FAILED', 'DONE'].includes(runState);
+  const canRestart = ['STOPPED', 'FAILED', 'COMPLETED', 'DONE'].includes(runState);
   const auditAvailable = ['AWAITING_PAYMENT', 'COMPLETED'].includes(runState);
   const fields = formMap?.field_count || 0;
   const gateways = formMap?.gateways?.length || 0;
@@ -143,7 +143,9 @@ export default function SessionStrip({
       ? 'Waiting for your input'
       : runState === 'AWAITING_PAYMENT'
         ? 'Ready for your review'
-        : runState === 'INSPECT_READY'
+        : runState === 'DONE'
+          ? 'Signed in'
+          : runState === 'INSPECT_READY'
           ? 'Inspection complete'
           : finished
             ? 'Session finished'

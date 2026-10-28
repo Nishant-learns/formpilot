@@ -14,7 +14,7 @@ import Toasts from './components/Toasts';
 import { AlertTriangle, MessageSquare, ScanSearch, Terminal } from 'lucide-react';
 
 const ACTIVE_STATES = new Set(['RESOLVING', 'RUNNING', 'WAITING_FOR_USER', 'PAUSED']);
-const TERMINAL_STATES = new Set(['STOPPED', 'FAILED', 'COMPLETED', 'AWAITING_PAYMENT']);
+const TERMINAL_STATES = new Set(['STOPPED', 'FAILED', 'COMPLETED', 'AWAITING_PAYMENT', 'DONE']);
 
 function formatElapsed(startedAt) {
   if (!startedAt) return '00:00';
@@ -95,6 +95,7 @@ export default function App() {
   const inspectOpen = runState === 'INSPECT_READY' && Boolean(liveSession);
   const paused = runState === 'PAUSED';
   const sessionVisible = agentRunning || inspectOpen || runState === 'AWAITING_PAYMENT' || TERMINAL_STATES.has(runState);
+  const relaunchable = ['STOPPED', 'FAILED', 'COMPLETED', 'DONE'].includes(runState);
   const started = agentRunning || inspectOpen || runState === 'AWAITING_PAYMENT';
   const terminal = TERMINAL_STATES.has(runState);
 
@@ -631,7 +632,7 @@ export default function App() {
       />
 
       <main className="relative mx-auto flex w-full max-w-[1560px] flex-1 flex-col px-3 pb-8 pt-4 sm:px-5">
-        {sessionVisible ? (
+        {sessionVisible && (
           <SessionStrip
             runState={runState}
             runMode={runMode}
@@ -650,12 +651,16 @@ export default function App() {
             onPauseToggle={handlePauseToggle}
             onNewSession={handleNewSession}
           />
-        ) : (
-          <PortalLauncher
-            onLaunch={handleLaunch}
-            agentRunning={agentRunning}
-            sessionOpen={busy}
-          />
+        )}
+
+        {(!sessionVisible || relaunchable) && (
+          <div className={sessionVisible ? 'mt-4' : ''}>
+            <PortalLauncher
+              onLaunch={handleLaunch}
+              agentRunning={agentRunning}
+              sessionOpen={busy}
+            />
+          </div>
         )}
 
         {lastError && (

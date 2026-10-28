@@ -12,11 +12,35 @@ import {
   HelpCircle,
 } from 'lucide-react';
 
+const DEFAULT_QUERY = 'http://127.0.0.1:8000/gov-portal-demo';
+const LAST_QUERY_KEY = 'formpilot.lastQuery';
+
+function readSavedQuery() {
+  try {
+    return window.localStorage.getItem(LAST_QUERY_KEY) || DEFAULT_QUERY;
+  } catch {
+    return DEFAULT_QUERY;
+  }
+}
+
+function saveQuery(value) {
+  try {
+    window.localStorage.setItem(LAST_QUERY_KEY, value);
+  } catch {
+    // A private window can block storage; the field still works for this tab.
+  }
+}
+
 export default function PortalLauncher({ onLaunch, agentRunning, sessionOpen }) {
-  const [query, setQuery] = useState('http://127.0.0.1:8000/gov-portal-demo');
+  const [query, setQuery] = useState(readSavedQuery);
   const [oracleResult, setOracleResult] = useState(null);
   const [loadingOracle, setLoadingOracle] = useState(false);
   const [runMode, setRunMode] = useState('fill');
+
+  const updateQuery = (value) => {
+    setQuery(value);
+    saveQuery(value);
+  };
 
   useEffect(() => {
     if (!query || query.trim().length < 2) {
@@ -77,6 +101,7 @@ export default function PortalLauncher({ onLaunch, agentRunning, sessionOpen }) 
   const handleApply = (event) => {
     event?.preventDefault();
     if (!query.trim() || agentRunning) return;
+    saveQuery(query.trim());
     onLaunch(query.trim(), runMode);
   };
 
@@ -136,7 +161,7 @@ export default function PortalLauncher({ onLaunch, agentRunning, sessionOpen }) 
               <input
                 type="text"
                 value={query}
-                onChange={(event) => setQuery(event.target.value)}
+                onChange={(event) => updateQuery(event.target.value)}
                 disabled={agentRunning}
                 placeholder="Paste the official link or type an exam name"
                 className="w-full rounded-xl border border-slate-700/80 bg-slate-950 py-3 pl-10 pr-4 text-sm font-medium text-slate-100 outline-none transition-all placeholder:text-slate-500 focus:border-amber-500 focus:ring-1 focus:ring-amber-500/50 disabled:opacity-50"
@@ -217,7 +242,7 @@ export default function PortalLauncher({ onLaunch, agentRunning, sessionOpen }) 
                 key={index}
                 type="button"
                 disabled={agentRunning}
-                onClick={() => setQuery(pill.val)}
+                onClick={() => updateQuery(pill.val)}
                 className={`rounded-lg border px-2 py-1 text-[10px] transition-all ${
                   query === pill.val
                     ? 'border-amber-500/50 bg-amber-500/20 font-semibold text-amber-300'

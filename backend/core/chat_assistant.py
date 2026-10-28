@@ -485,9 +485,13 @@ class FormPilotChatAssistant:
                     )
             if not selected:
                 return self._entry_help(gate)
-            result = self.orchestrator.choose_entry_mode(
-                str(selected.get("mode") or selected.get("type") or "")
-            )
+            choose_option = getattr(self.orchestrator, "choose_entry_option", None)
+            if choose_option and (selected.get("element_id") or selected.get("text")):
+                result = choose_option(selected)
+            else:
+                result = self.orchestrator.choose_entry_mode(
+                    str(selected.get("mode") or selected.get("type") or "")
+                )
             if result.get("success"):
                 return {
                     "reply": (

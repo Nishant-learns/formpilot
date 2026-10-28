@@ -236,6 +236,23 @@ def _canonical_score(option: Dict[str, Any]) -> Tuple[int, int, int, int, int, i
     return (is_current_page, href_match, has_id, outside_form, is_button, short_label)
 
 
+def _option_target(option: Dict[str, Any]) -> str:
+    """Normalized destination used to deduplicate equivalent links.
+
+    The origin is ignored so a current-page option and an absolute link to the
+    same page collapse together.  Different paths or queries stay distinct.
+    """
+    href = str(option.get("href") or "").strip()
+    if not href:
+        return _norm(option.get("text"))
+    try:
+        parsed = urlsplit(href)
+    except ValueError:
+        return href.rstrip("/").lower()
+    path = (parsed.path or "/").rstrip("/").lower() or "/"
+    return f"{path}?{parsed.query.lower()}" if parsed.query else path
+
+
 def current_page_entry_type(
     dom: Dict[str, Any],
     form_map: Optional[Dict[str, Any]] = None,
@@ -246,16 +263,19 @@ def current_page_entry_type(
     method selector, login/signup heading), not an inference from browser
     history.  It becomes a selectable option, never a silent default.
     """
+    inputs = dom.get("inputs") or []
+    # A page with no fields is a hub or a link list, never an entry form.  A
+    # signed-in dashboard can be labelled "registration" by its links, but the
+    # current page itself cannot be the registration path.
+    if not inputs:
+        return None
+
     page_type = str((form_map or {}).get("page_type") or "").lower()
     if page_type == "login":
         return LOGIN
     if page_type == "registration":
         return NEW_REGISTRATION
     if page_type in {"portal_entry", "application_form", "payment", "dashboard"}:
-        return None
-
-    inputs = dom.get("inputs") or []
-    if not inputs:
         return None
 
     combined = " ".join(
@@ -323,11 +343,13 @@ def entry_options(
     dom: Dict[str, Any],
     form_map: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
-    """Return at most one explicit option per entry type.
+    """Return the distinct explicit paths the page offers.
 
-    The list always represents the paths the page actually offers.  A page that
-    is itself a login or signup form contributes that page as one option, so the
-    agent can still ask before leaving a clearly identified form.
+    Duplicates that point at the same target (for example a header "Register"
+    link and a body "Register" button with the same href) collapse into one
+    option.  Two links with different targets stay separate even when they share
+    an entry type: "Preview Universal Registration" and "Proceed for Universal
+    Registration" are genuinely different next steps and must be asked about.
     """
     candidates: List[Dict[str, Any]] = []
     for order, gateway in enumerate(dom.get("gateways") or []):
@@ -357,21 +379,24 @@ def entry_options(
             }
         )
 
-    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    grouped: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
     for option in candidates:
-        grouped.setdefault(option["type"], []).append(option)
+        grouped.setdefault((option["type"], _option_target(option)), []).append(option)
 
     result: List[Dict[str, Any]] = []
     for entry_type in ENTRY_TYPES:
-        group = grouped.get(entry_type) or []
-        if not group:
-            continue
-        group.sort(key=_canonical_score, reverse=True)
-        chosen = dict(group[0])
-        chosen["alternate_count"] = max(0, len(group) - 1)
-        result.append(chosen)
+        groups = [
+            group
+            for (group_type, _target), group in grouped.items()
+            if group_type == entry_type
+        ]
+        for group in groups:
+            group.sort(key=_canonical_score, reverse=True)
+            chosen = dict(group[0])
+            chosen["alternate_count"] = max(0, len(group) - 1)
+            result.append(chosen)
 
-    # Preserve the page order for the first occurrence of each type, but put
+    # Preserve the page order for the first occurrence of each target, but put
     # the synthetic current-page option where the page itself appears.
     result.sort(key=lambda option: option.get("order", 0))
     return result
@@ -419,6 +444,37 @@ def build_entry_gate(options: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "mode": option.get("mode"),
                 "href": option.get("href"),
                 "source": option.get("source"),
+            }
+            for option in options
+        ],
+    }
+
+
+def build_next_step_gate(options: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Build the checkpoint for a signed-in page that links to the real form."""
+    return {
+        "gate_type": "GATEWAY_DECISION",
+        "stage": "next_step",
+        "title": "What would you like to do next?",
+        "hindi_title": "Ab aage kya karna hai?",
+        "description": (
+            "You are signed in. This page is a dashboard, not the application form — "
+            "it lists links that open the real application. FormPilot will not pick one "
+            "for you. Choose the next step you want."
+        ),
+        "why": "The signed-in page lists more than one explicit next step.",
+        "requires_explicit_choice": True,
+        "no_default": True,
+        "options": [
+            {
+                "id": option.get("id"),
+                "element_id": option.get("element_id"),
+                "text": option.get("text"),
+                "type": option.get("type"),
+                "mode": option.get("mode"),
+                "href": option.get("href"),
+                "source": option.get("source"),
+                "description": f"Open: {option.get('text')}",
             }
             for option in options
         ],

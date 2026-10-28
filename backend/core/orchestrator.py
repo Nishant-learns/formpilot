@@ -153,7 +153,9 @@ class FormPilotOrchestrator:
             "blueprint": self.blueprint.summary() if self.blueprint else None,
             "recipe": self._recipe_status,
             "current_section": self.current_section,
-            "active_gate": self.active_gate if self.is_running or self.state in {"WAITING_FOR_USER", "PAUSED"} else None,
+            "active_gate": self.active_gate
+            if self.is_running or self.state in {"WAITING_FOR_USER", "PAUSED", "AWAITING_PAYMENT"}
+            else None,
             "filled_audit": self._public_audit(),
             "fill_summary": self.fill_summary,
             "fill_failures": self.fill_failures,
@@ -385,6 +387,20 @@ class FormPilotOrchestrator:
         if gate.get("gate_type") == "GATEWAY_DECISION":
             option = decision_policy.match_entry_response({"mode": normalized}, options)
             if not option:
+                same_mode = [
+                    item for item in options if item.get("mode") == normalized
+                ]
+                if len(same_mode) > 1:
+                    labels = ", ".join(
+                        f"'{item.get('text')}'" for item in same_mode
+                    )
+                    return {
+                        "success": False,
+                        "message": (
+                            f"This page offers more than one {self._entry_label(normalized)} "
+                            f"path: {labels}. Choose the exact option."
+                        ),
+                    }
                 return {
                     "success": False,
                     "message": "The portal does not offer that entry path on this page.",
@@ -430,6 +446,47 @@ class FormPilotOrchestrator:
             "success": True,
             "mode": normalized,
             "message": f"I will open {self._entry_label(normalized)} when the portal shows the entry page.",
+        }
+
+    def choose_entry_option(self, option: Dict[str, Any]) -> Dict[str, Any]:
+        """Select one exact option from the open gateway gate.
+
+        Needed when a page offers two different links with the same entry type
+        (for example "Preview ..." and "Proceed ..."), where a mode-only answer
+        is ambiguous.
+        """
+        gate = self.active_gate or {}
+        if gate.get("gate_type") != "GATEWAY_DECISION":
+            return {"success": False, "message": "There is no entry choice open right now."}
+        options = list(self._entry_options or [])
+        query: Dict[str, Any] = {
+            "element_id": option.get("element_id"),
+            "text": option.get("text"),
+            "href": option.get("href"),
+        }
+        if not option.get("text"):
+            query["mode"] = option.get("mode") or option.get("type")
+        selected = decision_policy.match_entry_response(query, options)
+        if not selected:
+            return {
+                "success": False,
+                "message": "That choice did not match an entry path on this page.",
+            }
+        self.submit_user_response(
+            {
+                "action": "GATEWAY_CHOICE",
+                "mode": selected.get("mode"),
+                "type": selected.get("type"),
+                "element_id": selected.get("element_id"),
+                "id": selected.get("id"),
+                "href": selected.get("href"),
+                "text": selected.get("text"),
+            }
+        )
+        return {
+            "success": True,
+            "mode": selected.get("mode"),
+            "message": f"Selected {selected.get('text')}.",
         }
 
     def choose_login_method(self, method: str) -> Dict[str, Any]:
@@ -1049,6 +1106,10 @@ class FormPilotOrchestrator:
                     continue
 
             if not inputs:
+                # A signed-in dashboard is a hub, not the end of the run.  Its
+                # links open the real application; ask which one to use.
+                if await self._dashboard_next_step(dom, gateways):
+                    continue
                 visible = str(dom.get("visibleText") or "").lower()
                 if any(token in visible for token in ("dashboard", "registration id", "logged in", "sign out", "logout")):
                     self.state = "DONE"
@@ -1110,14 +1171,40 @@ class FormPilotOrchestrator:
 
     # ---------------------------------------------------------------- gateways
 
-    async def _gateway_checkpoint(self, dom: Dict[str, Any], gateways: List[Dict[str, Any]]):
+    async def _dashboard_next_step(
+        self,
+        dom: Dict[str, Any],
+        gateways: List[Dict[str, Any]],
+    ) -> bool:
+        """Follow a signed-in dashboard's application links instead of stopping.
+
+        A dashboard has no form fields, so the old loop treated it as the end of
+        the run.  But a dashboard is a hub: its links open the actual form.  When
+        the page offers at least one explicit path, ask (or follow a single
+        unambiguous one) and keep the run alive.
+        """
+        if not gateways:
+            return False
+        if not decision_policy.is_entry_page(dom, self.form_map):
+            return False
+        await self._gateway_checkpoint(dom, gateways, kind="next_step")
+        return True
+
+    async def _gateway_checkpoint(
+        self,
+        dom: Dict[str, Any],
+        gateways: List[Dict[str, Any]],
+        *,
+        kind: str = "entry",
+    ):
         """Ask for an explicit entry path, never infer one.
 
-        ``decision_policy`` has already reduced the page to at most one option
-        per entry type (register, login, resume).  A single explicit option is
-        followed; two or more options open a gate.  A response that does not
-        match exactly one option is rejected and the gate is shown again.
+        ``decision_policy`` has already reduced the page to distinct targets.
+        A single explicit option is followed; two or more options open a gate.
+        A response that does not match exactly one option is rejected and the
+        gate is shown again.
         """
+        next_step = kind == "next_step"
         options = list(self._entry_options or [])
         if not options:
             try:
@@ -1147,10 +1234,18 @@ class FormPilotOrchestrator:
 
         await self.emit_event(
             "THINK",
-            "This portal offers more than one way to start.",
-            "Portal par do raste hain. Aap decide karein kaise shuru karna hai.",
+            "This dashboard offers more than one next step."
+            if next_step
+            else "This portal offers more than one way to start.",
+            "Dashboard par aage badhne ke kai raste hain. Aap decide karein."
+            if next_step
+            else "Portal par do raste hain. Aap decide karein kaise shuru karna hai.",
         )
-        gate = decision_policy.build_entry_gate(options)
+        gate = (
+            decision_policy.build_next_step_gate(options)
+            if next_step
+            else decision_policy.build_entry_gate(options)
+        )
         gate["live_session"] = self.live.public_info() if self.live and not self.live.closed else None
         gate["can_takeover"] = bool(self.live)
 
@@ -1160,12 +1255,16 @@ class FormPilotOrchestrator:
             if self.live:
                 self.live.set_allow_control(
                     True,
-                    "Choose the entry path here or in the live browser, then continue.",
+                    "Choose the next step here or in the live browser, then continue.",
                 )
             await self.emit_event(
                 "DECIDE",
-                "Waiting for you to choose how to start.",
-                "Aapke choice ka intezaar hai.",
+                "Waiting for you to choose the next step."
+                if next_step
+                else "Waiting for you to choose how to start.",
+                "Agle step ka intezaar hai."
+                if next_step
+                else "Aapke choice ka intezaar hai.",
                 gate,
                 force_screenshot=True,
             )
@@ -2958,6 +3057,22 @@ class FormPilotOrchestrator:
             str(captcha.get("id") or captcha.get("tagName") or "") for captcha in captchas[:3]
         )
 
+    @staticmethod
+    def _captcha_input_target(captchas: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """The field where the human's answer is typed."""
+        for item in captchas:
+            if str(item.get("tagName") or "").lower() in {"input", "textarea"}:
+                return item
+        return captchas[0] if captchas else None
+
+    @staticmethod
+    def _captcha_preview_target(captchas: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """The challenge image, never the empty answer field."""
+        for item in captchas:
+            if str(item.get("tagName") or "").lower() in {"img", "canvas", "iframe"}:
+                return item
+        return None
+
     async def _handle_captcha(self, dom: Dict[str, Any]) -> bool:
         """Handle a security check; return True while it is still pending.
 
@@ -2986,19 +3101,24 @@ class FormPilotOrchestrator:
             return signature != self._captcha_signature
 
         # Text CAPTCHA (for example "hJ8ik)3") can be entered in the gate.
-        captcha = next(
-            (item for item in captchas if str(item.get("kind") or "") == "text"),
-            captchas[0],
-        )
-        selector = f"#{captcha.get('id')}" if captcha.get("id") else str(captcha.get("tagName") or "canvas")
+        # The scanner reports both the answer field and the challenge image as
+        # "text"; the gate must preview the image and fill the input.
+        captcha = self._captcha_input_target(captchas)
+        preview = self._captcha_preview_target(captchas) or captcha
         image_b64 = ""
-        try:
-            element = self.page.locator(selector).first
-            if await element.count() > 0:
-                image = await element.screenshot()
-                image_b64 = f"data:image/png;base64,{base64.b64encode(image).decode('utf-8')}"
-        except Exception:
-            pass
+        if preview:
+            selector = (
+                f"#{preview.get('id')}"
+                if preview.get("id")
+                else str(preview.get("tagName") or "canvas")
+            )
+            try:
+                element = self.page.locator(selector).first
+                if await element.count() > 0:
+                    image = await element.screenshot()
+                    image_b64 = f"data:image/png;base64,{base64.b64encode(image).decode('utf-8')}"
+            except Exception:
+                pass
 
         await self.emit_event(
             "THINK",
@@ -3021,6 +3141,10 @@ class FormPilotOrchestrator:
         }
         self.active_gate = gate
         self.state = "WAITING_FOR_USER"
+        if self.live:
+            self.live.set_allow_control(
+                True, "Enter the security check in the live browser or below."
+            )
         await self.emit_event(
             "DECIDE",
             "Waiting for the security check.",
@@ -3030,6 +3154,8 @@ class FormPilotOrchestrator:
         )
         response = await self._wait_for_user_response()
         self.active_gate = None
+        if self.live:
+            self.live.set_allow_control(False, "The agent is driving again.")
         self.state = "RUNNING" if self.is_running else self.state
         if response.get("action") in {"STOPPED", "TIMEOUT", "DISMISS"}:
             if response.get("action") == "TIMEOUT":

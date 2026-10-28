@@ -103,7 +103,7 @@ export default function LiveChat({
   const entryChips = entryNeeded
     ? entryChoices.slice(0, 4).map((option) => ({
         label: option.text || option.mode || option.type || 'Entry path',
-        query: option.mode || option.type || option.text,
+        query: option.text || option.mode || option.type,
       }))
     : [];
   const loginChips = gateType === 'LOGIN_METHOD'

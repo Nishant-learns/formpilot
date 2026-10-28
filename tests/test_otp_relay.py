@@ -346,3 +346,73 @@ def test_a_generic_create_account_button_is_not_used_as_an_otp_submit():
         assert await page.evaluate("window.__submitted || false") is False
 
     run_with_page(scenario)
+
+
+def test_captcha_gate_previews_the_image_not_the_empty_answer_field():
+    captchas = [
+        {"kind": "text", "tagName": "input", "id": "loginform-captcha"},
+        {"kind": "text", "tagName": "img", "id": "loginform-captcha-image"},
+        {"kind": "unknown", "tagName": "a", "id": None},
+    ]
+
+    input_target = FormPilotOrchestrator._captcha_input_target(captchas)
+    preview_target = FormPilotOrchestrator._captcha_preview_target(captchas)
+
+    assert input_target["id"] == "loginform-captcha"
+    assert preview_target["id"] == "loginform-captcha-image"
+
+
+def test_captcha_preview_is_absent_when_only_the_answer_field_exists():
+    captchas = [{"kind": "text", "tagName": "input", "id": "captcha"}]
+
+    assert FormPilotOrchestrator._captcha_input_target(captchas)["id"] == "captcha"
+    assert FormPilotOrchestrator._captcha_preview_target(captchas) is None
+
+
+def test_captcha_gate_allows_live_control_only_while_it_waits():
+    class FakeLive:
+        def __init__(self):
+            self.closed = False
+            self.control_calls = []
+
+        def public_info(self):
+            return {"session_id": "live-test"}
+
+        def set_allow_control(self, enabled, reason=""):
+            self.control_calls.append((enabled, reason))
+
+    async def scenario(page):
+        await page.set_content(
+            """
+            <html><body>
+              <form id="login">
+                <label for="captcha">Enter Captcha</label>
+                <input id="loginform-captcha" type="text">
+                <img id="loginform-captcha-image"
+                     src="data:image/png;base64,iVBORw0KGgo=" alt="captcha">
+              </form>
+            </body></html>
+            """
+        )
+        orchestrator = _orchestrator(page)
+        orchestrator.live = FakeLive()
+        captured = {}
+
+        async def answer():
+            captured["gate"] = dict(orchestrator.active_gate or {})
+            captured["control_during_gate"] = list(orchestrator.live.control_calls)
+            return {"action": "HANDOFF_COMPLETE"}
+
+        orchestrator._wait_for_user_response = answer
+        dom = await orchestrator._scan_dom()
+
+        pending = await orchestrator._handle_captcha(dom)
+
+        assert pending is False
+        gate = captured["gate"]
+        assert gate.get("gate_type") == "CAPTCHA_SOLVE"
+        assert str(gate.get("captcha_image") or "").startswith("data:image/png;base64,")
+        assert captured["control_during_gate"][0][0] is True
+        assert orchestrator.live.control_calls[-1][0] is False
+
+    run_with_page(scenario)
