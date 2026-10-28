@@ -429,7 +429,11 @@ def _path_kind(action: PerceivedAction, page_type: str) -> Optional[str]:
     if hint == "payment":
         return "application_action"
     if hint == "next":
-        return "application_action" if page_type in {"FORM", "SECTION_FORM", "PAYMENT"} else "navigation"
+        # On a dashboard "proceed" starts an application; on a form it moves
+        # to the next section.  Everywhere else a next control is navigation.
+        if page_type in {"FORM", "SECTION_FORM", "PAYMENT", "DASHBOARD"}:
+            return "application_action"
+        return "navigation"
     if page_type in {"FORM", "SECTION_FORM", "LOGIN", "REGISTER", "OTP", "CAPTCHA", "PAYMENT"}:
         return None
     text = action.text.lower()

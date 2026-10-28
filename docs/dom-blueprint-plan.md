@@ -1573,3 +1573,51 @@ Acceptance for this slice:
 - A gate closing while the human owns the page does not take control back.
 - At a checkpoint, control returns to the human after the rescan.
 - Stop/reset clear the takeover state.
+
+### 16.28 Slice F: semantic-layer evaluation (2026-10-28)
+
+`backend/core/evaluation.py` is an offline evaluation harness. It runs a small
+set of page fixtures through perception -> deterministic brief -> fact
+annotation -> fill plan and reports every check.
+
+Fixtures:
+
+- **HPSC personal details** - first/middle/last name, date of birth with a
+  `DD-MM-YYYY` placeholder, name as per matric certificate, father's name,
+  email + confirmation, mobile, photograph upload, and a Save & Next path.
+- **HPSC OTP** - one human-only question and an OTP signal.
+- **Candidate dashboard** - an application preview, a proceed action and a
+  logout, plus a registration ID in the visible text.
+- **HPSC landing** - register and login as two account paths.
+- **Expired session** - an error page with no fields.
+
+Checks per case:
+
+- page type,
+- concept for every field,
+- fill-plan state for every field,
+- planned value and date format,
+- number of paths that need a human choice,
+- human-only detection and page information,
+- false-claim checks: a `fill` instruction must carry a value, and a
+  `human_only` instruction must not.
+
+Reporting:
+
+- `run_evaluation()` returns `passed`, `metrics`, `failures` and per-case
+  checks.
+- `format_report()` renders a short human summary.
+- `scripts/evaluate_semantic_layer.py` runs it offline and exits non-zero on a
+  failure; `--json` prints the full report.
+- `tests/test_evaluation.py` keeps the fixtures green and asserts the HPSC
+  date, name-part, OTP and dashboard/landing regressions.
+
+Finding from the first run: a dashboard `next` action was classified as
+navigation, so "Proceed for Universal Registration" did not ask the human to
+choose. `_path_kind` now treats `next` as an application action on a dashboard
+as well as on a form. The fixture caught a real classification gap.
+
+Deliberately not run in this slice: the live practice-portal end-to-end flow.
+The user cannot supply OTP/human steps right now, so portal verification is
+deferred until they are available. The automated suite and the evaluation
+harness cover the semantic layer offline.
