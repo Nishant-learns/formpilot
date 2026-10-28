@@ -1527,3 +1527,49 @@ Acceptance for this slice:
 - `get_saved_detail` returns a derived name part with its provenance.
 - Editing `first_name` stores an explicit fact and leaves the vault untouched.
 - Existing chat behaviour and the full suite still pass.
+
+### 16.27 Always-available browser takeover (2026-10-28)
+
+Takeover is now a first-class, always-available action, not only a side effect
+of a checkpoint.
+
+Flow:
+
+1. `POST /api/agent/takeover` gives the human exclusive control. If the loop
+   was driving, it pauses first; if a checkpoint is already waiting, the
+   checkpoint keeps the human in control and no extra pause is added.
+2. While the human drives, the operator does not scan, click or type. The live
+   page is theirs.
+3. `POST /api/agent/takeover/return` takes the page back, disables human input
+   during a fresh scan, and rebuilds the operator blueprint and the shared page
+   brief (`adopt_blueprint=True`). The run stays paused.
+4. The human reviews the fresh brief and presses Continue. Resuming is always
+   explicit; nothing auto-resumes after a takeover.
+5. At a checkpoint the human still has an open question, so control is handed
+   back to them after the rescan; the checkpoint itself is unchanged.
+
+Decisions:
+
+- **One owner at a time.** Human control and operator actions never overlap.
+  `_release_live_control` refuses to take control back while a takeover is
+  active, so a gate closing cannot silently steal the page.
+- **Return means re-perceive.** The page may have navigated while the human was
+  driving, so the operator adopts a new blueprint and a new brief. Cached
+  handles from before the takeover are never reused.
+- **Paused is the default after return.** A driving run stays paused until the
+  human presses Continue. The takeover is over, but the run is not resumed
+  automatically.
+- **The state is visible.** `GET /api/agent/state` now carries
+  `takeover: {available, active, paused_run, started_at, control_enabled}`.
+- **The cockpit makes it obvious.** The live view shows "Take over" whenever a
+  live page exists, "Return & rescan" while the human owns it, and a
+  "You have the browser · FormPilot paused" badge over the page.
+
+Acceptance for this slice:
+
+- Takeover pauses a driving run and enables live control.
+- Takeover is refused without a live browser.
+- Returning control rescans, adopts the new page, and leaves the run paused.
+- A gate closing while the human owns the page does not take control back.
+- At a checkpoint, control returns to the human after the rescan.
+- Stop/reset clear the takeover state.

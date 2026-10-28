@@ -70,6 +70,11 @@ class FormPilotOrchestrator:
         self.active_gate: Optional[Dict[str, Any]] = None
         self.active_event_future: Optional[asyncio.Future] = None
         self._pending_user_response: Optional[Dict[str, Any]] = None
+        # Browser takeover: the human owns the live page, the loop stays paused,
+        # and control is only returned by an explicit "continue" step.
+        self._takeover_active = False
+        self._takeover_paused_run = False
+        self._takeover_started_at: Optional[str] = None
 
         self.current_section = 1
         self.filled_audit: List[Dict[str, Any]] = []
@@ -172,6 +177,7 @@ class FormPilotOrchestrator:
             "login_identifier": self._login_identifier,
             "last_error": self.last_error,
             "oracle": self.oracle_result.model_dump() if self.oracle_result else None,
+            "takeover": self.takeover_state(),
         }
 
     async def start_application(self, query_or_url: str, run_mode: str = "fill"):
@@ -311,6 +317,9 @@ class FormPilotOrchestrator:
         self.is_running = False
         self.paused = False
         self._is_paused = False
+        self._takeover_active = False
+        self._takeover_paused_run = False
+        self._takeover_started_at = None
         self.state = "STOPPED"
         if self.active_event_future and not self.active_event_future.done():
             self.active_event_future.set_result({"action": "STOPPED"})
@@ -358,6 +367,9 @@ class FormPilotOrchestrator:
         self._stop_requested = False
         self.paused = False
         self._is_paused = False
+        self._takeover_active = False
+        self._takeover_paused_run = False
+        self._takeover_started_at = None
         self.run_mode = "fill"
         return True
 
@@ -371,6 +383,155 @@ class FormPilotOrchestrator:
         self.paused = False
         if self.state == "PAUSED":
             self.state = "RUNNING"
+
+    # ---------------------------------------------------------------- takeover
+
+    def takeover_state(self) -> Dict[str, Any]:
+        """Whether the human owns the browser right now.
+
+        ``available`` says a live page exists to take.  ``active`` says the
+        human has it.  ``paused_run`` records that FormPilot paused itself for
+        the takeover, so resuming is an explicit human action.
+        """
+        live_open = bool(self.live and not self.live.closed)
+        return {
+            "available": live_open,
+            "active": self._takeover_active,
+            "paused_run": self._takeover_paused_run,
+            "started_at": self._takeover_started_at,
+            "control_enabled": bool(getattr(self.live, "_control_enabled", False))
+            if live_open
+            else False,
+        }
+
+    async def take_human_control(self) -> Dict[str, Any]:
+        """Give the human exclusive control of the live page.
+
+        Always available while a live browser is open.  If the agent was
+        driving, the loop pauses first so the human and the operator never
+        act on the same page at the same time.  If a checkpoint is already
+        waiting, the checkpoint keeps the human in control and no extra pause
+        is needed.
+        """
+        if not self.live or self.live.closed:
+            return {
+                "success": False,
+                "message": "There is no live browser open to take over.",
+                "takeover": self.takeover_state(),
+            }
+        if self._takeover_active:
+            self.live.set_allow_control(
+                True, "You have control of the live browser. FormPilot is paused."
+            )
+            return {
+                "success": True,
+                "already": True,
+                "state": self.state,
+                "takeover": self.takeover_state(),
+            }
+        if not self.is_running and self.state not in {"PAUSED", "INSPECT_READY"}:
+            return {
+                "success": False,
+                "message": "There is no active application to take over.",
+                "takeover": self.takeover_state(),
+            }
+
+        self._takeover_active = True
+        self._takeover_started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        waiting_at_gate = self.active_gate is not None or self.state in {
+            "WAITING_FOR_USER",
+            "AWAITING_PAYMENT",
+        }
+        if not waiting_at_gate and self.is_running:
+            self.pause()
+            self._takeover_paused_run = True
+        self.live.set_allow_control(
+            True, "You have control of the live browser. FormPilot is paused."
+        )
+        await self.emit_event(
+            "DECIDE",
+            "You have the browser. FormPilot is paused until you return control.",
+            "Browser ab aapke paas hai. Jab tak aap control wapas nahi karenge, FormPilot ruka rahega.",
+        )
+        return {
+            "success": True,
+            "state": self.state,
+            "takeover": self.takeover_state(),
+        }
+
+    async def return_human_control(self, *, refresh: bool = True) -> Dict[str, Any]:
+        """Take the page back, re-read it, and stay paused for a human check.
+
+        The page may have navigated or changed while the human was driving, so
+        the operator's blueprint and the shared brief are rebuilt before the
+        run can continue.  Control is not handed back to the loop automatically:
+        the human reviews the fresh brief and presses Continue.
+        """
+        if not self._takeover_active:
+            return {
+                "success": False,
+                "message": "The browser is not in human control.",
+                "takeover": self.takeover_state(),
+            }
+
+        self._takeover_active = False
+        if self.live and not self.live.closed:
+            self.live.set_allow_control(
+                False, "FormPilot is reading the page again. Control returns in a moment."
+            )
+        brief = self.page_brief
+        refreshed = False
+        if refresh and self.page and not self.page.is_closed():
+            try:
+                brief = await self.get_page_brief(refresh=True, adopt_blueprint=True)
+                refreshed = True
+            except Exception:
+                traceback.print_exc()
+
+        # At a checkpoint the human is still expected to act, so control goes
+        # back to them once the rescan is complete.  A paused driving run stays
+        # with the operator until the human presses Continue.
+        waiting_at_gate = self.active_gate is not None or self.state in {
+            "WAITING_FOR_USER",
+            "AWAITING_PAYMENT",
+        }
+        if self.live and not self.live.closed:
+            if waiting_at_gate:
+                self.live.set_allow_control(
+                    True, "The checkpoint still needs you. FormPilot has re-read the page."
+                )
+            else:
+                self.live.set_allow_control(
+                    False,
+                    "FormPilot is paused after your changes. Review the page, then continue.",
+                )
+
+        await self.emit_event(
+            "SENSE",
+            "You returned control. The page was re-read; FormPilot stays paused until you continue.",
+            "Aapne control wapas diya. Page dobara padh liya; continue karne tak FormPilot ruka rahega.",
+            force_screenshot=True,
+        )
+        self._takeover_paused_run = False
+        self._takeover_started_at = None
+        return {
+            "success": True,
+            "state": self.state,
+            "paused": self.paused or self._is_paused,
+            "refreshed": refreshed,
+            "page_brief": brief,
+            "takeover": self.takeover_state(),
+        }
+
+    def _release_live_control(self, reason: str) -> None:
+        """Give control back to the loop unless the human still owns it."""
+        if not self.live or self.live.closed:
+            return
+        if self._takeover_active:
+            # A gate may close while the human is still driving; returning
+            # control stays an explicit step.
+            return
+        self.live.set_allow_control(False, reason)
 
     def submit_user_response(self, data: Dict[str, Any]):
         if self.active_event_future and not self.active_event_future.done():
@@ -973,19 +1134,27 @@ class FormPilotOrchestrator:
         )
         return form_map
 
-    async def get_page_brief(self, *, refresh: bool = False) -> Dict[str, Any]:
+    async def get_page_brief(
+        self, *, refresh: bool = False, adopt_blueprint: bool = False
+    ) -> Dict[str, Any]:
         """Read the live page and return a human-readable brief.
 
         This is read-only.  It never fills, clicks, uploads or submits.  The
         scan is local to this call so an explicit refresh cannot replace the
-        operator's current blueprint mid-action.
+        operator's current blueprint mid-action.  ``adopt_blueprint`` is only
+        used after a human takeover, when the operator must deliberately adopt
+        the page the human left behind.
         """
         if not self.page or self.page.is_closed():
             if self.page_brief and not refresh:
                 return self.page_brief
             raise AgentRunError("There is no live browser to read. Open a portal first.")
         try:
-            dom, blueprint = await DOMScanner.scan(self.page)
+            if adopt_blueprint:
+                dom, blueprint = await self._scan_dom()
+                self.blueprint = blueprint
+            else:
+                dom, blueprint = await DOMScanner.scan(self.page)
         except Exception as exc:
             raise AgentRunError(
                 "The page is still loading. Please wait a moment and read it again."
@@ -1311,7 +1480,7 @@ class FormPilotOrchestrator:
             response = await self._wait_for_user_response()
             self.active_gate = None
             if self.live:
-                self.live.set_allow_control(False, "The agent is driving again.")
+                self._release_live_control("The agent is driving again.")
             if response.get("action") in {"STOPPED", "TIMEOUT"}:
                 self.is_running = False
                 return
@@ -1401,7 +1570,7 @@ class FormPilotOrchestrator:
         )
         response = await self._wait_for_user_response()
         self.active_gate = None
-        self.live.set_allow_control(False, "The agent is driving again.")
+        self._release_live_control("The agent is driving again.")
         if response.get("action") in {"STOPPED", "TIMEOUT"}:
             self.is_running = False
             return
@@ -1646,7 +1815,7 @@ class FormPilotOrchestrator:
             response = await self._wait_for_user_response()
             self.active_gate = None
             if self.live:
-                self.live.set_allow_control(False, "The agent is driving again.")
+                self._release_live_control("The agent is driving again.")
             if response.get("action") in {"STOPPED", "TIMEOUT"}:
                 self.is_running = False
                 return True
@@ -1731,7 +1900,7 @@ class FormPilotOrchestrator:
             response = await self._wait_for_user_response()
             self.active_gate = None
             if self.live:
-                self.live.set_allow_control(False, "The agent is driving again.")
+                self._release_live_control("The agent is driving again.")
             if response.get("action") in {"STOPPED", "TIMEOUT"}:
                 self.is_running = False
                 return True
@@ -2521,7 +2690,7 @@ class FormPilotOrchestrator:
         response = await self._wait_for_user_response()
         self.active_gate = None
         if self.live:
-            self.live.set_allow_control(False, "The agent is driving again.")
+            self._release_live_control("The agent is driving again.")
         self.state = "RUNNING" if self.is_running else self.state
 
         action = str(response.get("action") or "")
@@ -2584,7 +2753,7 @@ class FormPilotOrchestrator:
         response = await self._wait_for_user_response()
         self.active_gate = None
         if self.live:
-            self.live.set_allow_control(False, "The agent is driving again.")
+            self._release_live_control("The agent is driving again.")
         self.state = "RUNNING" if self.is_running else self.state
         if response.get("action") in {"STOPPED", "TIMEOUT", "DISMISS", "SKIP"}:
             if response.get("action") == "TIMEOUT":
@@ -2725,7 +2894,7 @@ class FormPilotOrchestrator:
         response = await self._wait_for_user_response()
         self.active_gate = None
         if self.live:
-            self.live.set_allow_control(False, "The agent is driving again.")
+            self._release_live_control("The agent is driving again.")
         self.state = "RUNNING" if self.is_running else self.state
 
         action = response.get("action")
@@ -3087,7 +3256,7 @@ class FormPilotOrchestrator:
             response = await self._wait_for_user_response()
             self.active_gate = None
             if self.live:
-                self.live.set_allow_control(False, "The agent is driving again.")
+                self._release_live_control("The agent is driving again.")
             self.state = "RUNNING" if self.is_running else self.state
             action = str(response.get("action") or "")
             if action in {"STOPPED", "TIMEOUT"}:
@@ -3268,7 +3437,7 @@ class FormPilotOrchestrator:
         response = await self._wait_for_user_response()
         self.active_gate = None
         if self.live:
-            self.live.set_allow_control(False, "The agent is driving again.")
+            self._release_live_control("The agent is driving again.")
         self.state = "RUNNING" if self.is_running else self.state
         if response.get("action") in {"STOPPED", "TIMEOUT", "DISMISS"}:
             if response.get("action") == "TIMEOUT":
@@ -3351,7 +3520,7 @@ class FormPilotOrchestrator:
         response = await self._wait_for_user_response()
         self.active_gate = None
         if self.live:
-            self.live.set_allow_control(False, "The agent is driving again.")
+            self._release_live_control("The agent is driving again.")
         self.state = "RUNNING" if self.is_running else self.state
 
         action = response.get("action")
@@ -3428,7 +3597,7 @@ class FormPilotOrchestrator:
         response = await self._wait_for_user_response()
         self.active_gate = None
         if self.live:
-            self.live.set_allow_control(False, "The agent is driving again.")
+            self._release_live_control("The agent is driving again.")
         self.state = "RUNNING" if self.is_running else self.state
         if response.get("action") in {"STOPPED", "TIMEOUT"}:
             self.is_running = False
@@ -3483,7 +3652,7 @@ class FormPilotOrchestrator:
             response = await self._wait_for_user_response()
             self.active_gate = None
             if self.live:
-                self.live.set_allow_control(False, "The agent is driving again.")
+                self._release_live_control("The agent is driving again.")
             action = str(response.get("action") or "")
             if action in {"STOPPED", "TIMEOUT"}:
                 self.is_running = False
@@ -3539,7 +3708,7 @@ class FormPilotOrchestrator:
         response = await self._wait_for_user_response()
         self.active_gate = None
         if self.live:
-            self.live.set_allow_control(False, "The agent is driving again.")
+            self._release_live_control("The agent is driving again.")
         if response.get("action") in {"STOPPED", "TIMEOUT"}:
             self.is_running = False
             self.state = "STOPPED" if response.get("action") == "STOPPED" else "FAILED"

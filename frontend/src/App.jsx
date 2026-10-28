@@ -55,6 +55,7 @@ export default function App() {
   const [liveSession, setLiveSession] = useState(null);
   const [formMap, setFormMap] = useState(null);
   const [pageBrief, setPageBrief] = useState(null);
+  const [takeover, setTakeover] = useState({ available: false, active: false });
   const [briefRefreshing, setBriefRefreshing] = useState(false);
   const [recipe, setRecipe] = useState(null);
   const [fillSummary, setFillSummary] = useState(null);
@@ -226,6 +227,7 @@ export default function App() {
       setRunState(data.state || 'IDLE');
       setRunMode(data.run_mode || 'fill');
       setLiveSession(data.live_session || null);
+      setTakeover(data.takeover || { available: false, active: false });
       setFormMap(data.form_map || null);
       setPageBrief(data.page_brief || null);
       setRecipe(data.recipe || null);
@@ -313,6 +315,9 @@ export default function App() {
         }
         if ('live_session' in data) {
           setLiveSession(data.live_session || null);
+        }
+        if (data.takeover) {
+          setTakeover(data.takeover);
         }
         if (data.form_map) {
           setFormMap((previous) => (
@@ -488,6 +493,44 @@ export default function App() {
     setStartedAt(null);
     previousStateRef.current = 'IDLE';
     gateKeyRef.current = '';
+  };
+
+  const handleTakeover = async () => {
+    try {
+      const res = await fetch('/api/agent/takeover', { method: 'POST' });
+      const data = await res.json();
+      if (!data.success) {
+        notify(data.message || 'The browser cannot be taken over right now.', 'error');
+        return;
+      }
+      setTakeover(data.takeover || { available: true, active: true });
+      if (data.state) setRunState(data.state);
+      notify('You have the browser. FormPilot is paused until you return control.', 'info');
+    } catch (err) {
+      console.error('Takeover error:', err);
+      notify('Could not take over the browser. Try again.', 'error');
+    }
+  };
+
+  const handleReturnControl = async () => {
+    try {
+      const res = await fetch('/api/agent/takeover/return', { method: 'POST' });
+      const data = await res.json();
+      if (!data.success) {
+        notify(data.message || 'Control cannot be returned right now.', 'error');
+        return;
+      }
+      if (data.page_brief) setPageBrief(data.page_brief);
+      setTakeover(data.takeover || { available: true, active: false });
+      if (data.state) setRunState(data.state);
+      notify(
+        'Control returned. The page was re-read; review it, then press Continue.',
+        'info',
+      );
+    } catch (err) {
+      console.error('Return control error:', err);
+      notify('Could not return control. Try again.', 'error');
+    }
   };
 
   const handlePauseToggle = async () => {
@@ -746,6 +789,9 @@ export default function App() {
             runMode={runMode}
             runState={runState}
             paused={paused}
+            takeover={takeover}
+            onTakeover={handleTakeover}
+            onReturnControl={handleReturnControl}
             pendingGate={currentGate && gateHidden ? currentGate : null}
             onOpenGate={() => setGateHidden(false)}
           />

@@ -632,10 +632,63 @@ async def pause_agent():
     return {"success": True, "state": orchestrator.state}
 
 
+@app.post("/api/agent/takeover")
+async def take_over_agent():
+    """Give the human exclusive control of the live browser.
+
+    Always available while a live page is open, including while the agent is
+    driving.  The loop pauses first, so the human and the operator never type
+    into the same page at the same time.
+    """
+    result = await orchestrator.take_human_control()
+    if result.get("success"):
+        await broadcast_to_cockpits(
+            {
+                "timestamp": datetime.datetime.now().strftime("%H:%M:%S"),
+                "phase": "DECIDE",
+                "message": "You have the browser. FormPilot is paused.",
+                "state": orchestrator.state,
+                "run_id": orchestrator.run_id,
+                "takeover": result.get("takeover"),
+            }
+        )
+    return result
+
+
+@app.post("/api/agent/takeover/return")
+async def return_agent_control():
+    """Take the page back, re-read it, and stay paused for a human check."""
+    result = await orchestrator.return_human_control()
+    if result.get("success"):
+        await broadcast_to_cockpits(
+            {
+                "timestamp": datetime.datetime.now().strftime("%H:%M:%S"),
+                "phase": "SENSE",
+                "message": "Control returned. The page was re-read; review it, then continue.",
+                "state": orchestrator.state,
+                "run_id": orchestrator.run_id,
+                "takeover": result.get("takeover"),
+            }
+        )
+    return result
+
+
 @app.post("/api/agent/resume")
 async def resume_agent():
     if not orchestrator.is_running:
         return {"success": False, "message": "There is no active application to resume."}
+    if orchestrator.takeover_state().get("active"):
+        # Returning control is an explicit step: the page is re-read before the
+        # loop may act again.  At a checkpoint the checkpoint itself continues
+        # to wait for its own answer.
+        returned = await orchestrator.return_human_control(refresh=True)
+        if not orchestrator.paused:
+            return {
+                "success": True,
+                "state": orchestrator.state,
+                "message": "Control returned. The checkpoint is still open.",
+                "takeover": returned.get("takeover"),
+            }
     if not orchestrator.paused:
         return {"success": False, "message": "The application is already running."}
     orchestrator.resume()

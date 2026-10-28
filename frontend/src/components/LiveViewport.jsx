@@ -52,6 +52,9 @@ export default function LiveViewport({
   runMode,
   runState,
   paused,
+  takeover,
+  onTakeover,
+  onReturnControl,
   pendingGate,
   onOpenGate,
   className = '',
@@ -391,9 +394,11 @@ export default function LiveViewport({
         : 'SESSION FINISHED · BROWSER CLOSED'
       : runState === 'AWAITING_PAYMENT'
         ? 'YOUR REVIEW · NOTHING SUBMITTED'
-        : active
-          ? 'AGENT SESSION · HUMAN TAKEOVER ALLOWED AT CHECKPOINTS'
-          : 'LIVE PORTAL VIEW';
+        : takeover?.active
+          ? 'HUMAN CONTROL · FORMPILOT PAUSED'
+          : active
+            ? 'AGENT SESSION · HUMAN TAKEOVER AVAILABLE ANY TIME'
+            : 'LIVE PORTAL VIEW';
 
   return (
     <div
@@ -434,6 +439,29 @@ export default function LiveViewport({
                 <ScanSearch className={`w-3.5 h-3.5 ${rescanning ? 'animate-pulse' : ''}`} />
                 <span>{rescanning ? 'Scanning…' : 'Rescan'}</span>
               </button>
+            )}
+            {takeover?.available && runMode !== 'inspect' && (
+              takeover.active ? (
+                <button
+                  type="button"
+                  onClick={onReturnControl}
+                  className="flex items-center gap-1.5 rounded-lg border border-sky-500/40 bg-sky-500/15 px-2.5 py-1 text-[11px] font-bold text-sky-300 transition-all hover:bg-sky-500/25"
+                  title="Take the page back, re-read it, and stay paused until you continue"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  <span>Return &amp; rescan</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={onTakeover}
+                  className="flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/15 px-2.5 py-1 text-[11px] font-bold text-amber-300 transition-all hover:bg-amber-500/25"
+                  title="Pause FormPilot and control the real page yourself"
+                >
+                  <MousePointer2 className="h-3.5 w-3.5" />
+                  <span>Take over</span>
+                </button>
+              )
             )}
             {runMode !== 'inspect' && agentRunning && runState !== 'WAITING_FOR_USER' && onPauseToggle && (
               <button
@@ -540,8 +568,14 @@ export default function LiveViewport({
               }`}
               title={control.reason}
             >
-              {canControl ? <MousePointer2 className="w-3 h-3" /> : <Shield className="w-3 h-3" />}
-              <span>{canControl ? 'You can click and type' : 'Agent has control'}</span>
+              {canControl || takeover?.active ? <MousePointer2 className="w-3 h-3" /> : <Shield className="w-3 h-3" />}
+              <span>
+                {takeover?.active
+                  ? 'You have control'
+                  : canControl
+                    ? 'You can click and type'
+                    : 'Agent has control'}
+              </span>
             </span>
           </div>
         )}
@@ -577,10 +611,10 @@ export default function LiveViewport({
               draggable={false}
               className="w-full h-auto rounded-lg border border-slate-800 shadow-2xl select-none"
             />
-            {paused && (
+            {(paused || takeover?.active) && (
               <div className="absolute left-3 top-3 flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-slate-950/90 px-2.5 py-1 text-[10px] font-bold text-amber-300">
                 <Pause className="h-3 w-3" />
-                Paused by you
+                {takeover?.active ? 'You have the browser · FormPilot paused' : 'Paused by you'}
               </div>
             )}
             {!connected && live && (
@@ -589,7 +623,7 @@ export default function LiveViewport({
                 <span>Reconnecting to the live page…</span>
               </div>
             )}
-            {active && !paused && (
+            {active && !paused && !takeover?.active && (
               <div className="absolute inset-0 pointer-events-none overflow-hidden rounded-lg">
                 <div className="w-full h-1 bg-gradient-to-r from-transparent via-amber-400/50 to-transparent animate-scanline opacity-75" />
               </div>
@@ -709,14 +743,14 @@ export default function LiveViewport({
               </button>
             </div>
           )}
-          {!canControl && live && (
+          {!canControl && !takeover?.active && live && (
             <button
               type="button"
-              onClick={requestControl}
+              onClick={takeover?.available ? onTakeover : requestControl}
               className="text-[10px] font-bold text-amber-300 hover:text-amber-200 underline decoration-dotted"
-              title={control.reason}
+              title={takeover?.available ? 'Pause FormPilot and control the page' : control.reason}
             >
-              Request control
+              {takeover?.available ? 'Take over the browser' : 'Request control'}
             </button>
           )}
           <span className="flex items-center gap-1.5 text-slate-400">
