@@ -237,6 +237,26 @@ class ActionResolver:
     async def click(self, element_id: str) -> ActionResult:
         action = "click"
         try:
+            before_url = self.page.url
+        except Exception:
+            before_url = ""
+
+        def navigated() -> bool:
+            """True when the click already moved the page.
+
+            A link click can navigate before Playwright returns, which makes
+            ``locator.click`` raise even though the action succeeded.  Treating
+            that as a failure sends the agent into fallback clicks on the new
+            page and loses the navigation.
+            """
+            if not before_url:
+                return False
+            try:
+                return self.page.url != before_url
+            except Exception:
+                return False
+
+        try:
             frame, locator, element, strategy = await self.resolve(element_id)
         except ResolverError as exc:
             return ActionResult(
@@ -311,6 +331,16 @@ class ActionResolver:
             )
         except Exception as exc:
             attempts.append({"method": "playwright", "error": str(exc)[:240]})
+            if navigated():
+                return ActionResult(
+                    ok=True,
+                    action=action,
+                    element_id=element_id,
+                    method=f"playwright:navigated:{strategy}",
+                    message=f"Clicked {element.label!r} and the page moved.",
+                    scan_id=self.blueprint.scan_id,
+                    details={"attempts": attempts},
+                )
 
         # A coordinate click is useful when a framework intercepts the
         # synthetic click but the point itself is not covered.
@@ -332,6 +362,16 @@ class ActionResolver:
                 )
         except Exception as exc:
             attempts.append({"method": "mouse", "error": str(exc)[:240]})
+            if navigated():
+                return ActionResult(
+                    ok=True,
+                    action=action,
+                    element_id=element_id,
+                    method=f"mouse:navigated:{strategy}",
+                    message=f"Clicked {element.label!r} at its screen position and the page moved.",
+                    scan_id=self.blueprint.scan_id,
+                    details={"attempts": attempts},
+                )
 
         # Last resort: a JS click, but only when the target is still the
         # element under its own centre point.  Never bypass a real overlay.
@@ -362,6 +402,16 @@ class ActionResolver:
             )
         except Exception as exc:
             attempts.append({"method": "js", "error": str(exc)[:240]})
+            if navigated():
+                return ActionResult(
+                    ok=True,
+                    action=action,
+                    element_id=element_id,
+                    method=f"js:navigated:{strategy}",
+                    message=f"Clicked {element.label!r} with a DOM click and the page moved.",
+                    scan_id=self.blueprint.scan_id,
+                    details={"attempts": attempts},
+                )
 
         return ActionResult(
             ok=False,

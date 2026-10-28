@@ -1,7 +1,7 @@
 # FormPilot Decision Policy
 
 Status: implementation reference
-Last updated: 2026-10-27
+Last updated: 2026-10-28
 
 This document is the source of truth for no-guess decisions: how the agent
 chooses an entry path, a login method, an account identifier, and when it may
@@ -86,9 +86,10 @@ agent asks instead of auto-clicking the registration link.
   `element_id`, `id`, `mode`/`type`, exact text, or exact href.
 - `DISMISS` is not a choice. The gate stays open.
 - An unmatched response keeps the gate open with an explanation.
-- A click on an entry path is verified by a real page change (URL, title,
-  section, heading, input count, button count or text digest). A click that
-  changes nothing is an error, not a silent success.
+- A click on an entry path is verified by a structural page change (URL,
+  title, section, heading, input count, button count, form action, or field
+  signature). A text-only change such as a toastr message is not a page
+  change. A click that changes nothing is an error, not a silent success.
 
 The chat assistant and the checkpoint panel both call the same public methods:
 `choose_entry_mode`, `choose_login_method`, and `choose_account_identifier`.
@@ -162,6 +163,81 @@ When the status is `PARTIAL` or `FAILED`:
 Uploads are verified too: a file is recorded only when the fresh scan shows the
 file attached to the target input.
 
+### 4.1 Locked and prefilled fields
+
+Portals often lock a field after a step succeeds. HPSC, for example, sets the
+mobile, email and password fields to `readonly` after the first signup submit
+while it sends the OTP.
+
+- A read-only or disabled field that already holds the expected value is
+  **verified**, not failed. It is never re-typed.
+- A read-only or disabled field that is empty or holds a different value is
+  reported in `fill_failures` with a `read-only` or `disabled` reason. The
+  `FILL_INCOMPLETE` gate opens; the agent does not bypass the lock with a JS
+  setter.
+- The DOM scanner records `readOnly`, `disabled` and `maxLength` so the fill
+  path can make this decision from the live DOM rather than from a portal
+  class name or a green check mark.
+
+### 4.2 OTP relay
+
+OTP entry is a human checkpoint. The agent only relays a code the human
+supplies; it never reads, stores or generates one.
+
+- A single OTP input receives the whole code.
+- A row of split one-character boxes receives one digit per box. HPSC uses six
+  boxes with the same `name`; filling only the first box with the whole code
+  leaves the rest empty and the portal rejects the code.
+- If the page exposes more than one distinct OTP group (for example separate
+  mobile and email boxes), the agent does not guess which code belongs where.
+  It asks the human to enter the codes in the live browser.
+- The agent submits only the OTP form: a button whose form action contains
+  `validateotp`, or an explicit verify/confirm/OTP button. A generic
+  `Create Account` button is not used on a non-OTP form.
+- Success is verified by a structural page change (normally the login redirect
+  or the disappearance of the OTP boxes). A portal that verifies the code over
+  AJAX without moving the page is accepted only when it reveals a persistent
+  success state such as "verification complete" or "OTP verified". A transient
+  toastr alone is not success.
+- The demo code is advertised only on the practice portal. A live portal sends
+  a real code to the human's phone, so the gate never shows `DEMO_OTP` there.
+- A rejected code reopens the same gate with the portal's reason. The boxes are
+  cleared and the next attempt is filled again.
+- `DISMISS` and unmatched responses keep the gate open. Only a submitted code
+  or a verified live-browser handoff closes it.
+- A captcha on the same page is handled before the agent clicks `Send OTP`.
+  If the send action does not reveal an OTP field, the agent does not open an
+  OTP gate that cannot be satisfied.
+
+### 4.3 Step advance and loop guard
+
+`_advance()` records a structural snapshot before the click and requires a
+different snapshot afterwards. The compared keys are:
+
+- `url`
+- `title`
+- `section`
+- `heading`
+- `inputCount`
+- `buttonCount`
+- `formAction`
+- `fieldSignature`
+
+`textDigest` is deliberately excluded: a toastr validation message must not be
+reported as "Section 1 saved". The same structural signature cannot be reported
+as saved twice. A step that does not move leaves the gate/flow in place and
+reports that nothing was saved.
+
+The snapshot counts only visible fields and buttons. Single-page portals keep
+every view in the DOM and reveal one at a time; counting hidden inputs made the
+gateway and the registration form look identical, so a real transition was
+reported as "nothing happened".
+
+`_advance()` refuses to run on a dedicated verification page: a `validateotp`
+form action, or a page whose visible fields are all OTP boxes. A full form that
+merely contains an optional OTP field is not a verification page and can still
+be saved (the practice portal keeps its phone box inside section 1).
+
 ## 5. Chat contract
 
 Chat actions go through orchestrator public methods and report the real result:
@@ -210,7 +286,17 @@ sentence cannot fall through to the greeting.
 - `tests/test_chat_assistant.py`: chat entry selection, remembered entry
   requests, login-method/identifier selection, fill recheck, honest status.
 - `tests/test_fill_verification.py`: verified fill, portal-cleared value fails,
+  locked prefilled fields verify, locked empty fields fail,
   `FILL_INCOMPLETE` recheck, dismissal is not a choice.
+- `tests/test_otp_relay.py`: split-box and single-input OTP entry, rejected
+  code retry, dismissal keeps the gate open, generic submit safety, a failed
+  `Send OTP` after an unsolved captcha, AJAX success without a page change, and
+  no demo code on a live portal.
+- `tests/test_advance_detection.py`: text-only changes do not count as a step
+  change, structural changes and newly visible SPA views do, a full form with
+  an OTP field can advance, and a dedicated OTP page cannot.
+- `tests/test_action_resolver.py`: a click that navigates before Playwright
+  returns is a success, not `CLICK_FAILED`.
 
 ## 9. Files
 

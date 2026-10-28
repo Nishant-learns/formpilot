@@ -164,6 +164,61 @@ def test_resolver_refuses_a_different_tag_after_drift():
     run_with_page(scenario)
 
 
+def test_resolver_treats_a_navigation_during_click_as_success():
+    """A link can navigate before Playwright's click call returns.
+
+    The click raises "execution context was destroyed", but the page really
+    moved.  Reporting that as CLICK_FAILED sends the agent into fallback
+    clicks on the new page and loses the navigation.
+    """
+
+    async def scenario(page):
+        await page.set_content(
+            """
+            <html><body>
+              <a id="go" href="#">Get Started</a>
+            </body></html>
+            """
+        )
+        _dom, blueprint = await DOMScanner.scan(page)
+        target = next(
+            item for item in blueprint.elements.values() if item.attributes.get("id") == "go"
+        )
+        resolver = ActionResolver(page, blueprint)
+
+        class NavigatingLocator:
+            async def click(self, timeout=0):
+                await page.goto("data:text/html,<html><body>Signup</body></html>")
+                raise RuntimeError("Execution context was destroyed")
+
+        async def fake_resolve(element_id):
+            return page.main_frame, NavigatingLocator(), target, "blueprint_id"
+
+        async def noop(*args, **kwargs):
+            return None
+
+        async def true(*args, **kwargs):
+            return True
+
+        async def tag(*args, **kwargs):
+            return target.tag
+
+        resolver.resolve = fake_resolve
+        resolver._scroll = noop
+        resolver._tag = tag
+        resolver._is_visible = true
+        resolver._is_enabled = true
+        resolver._hit_test = noop
+
+        result = await resolver.click(target.id)
+
+        assert result.ok, result.to_dict()
+        assert "navigated" in result.method
+        assert page.url.startswith("data:text/html")
+
+    run_with_page(scenario)
+
+
 def test_resolver_uploads_to_the_exact_file_input(tmp_path):
     upload = tmp_path / "document.txt"
     upload.write_text("demo", encoding="utf-8")

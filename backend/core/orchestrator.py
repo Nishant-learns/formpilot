@@ -101,6 +101,8 @@ class FormPilotOrchestrator:
         self._session_values: Dict[str, str] = {}
 
         self._otp_cleared = False
+        self._otp_signature = ""
+        self._last_advance_signature = ""
         self._captcha_signature = ""
         self._last_error_signature = ""
         self._last_gateway_signature = ""
@@ -204,6 +206,8 @@ class FormPilotOrchestrator:
         self._last_recipe_event = ""
         self._session_values = {}
         self._otp_cleared = False
+        self._otp_signature = ""
+        self._last_advance_signature = ""
         self._captcha_signature = ""
         self._last_error_signature = ""
         self._last_gateway_signature = ""
@@ -1063,9 +1067,19 @@ class FormPilotOrchestrator:
                 continue
 
             await self._fill_form(dom)
-            await self._handle_otp(dom)
+            # A login form can show both a captcha and a "Send OTP" button.
+            # The captcha owns the step: clicking Send OTP before it is solved
+            # only produces a toastr and leaves the OTP boxes hidden.
             fresh = await self._scan_dom()
-            await self._handle_captcha(fresh)
+            captcha_pending = await self._handle_captcha(fresh)
+            if captcha_pending:
+                continue
+            fresh = await self._scan_dom()
+            otp_handled = await self._handle_otp(fresh)
+            if otp_handled:
+                # The OTP page has its own checkpoint.  Do not run section
+                # approval or advance on an unverified form.
+                continue
             fresh = await self._scan_dom()
             await self._handle_errors(fresh)
 
@@ -1270,6 +1284,8 @@ class FormPilotOrchestrator:
     async def _click_gateway(self, gateway: Dict[str, Any]):
         self.state = "RUNNING"
         self._otp_cleared = False
+        self._otp_signature = ""
+        self._last_advance_signature = ""
         self._captcha_signature = ""
         self._last_error_signature = ""
         await self.emit_event(
@@ -1325,17 +1341,36 @@ class FormPilotOrchestrator:
                     for (let i = 0; i < text.length && i < 4000; i += 1) {
                         digest = ((digest << 5) - digest + text.charCodeAt(i)) | 0;
                     }
+                    const visible = (el) => {
+                        if (!el || el.getClientRects().length === 0) return false;
+                        const style = window.getComputedStyle(el);
+                        return style.visibility !== 'hidden' && style.display !== 'none';
+                    };
+                    const form = document.querySelector('form');
+                    const fields = Array.from(document.querySelectorAll(
+                        'input:not([type="hidden"]), select, textarea, [contenteditable="true"]'
+                    )).filter(visible);
+                    const fieldSignature = fields.map((el) => [
+                        el.tagName.toLowerCase(),
+                        el.getAttribute('name') || '',
+                        el.id || '',
+                        (el.getAttribute('type') || '').toLowerCase(),
+                        el.getAttribute('maxlength') || '',
+                        el.readOnly ? 'ro' : '',
+                        el.disabled ? 'disabled' : '',
+                    ].join(':')).join('|');
+                    const buttons = Array.from(document.querySelectorAll(
+                        'button, input[type="submit"], input[type="button"], a[role="button"]'
+                    )).filter(visible);
                     return {
                         url: location.href,
                         title: document.title || '',
                         section: active ? (active.id || '') : '',
                         heading: heading ? (heading.innerText || '').trim().slice(0, 160) : '',
-                        inputCount: document.querySelectorAll(
-                            'input:not([type="hidden"]), select, textarea, [contenteditable="true"]'
-                        ).length,
-                        buttonCount: document.querySelectorAll(
-                            'button, input[type="submit"], input[type="button"], a[role="button"]'
-                        ).length,
+                        inputCount: fields.length,
+                        buttonCount: buttons.length,
+                        formAction: form ? (form.getAttribute('action') || '') : '',
+                        fieldSignature: fieldSignature,
                         textDigest: String(digest),
                     };
                 }"""
@@ -1352,7 +1387,21 @@ class FormPilotOrchestrator:
     ) -> bool:
         if not before:
             return False
-        keys = ("url", "title", "section", "heading", "inputCount", "buttonCount", "textDigest")
+        # A toast, a validation message or a spinner changing is not a step
+        # change.  Require the page identity or its field structure to move.
+        # ``textDigest`` is deliberately excluded: HPSC, for example, shows a
+        # toastr error when OTP is empty and the old code counted that as a
+        # successful "Section 1 saved".
+        keys = (
+            "url",
+            "title",
+            "section",
+            "heading",
+            "inputCount",
+            "buttonCount",
+            "formAction",
+            "fieldSignature",
+        )
         deadline = time.monotonic() + max(0.5, timeout_ms / 1000)
         while time.monotonic() < deadline:
             await asyncio.sleep(0.25)
@@ -1678,6 +1727,43 @@ class FormPilotOrchestrator:
             )
         )
 
+    @staticmethod
+    def _is_otp_field(item: Dict[str, Any]) -> bool:
+        haystack = " ".join(
+            str(item.get(key) or "")
+            for key in ("label", "name", "id", "placeholder", "aria_label")
+        ).lower()
+        return bool(
+            re.search(
+                r"otp|one[-\s]?time\s*(?:password|code)|verification\s*code|"
+                r"auth(?:entication)?\s*code",
+                haystack,
+            )
+        )
+
+    @classmethod
+    def _is_otp_page(cls, dom: Dict[str, Any]) -> bool:
+        """True when the page is a dedicated verification step.
+
+        A full registration form can contain an optional OTP field (the
+        practice portal keeps its phone-verification box inside section 1).
+        That is not an OTP page: the agent still has to save the section.
+        HPSC's post-signup page has only the code boxes and a ``validateotp``
+        action, so advancing there would submit the wrong form.
+        """
+        inputs = [
+            item
+            for item in (dom.get("inputs") or [])
+            if str(item.get("type") or "").lower() not in {"submit", "button", "hidden"}
+        ]
+        otp_fields = [item for item in inputs if cls._is_otp_field(item)]
+        if not otp_fields:
+            return False
+        action = str(dom.get("formAction") or "").lower()
+        if "validateotp" in action:
+            return True
+        return not [item for item in inputs if not cls._is_otp_field(item)]
+
     async def _fill_form(self, dom: Dict[str, Any]) -> int:
         """Fill fields, then verify every value against a fresh DOM scan.
 
@@ -1786,6 +1872,48 @@ class FormPilotOrchestrator:
                         continue
                     vault = self.vault_mgr.vault
 
+            # Portals commonly lock fields after a step succeeds (for example,
+            # HPSC marks the mobile/email/password fields read-only once the
+            # first signup step has sent the OTP).  A locked field that already
+            # holds the expected value is filled, not a failure.  Re-typing it
+            # would either fail or make the portal clear the value.
+            if self._field_value_matches(item, str(value)):
+                targets.append(
+                    {
+                        "item": item,
+                        "sem_key": sem_key,
+                        "label": label,
+                        "value": str(value),
+                        "method": "already_filled",
+                        "custom": custom_field,
+                        "kind": "field",
+                        "apply_ok": True,
+                        "reason": "",
+                    }
+                )
+                continue
+
+            if item.get("readOnly") or item.get("disabled"):
+                reason = (
+                    f"'{label}' is read-only."
+                    if item.get("readOnly")
+                    else f"'{label}' is disabled."
+                )
+                targets.append(
+                    {
+                        "item": item,
+                        "sem_key": sem_key,
+                        "label": label,
+                        "value": str(value),
+                        "method": "input",
+                        "custom": custom_field,
+                        "kind": "field",
+                        "apply_ok": False,
+                        "reason": reason,
+                    }
+                )
+                continue
+
             result = await self._apply_field_value(item, str(value))
             targets.append(
                 {
@@ -1845,6 +1973,29 @@ class FormPilotOrchestrator:
             cls._norm_exact(candidate) == cls._norm_exact(actual)
             for candidate in (expected, raw_value)
             if candidate
+        )
+
+    @classmethod
+    def _field_value_matches(cls, item: Dict[str, Any], expected: str) -> bool:
+        """True when the scanned field already holds the value we would enter.
+
+        This is intentionally based on the field's current DOM value, not on
+        the presence of a green check or a portal-specific class.  A locked
+        field with the right value can be verified without touching it; a
+        locked empty field still needs a human.
+        """
+        field_type = str(item.get("type") or "text").lower()
+        if field_type in {"checkbox", "radio"}:
+            wanted = str(expected or "").strip().lower() not in {"", "no", "false", "0", "unchecked"}
+            return bool(item.get("checked")) == wanted
+        actual_values = [
+            str(item.get("value") or ""),
+            str(item.get("selectedText") or ""),
+        ]
+        return any(
+            cls._values_match(item, expected, actual, expected)
+            for actual in actual_values
+            if actual
         )
 
     @staticmethod
@@ -2080,10 +2231,15 @@ class FormPilotOrchestrator:
                 f"Is page par {attempted} mein se {verified} field verify ho gaye.",
             )
         if self.fill_failures:
-            labels = ", ".join(
+            all_labels = [
                 str(failure.get("field_label") or "field")
-                for failure in self.fill_failures[:4]
-            )
+                for failure in self.fill_failures
+            ]
+            shown = all_labels[:4]
+            remaining = len(all_labels) - len(shown)
+            labels = ", ".join(shown)
+            if remaining:
+                labels += f" and {remaining} more"
             await self.emit_event(
                 "SENSE",
                 f"{len(self.fill_failures)} field(s) need attention: {labels}.",
@@ -2396,11 +2552,242 @@ class FormPilotOrchestrator:
 
     # ---------------------------------------------------------------- security checks
 
-    async def _handle_otp(self, dom: Optional[Dict[str, Any]] = None):
-        if self._otp_cleared or not self.page:
-            return
+    @staticmethod
+    def _otp_signature_for(dom: Dict[str, Any]) -> str:
+        fields = dom.get("otpInputs") or []
+        names = "|".join(
+            str(field.get("name") or field.get("id") or field.get("element_id") or "")
+            for field in fields
+        )
+        return f"{dom.get('url') or ''}|{dom.get('formAction') or ''}|{names}"
+
+    async def _enter_otp_code(self, dom: Dict[str, Any], otp: str) -> Dict[str, Any]:
+        """Enter one code into a single input or a row of split OTP boxes.
+
+        HPSC uses six one-character inputs with the same name.  Filling only
+        the first input with the whole code leaves five boxes empty, so the
+        portal never verifies anything.  A page with more than one distinct
+        OTP group is handed back to the human instead of guessing which code
+        belongs where.
+        """
+        items = [
+            item
+            for item in (dom.get("inputs") or [])
+            if self._is_otp_field(item)
+        ]
+        if not items:
+            return {"success": False, "reason": "The verification-code fields disappeared."}
+
+        groups: Dict[str, List[Dict[str, Any]]] = {}
+        for item in items:
+            key = str(item.get("name") or item.get("id") or item.get("element_id") or "")
+            groups.setdefault(key, []).append(item)
+        if len(groups) > 1:
+            return {
+                "success": False,
+                "reason": (
+                    "This page has more than one verification-code group. "
+                    "Enter the codes directly in the live browser."
+                ),
+            }
+
+        if len(items) == 1:
+            characters = [otp]
+        else:
+            if len(otp) != len(items):
+                return {
+                    "success": False,
+                    "reason": f"The page expects {len(items)} digits, but the code has {len(otp)}.",
+                }
+            characters = list(otp)
+
+        for item, character in zip(items, characters):
+            selector = str(item.get("css") or "")
+            if not selector and item.get("id"):
+                selector = f"#{item['id']}"
+            if not selector:
+                return {"success": False, "reason": "A verification-code box could not be located."}
+            try:
+                box = self.page.locator(selector).first
+                if await box.count() == 0:
+                    return {
+                        "success": False,
+                        "reason": "A verification-code box disappeared before it could be filled.",
+                    }
+                await box.fill(character, timeout=5000)
+                # HPSC's auto-advance listens for keyup; dispatching it keeps
+                # the visible focus and the serialized form in sync.
+                try:
+                    await box.dispatch_event("keyup", {"key": character})
+                except Exception:
+                    pass
+            except Exception as exc:
+                return {"success": False, "reason": f"A verification-code box could not be filled: {exc}"}
+        return {"success": True}
+
+    async def _submit_otp_form(self, dom: Dict[str, Any]) -> Dict[str, Any]:
+        """Submit only the OTP form, never a generic final-submit button."""
+        if not self.page:
+            return {"success": False, "reason": "The browser page is no longer available."}
+        try:
+            action = str(
+                await self.page.evaluate(
+                    "() => { const f = document.querySelector('form'); "
+                    "return f ? (f.getAttribute('action') || '') : ''; }"
+                )
+                or ""
+            )
+        except Exception:
+            action = str(dom.get("formAction") or "")
+        lower_action = action.lower()
+
+        button = None
+        for selector in (
+            "#btn-verify-otp",
+            "#verify_otp_btn",
+            "#signup_submit",
+            "button[type='submit']",
+            "input[type='submit']",
+        ):
+            try:
+                candidate = self.page.locator(selector).first
+                if await candidate.count() > 0 and await candidate.is_visible():
+                    button = candidate
+                    break
+            except Exception:
+                continue
+        if button is None:
+            names = ["Verify OTP", "Verify", "Confirm OTP", "Submit OTP"]
+            if "validateotp" in lower_action:
+                names.append("Create Account")
+            for name in names:
+                try:
+                    candidate = self.page.get_by_role(
+                        "button", name=re.compile(rf"^{re.escape(name)}$", re.IGNORECASE)
+                    ).first
+                    if await candidate.count() > 0 and await candidate.is_visible():
+                        button = candidate
+                        break
+                except Exception:
+                    continue
+        if button is None:
+            return {
+                "success": False,
+                "reason": "The page does not expose a button that submits the verification code.",
+            }
+
+        if "validateotp" not in lower_action:
+            try:
+                text = (await button.inner_text()).strip().lower()
+            except Exception:
+                text = ""
+            if not re.search(r"verify|confirm|otp|validate", text):
+                return {
+                    "success": False,
+                    "reason": "The only available button is not a verification button.",
+                }
+
+        before = await self._page_snapshot()
+        try:
+            await button.click(timeout=8000)
+        except Exception as exc:
+            return {"success": False, "reason": f"The verification form could not be submitted: {exc}"}
+
+        changed = await self._wait_for_page_change(before, timeout_ms=15000)
+        try:
+            fresh = await self._scan_dom()
+        except Exception:
+            fresh = {}
+        if not changed:
+            # Some portals verify the code over AJAX and leave the page
+            # structure alone, showing a persistent "verification complete"
+            # state instead.  Accept that explicit success signal; a transient
+            # toastr alone is still not enough.
+            if await self._otp_verification_complete():
+                return {"success": True}
+            visible = str(fresh.get("visibleText") or "").lower()
+            errors = [str(item) for item in (fresh.get("errors") or []) if str(item).strip()]
+            reason = errors[0] if errors else ""
+            for phrase in (
+                "please enter mobile otp",
+                "please enter email otp",
+                "invalid otp",
+                "incorrect otp",
+                "wrong otp",
+                "otp expired",
+            ):
+                if phrase in visible:
+                    reason = phrase.capitalize() + "."
+                    break
+            return {
+                "success": False,
+                "reason": reason or "The portal did not confirm the verification code.",
+            }
+
+        if not (fresh.get("otpInputs") or []):
+            return {"success": True}
+        url = str(fresh.get("url") or "").lower()
+        visible = str(fresh.get("visibleText") or "").lower()
+        if "login" in url and "signup" not in url:
+            return {"success": True}
+        if self._otp_success_text(visible):
+            return {"success": True}
+        errors = [str(item) for item in (fresh.get("errors") or []) if str(item).strip()]
+        return {
+            "success": False,
+            "reason": errors[0] if errors else "The portal did not confirm the verification code.",
+        }
+
+    @staticmethod
+    def _otp_success_text(visible: str) -> bool:
+        text = str(visible or "").lower()
+        return any(
+            token in text
+            for token in (
+                "account created",
+                "registration successful",
+                "verification successful",
+                "verification complete",
+                "otp verified",
+                "phone verified",
+                "mobile verified",
+                "email verified",
+                "login to continue",
+            )
+        )
+
+    async def _otp_verification_complete(self) -> bool:
+        try:
+            fresh = await self._scan_dom()
+        except Exception:
+            return False
+        if not (fresh.get("otpInputs") or []):
+            return True
+        url = str(fresh.get("url") or "").lower()
+        if "login" in url and "signup" not in url:
+            return True
+        return self._otp_success_text(str(fresh.get("visibleText") or ""))
+
+    async def _handle_otp(self, dom: Optional[Dict[str, Any]] = None) -> bool:
+        """Relay a human-supplied OTP and verify that the portal accepted it.
+
+        Returns True when the OTP checkpoint was handled (success, retry or
+        stop), so the main loop rescans instead of continuing to the section
+        approval and advance steps on an unverified page.
+        """
+        if not self.page:
+            return False
         dom = dom or {}
         otp_inputs = dom.get("otpInputs") or []
+        signature = self._otp_signature_for(dom)
+        if self._otp_cleared:
+            if signature == self._otp_signature:
+                return False
+            # A new OTP page (for example the login page after registration)
+            # owns a new checkpoint.
+            self._otp_cleared = False
+            self._otp_signature = ""
+
         selector = "#btn-send-otp, button:has-text('Send OTP'), button:has-text('Get OTP'), button:has-text('Send code')"
         button = None
         try:
@@ -2410,27 +2797,49 @@ class FormPilotOrchestrator:
         except Exception:
             button = None
         if button is None and not otp_inputs:
-            return
+            return False
 
         await self.emit_event(
             "THINK",
             "The portal needs to verify your phone number.",
             "Portal phone number verify karna chahta hai.",
         )
-        if button is not None:
+        if button is not None and not otp_inputs:
             try:
                 await button.click(timeout=8000)
             except Exception:
                 pass
             await self.page.wait_for_timeout(900)
+            try:
+                dom = await self._scan_dom()
+                otp_inputs = dom.get("otpInputs") or []
+                signature = self._otp_signature_for(dom)
+            except Exception:
+                pass
+            if not otp_inputs:
+                # The send button did not reveal a code field (usually because
+                # a captcha is still empty or the portal rejected the request).
+                # Opening an OTP gate here would ask for a code that cannot be
+                # entered anywhere, so leave the page to the captcha/error
+                # checkpoints instead.
+                await self.emit_event(
+                    "SENSE",
+                    "The portal did not show a verification-code field. Check the page and try again.",
+                    "Portal ne verification code ka field nahi dikhaya. Page check karke dobara koshish karein.",
+                )
+                return False
 
         config = self.tinyfish_mgr.config
+        base_description = (
+            "Enter the code sent to the phone number saved in your details. "
+            "FormPilot never stores this code."
+        )
         gate = {
             "gate_type": "OTP_RELAY",
             "title": "Enter the verification code",
             "hindi_title": "Verification code enter karein",
             "hindi_audio_text": "Aapke phone par code bheja gaya hai. Woh code yahan enter karein.",
-            "description": "Enter the 6-digit code sent to the phone number saved in your details. FormPilot never stores this code.",
+            "description": base_description,
             "recipient": self._masked_phone(self.vault_mgr.vault.mobile),
             "ntfy_topic": config.ntfy_topic,
             "ntfy_url": f"https://ntfy.sh/{config.ntfy_topic}",
@@ -2441,74 +2850,127 @@ class FormPilotOrchestrator:
                 "The code is used once and is never stored.",
             ],
         }
-        if settings.DEMO_MODE:
+        # The practice portal exposes a fixed code; a real portal sends a real
+        # code to the human's phone.  Never advertise the demo code on a live
+        # portal, where it would only mislead the candidate.
+        adapter_name = getattr(self._adapter, "name", "")
+        portal_url = str(getattr(self.page, "url", "") or "")
+        is_simulator = adapter_name == "simulator" or "gov-portal-demo" in portal_url
+        if settings.DEMO_MODE and is_simulator:
             gate["demo_otp"] = settings.DEMO_OTP
             gate["description"] += f" Demo mode code: {settings.DEMO_OTP}."
-        self.active_gate = gate
-        self.state = "WAITING_FOR_USER"
-        if self.live:
-            self.live.set_allow_control(True, "Enter the verification code in the live browser.")
-        await self.emit_event(
-            "DECIDE",
-            "Waiting for the verification code.",
-            "Verification code ka intezaar hai.",
-            gate,
-            force_screenshot=True,
-        )
-        response = await self._wait_for_user_response()
-        self.active_gate = None
-        if self.live:
-            self.live.set_allow_control(False, "The agent is driving again.")
-        self.state = "RUNNING" if self.is_running else self.state
-        if response.get("action") in {"STOPPED", "TIMEOUT", "DISMISS"}:
-            if response.get("action") == "TIMEOUT":
-                self.is_running = False
-            return
-        if response.get("action") == "HANDOFF_COMPLETE":
-            self._otp_cleared = True
-            await self.emit_event(
-                "ACT",
-                "Verification completed in the live browser.",
-                "Live browser mein verification pura ho gaya.",
-            )
-            return
 
-        otp = str(response.get("otp") or response.get("code") or "").strip()
-        if not otp:
-            return
-        try:
-            otp_input = self.page.locator("input[id*='otp' i]:visible, input[name*='otp' i]:visible").first
-            if await otp_input.count() == 0:
-                return
-            await otp_input.fill(otp, timeout=8000)
-            verify = self.page.locator("#btn-verify-otp, button:has-text('Verify OTP'), button:has-text('Verify')").first
-            if await verify.count() > 0 and await verify.is_visible():
-                await verify.click(timeout=8000)
-            await self.page.wait_for_timeout(700)
-            self._otp_cleared = True
+        while self.is_running:
+            self.active_gate = gate
+            self.state = "WAITING_FOR_USER"
+            if self.live:
+                self.live.set_allow_control(True, "Enter the verification code in the live browser.")
             await self.emit_event(
-                "ACT",
-                "Verification code submitted.",
-                "Verification code submit ho gaya.",
+                "DECIDE",
+                "Waiting for the verification code.",
+                "Verification code ka intezaar hai.",
+                gate,
+                force_screenshot=True,
             )
-        except Exception:
+            response = await self._wait_for_user_response()
+            self.active_gate = None
+            if self.live:
+                self.live.set_allow_control(False, "The agent is driving again.")
+            self.state = "RUNNING" if self.is_running else self.state
+            action = str(response.get("action") or "")
+            if action in {"STOPPED", "TIMEOUT"}:
+                self.is_running = False
+                if action == "TIMEOUT":
+                    self.last_error = "No response was received. The application was paused."
+                return True
+            if action == "DISMISS":
+                await self.emit_event(
+                    "SENSE",
+                    "The verification code is still needed. Enter it below or in the live browser.",
+                    "Verification code abhi bhi chahiye. Neeche ya live browser mein enter karein.",
+                )
+                continue
+            if action == "HANDOFF_COMPLETE":
+                if await self._otp_verification_complete():
+                    self._otp_cleared = True
+                    self._otp_signature = signature
+                    await self.emit_event(
+                        "ACT",
+                        "Verification completed in the live browser.",
+                        "Live browser mein verification pura ho gaya.",
+                    )
+                    return True
+                await self.emit_event(
+                    "SENSE",
+                    "The code is entered but the portal has not verified it yet. Submit it in the live browser, then continue.",
+                    "Code enter hai lekin portal ne verify nahi kiya. Live browser mein submit karein, phir continue karein.",
+                )
+                continue
+
+            otp = re.sub(r"\D", "", str(response.get("otp") or response.get("code") or ""))
+            if not otp:
+                await self.emit_event(
+                    "SENSE",
+                    "Enter the verification code to continue.",
+                    "Aage badhne ke liye verification code enter karein.",
+                )
+                continue
+
+            entered = await self._enter_otp_code(dom, otp)
+            if not entered.get("success"):
+                await self.emit_event(
+                    "SENSE",
+                    str(entered.get("reason") or "The verification code could not be entered."),
+                    "Verification code enter nahi ho paya. Dobara koshish karein.",
+                )
+                continue
+
+            submitted = await self._submit_otp_form(dom)
+            if submitted.get("success"):
+                self._otp_cleared = True
+                self._otp_signature = signature
+                await self.emit_event(
+                    "ACT",
+                    "Verification code accepted.",
+                    "Verification code accept ho gaya.",
+                )
+                return True
+
+            reason = str(submitted.get("reason") or "The portal did not accept the code.")
+            gate["description"] = f"{base_description} Last attempt: {reason}"
             await self.emit_event(
                 "SENSE",
-                "The verification code could not be submitted. Please check it and try again.",
-                "Verification code submit nahi ho paya. Dobara koshish karein.",
+                f"The verification code was not accepted: {reason}",
+                "Verification code accept nahi hua. Dobara check karke enter karein.",
             )
+            try:
+                dom = await self._scan_dom()
+                signature = self._otp_signature_for(dom)
+            except Exception:
+                pass
+        return True
 
-    async def _handle_captcha(self, dom: Dict[str, Any]):
+    @staticmethod
+    def _captcha_signature_for(dom: Dict[str, Any]) -> str:
         captchas = dom.get("captchaElements") or []
-        if not captchas or not self.page:
-            return
-
         kinds = sorted({str(captcha.get("kind") or "unknown") for captcha in captchas})
-        signature = f"{dom.get('url')}|{'|'.join(kinds)}|" + "|".join(
+        return f"{dom.get('url')}|{'|'.join(kinds)}|" + "|".join(
             str(captcha.get("id") or captcha.get("tagName") or "") for captcha in captchas[:3]
         )
+
+    async def _handle_captcha(self, dom: Dict[str, Any]) -> bool:
+        """Handle a security check; return True while it is still pending.
+
+        ``True`` means the main loop must not click "Send OTP", approve a
+        section or advance: the human has not cleared the challenge yet.
+        """
+        captchas = dom.get("captchaElements") or []
+        if not captchas or not self.page:
+            return False
+
+        signature = self._captcha_signature_for(dom)
         if signature == self._captcha_signature:
-            return
+            return False
 
         interactive = next(
             (
@@ -2521,7 +2983,7 @@ class FormPilotOrchestrator:
         )
         if interactive and self.live:
             await self._captcha_live_handoff(captchas, interactive, signature)
-            return
+            return signature != self._captcha_signature
 
         # Text CAPTCHA (for example "hJ8ik)3") can be entered in the gate.
         captcha = next(
@@ -2572,18 +3034,18 @@ class FormPilotOrchestrator:
         if response.get("action") in {"STOPPED", "TIMEOUT", "DISMISS"}:
             if response.get("action") == "TIMEOUT":
                 self.is_running = False
-            return
+            return True
         if response.get("action") == "HANDOFF_COMPLETE":
             self._captcha_signature = signature
-            return
+            return False
 
         code = str(response.get("code") or response.get("value") or "").strip()
         if not code:
-            return
+            return True
         try:
             field = self.page.locator("input[id*='captcha' i]:visible, input[name*='captcha' i]:visible").first
             if await field.count() == 0:
-                return
+                return True
             await field.fill(code, timeout=8000)
             await field.dispatch_event("change")
             self._captcha_signature = signature
@@ -2592,12 +3054,14 @@ class FormPilotOrchestrator:
                 "Security check completed.",
                 "Security check complete ho gaya.",
             )
+            return False
         except Exception:
             await self.emit_event(
                 "SENSE",
                 "The security check could not be submitted.",
                 "Security check submit nahi ho paya.",
             )
+            return True
 
     async def _captcha_live_handoff(
         self,
@@ -2658,7 +3122,11 @@ class FormPilotOrchestrator:
                 self.last_error = "The security check was left open, so the application paused."
             return
         if action == "DISMISS":
-            self._captcha_signature = signature
+            await self.emit_event(
+                "SENSE",
+                "The security check is still open. Complete it in the live browser, then continue.",
+                "Security check abhi khula hai. Live browser mein pura karein, phir continue karein.",
+            )
             return
         if action not in {"HANDOFF_COMPLETE", "CONTINUE", "CAPTCHA_SUBMIT"}:
             return
@@ -2849,6 +3317,14 @@ class FormPilotOrchestrator:
             )
         return approved
 
+    @staticmethod
+    def _dom_signature(dom: Dict[str, Any]) -> str:
+        fields = "|".join(
+            f"{item.get('name') or item.get('id') or ''}:{item.get('type') or ''}"
+            for item in (dom.get("inputs") or [])
+        )
+        return f"{dom.get('url') or ''}|{dom.get('formAction') or ''}|{fields}"
+
     async def _advance(self, dom: Dict[str, Any]) -> bool:
         adapter = self._adapter or get_adapter(self.page.url if self.page else "")
         # Field filling and the security checkpoints may have re-rendered the
@@ -2858,6 +3334,13 @@ class FormPilotOrchestrator:
             dom = await self._scan_dom()
         except Exception:
             pass
+        if self._is_otp_page(dom):
+            await self.emit_event(
+                "SENSE",
+                "The verification code is still required before this step can continue.",
+                "Aage badhne se pehle verification code zaroori hai.",
+            )
+            return False
         button = adapter.find_next_button(dom)
         if not button:
             if adapter.is_payment_page(self.page, dom):
@@ -2869,6 +3352,7 @@ class FormPilotOrchestrator:
         if self._is_final_action(button):
             await self._trigger_pre_payment_lock(final_action=True)
             return True
+        before_signature = self._dom_signature(dom)
         before = await self._page_snapshot()
         await self.emit_event(
             "ACT",
@@ -2892,6 +3376,18 @@ class FormPilotOrchestrator:
         self._last_error_signature = ""
         try:
             fresh = await self._scan_dom()
+            fresh_signature = self._dom_signature(fresh)
+            if fresh_signature == before_signature or fresh_signature == self._last_advance_signature:
+                # A validation toast or a transient overlay can change the
+                # page text without moving the form.  Never report a save
+                # twice for the same form.
+                await self.emit_event(
+                    "SENSE",
+                    "The portal is still showing the same step. Nothing was saved.",
+                    "Portal abhi bhi wahi step dikha raha hai. Kuch save nahi hua.",
+                )
+                return False
+            self._last_advance_signature = fresh_signature
             self.current_section = adapter.current_step(self.page, fresh)
             visible = str(fresh.get("visibleText") or "").lower()
             if any(token in visible for token in ("dashboard", "logged in", "sign out", "logout")):

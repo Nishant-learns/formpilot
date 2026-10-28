@@ -83,6 +83,77 @@ def test_a_value_cleared_by_the_portal_is_reported_as_failed():
     run_with_page(scenario)
 
 
+def test_read_only_fields_that_already_hold_the_value_are_verified():
+    """HPSC locks mobile/email/password after sending the OTP.
+
+    Those fields are filled, not failed.  Re-typing them is both impossible
+    and unnecessary.
+    """
+
+    async def scenario(page):
+        await page.set_content(
+            """
+            <html><body>
+              <form action="/site/validateotp">
+                <label for="mobile">Mobile Number</label>
+                <input id="mobile" name="SignupForm[mobile_number]" type="text"
+                       value="7654557189" readonly>
+                <label for="email">Email Id</label>
+                <input id="email" name="SignupForm[email_id]" type="text"
+                       value="nishant@example.com" readonly>
+                <label for="password">Create Password</label>
+                <input id="password" name="SignupForm[password_hash]" type="password"
+                       value="Secret@123" readonly>
+              </form>
+            </body></html>
+            """
+        )
+        orchestrator = _orchestrator(
+            page,
+            {
+                "mobile": "7654557189",
+                "email": "nishant@example.com",
+                "account_password": "Secret@123",
+            },
+        )
+        dom = await orchestrator._scan_dom()
+
+        assert dom["inputs"][0]["readOnly"] is True
+        verified = await orchestrator._fill_form(dom)
+
+        assert verified == 3
+        assert orchestrator.fill_summary["status"] == "FILLED"
+        assert orchestrator.fill_summary["failed"] == 0
+        assert orchestrator.fill_failures == []
+        assert await page.input_value("#mobile") == "7654557189"
+
+    run_with_page(scenario)
+
+
+def test_read_only_empty_field_is_reported_for_human_review():
+    async def scenario(page):
+        await page.set_content(
+            """
+            <html><body>
+              <label for="mobile">Mobile Number</label>
+              <input id="mobile" name="SignupForm[mobile_number]" type="text" readonly>
+            </body></html>
+            """
+        )
+        orchestrator = _orchestrator(page, {"mobile": "7654557189"})
+        dom = await orchestrator._scan_dom()
+
+        verified = await orchestrator._fill_form(dom)
+
+        assert verified == 0
+        assert orchestrator.fill_summary["status"] == "FAILED"
+        assert orchestrator.fill_failures[0]["status"] == "FAILED"
+        assert "read-only" in orchestrator.fill_failures[0]["reason"]
+        assert await page.input_value("#mobile") == ""
+
+    run_with_page(scenario)
+
+
 def test_fill_incomplete_gate_rechecks_instead_of_continuing():
     async def scenario():
         orchestrator = FormPilotOrchestrator()
