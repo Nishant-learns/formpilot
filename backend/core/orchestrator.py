@@ -110,6 +110,25 @@ class FormPilotOrchestrator:
 
     # ---------------------------------------------------------------- public API
 
+    def _engine_session_info(self) -> Optional[Dict[str, Any]]:
+        """Safe, diagnostic view of the cloud/local browser session.
+
+        The CDP URL is deliberately omitted: it is a live control channel, not
+        status information.  ``fallback_reason`` carries the TinyFish error
+        code (for example ``INSUFFICIENT_CREDITS``) when the cloud browser
+        could not start and the run continued locally.
+        """
+        session = self._session
+        if not session:
+            return None
+        return {
+            "session_id": session.session_id,
+            "is_cloud": session.is_cloud,
+            "proxy_node": session.proxy_node,
+            "country_code": session.country_code,
+            "fallback_reason": session.fallback_reason,
+        }
+
     def get_state(self) -> Dict[str, Any]:
         browser_open = False
         try:
@@ -127,6 +146,7 @@ class FormPilotOrchestrator:
             "run_mode": self.run_mode,
             "browser_open": browser_open,
             "live_session": self.live.public_info() if self.live and not self.live.closed else None,
+            "engine_session": self._engine_session_info(),
             "form_map": self.form_map,
             "blueprint": self.blueprint.summary() if self.blueprint else None,
             "recipe": self._recipe_status,
@@ -519,9 +539,10 @@ class FormPilotOrchestrator:
         try:
             session = await self.tinyfish_mgr.create_cloud_browser_session(target_url)
         except TinyFishError as exc:
+            reason_code = getattr(exc, "code", "") or "cloud_browser_error"
             await self.emit_event(
                 "SENSE",
-                "The cloud browser is unavailable right now. Continuing in this device's browser.",
+                f"The cloud browser is unavailable right now ({reason_code}). Continuing in this device's browser.",
                 "Cloud browser abhi available nahi hai. Is device ke browser mein aage badh rahe hain.",
             )
             session = TinyFishSession(
@@ -679,6 +700,7 @@ class FormPilotOrchestrator:
             "run_mode": self.run_mode,
             "last_error": self.last_error,
             "live_session": self.live.public_info() if self.live and not self.live.closed else None,
+            "engine_session": self._engine_session_info(),
             "form_map": self.form_map,
             "blueprint": self.blueprint.summary() if self.blueprint else None,
             "recipe": self._recipe_status,

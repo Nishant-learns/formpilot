@@ -27,8 +27,25 @@ from pydantic import BaseModel, Field, field_validator
 from . import settings
 
 
+def _int_or_text(value: Optional[str]) -> Optional[Any]:
+    """Return a numeric header as an int when possible, otherwise its text."""
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return str(value).strip()
+
+
 class TinyFishError(RuntimeError):
-    """A non-success response from TinyFish, with enough detail to debug it."""
+    """A non-success response from TinyFish, with enough detail to debug it.
+
+    TinyFish returns errors as ``{"error": {"code": ..., "message": ...,
+    "details": ...}}``.  Keeping the machine-readable code, details and
+    rate-limit headers separate from the human message is what lets the
+    settings panel and the run log distinguish an invalid key from an empty
+    wallet or a per-minute throttle.
+    """
 
     def __init__(
         self,
@@ -37,11 +54,32 @@ class TinyFishError(RuntimeError):
         status_code: Optional[int] = None,
         code: str = "tinyfish_error",
         request_id: Optional[str] = None,
+        details: Optional[dict[str, Any]] = None,
+        retry_after: Optional[Any] = None,
+        rate_limit: Optional[dict[str, Any]] = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.code = code
         self.request_id = request_id
+        self.details = dict(details or {})
+        self.retry_after = retry_after
+        self.rate_limit = dict(rate_limit or {})
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "code": self.code,
+            "message": str(self),
+            "status_code": self.status_code,
+            "request_id": self.request_id,
+        }
+        if self.details:
+            payload["details"] = self.details
+        if self.retry_after is not None:
+            payload["retry_after"] = self.retry_after
+        if self.rate_limit:
+            payload["rate_limit"] = self.rate_limit
+        return payload
 
 
 class EngineConfig(BaseModel):
@@ -190,22 +228,64 @@ class TinyFishClient:
     @staticmethod
     def _error_from_response(response: httpx.Response, operation: str) -> TinyFishError:
         request_id = response.headers.get("x-request-id") or response.headers.get("request-id")
-        detail = ""
+        body: Any = {}
         try:
             body = response.json()
-            if isinstance(body, dict):
-                detail = str(body.get("message") or body.get("error") or body.get("detail") or "")
         except Exception:
-            detail = response.text[:300]
+            body = {}
+
+        code = ""
+        detail = ""
+        details: dict[str, Any] = {}
+        if isinstance(body, dict):
+            error_obj = body.get("error")
+            if isinstance(error_obj, dict):
+                code = str(error_obj.get("code") or "").strip()
+                detail = str(error_obj.get("message") or "").strip()
+                raw_details = error_obj.get("details")
+                if isinstance(raw_details, dict):
+                    details = raw_details
+            elif isinstance(error_obj, str):
+                detail = error_obj.strip()
+            if not detail:
+                detail = str(body.get("message") or body.get("detail") or "").strip()
+        if not detail:
+            detail = response.text[:300].strip()
+
+        # TinyFish normally supplies a code.  These fallbacks keep the older
+        # behaviour for responses that only carry an HTTP status.
+        if not code:
+            code = {
+                401: "unauthorized",
+                402: "insufficient_credits",
+                403: "unauthorized",
+                429: "rate_limit_exceeded",
+            }.get(response.status_code, "tinyfish_http_error")
+
+        rate_limit: dict[str, Any] = {}
+        for header, key in (
+            ("x-ratelimit-limit", "limit"),
+            ("x-ratelimit-remaining", "remaining"),
+            ("x-ratelimit-reset", "reset"),
+        ):
+            value = _int_or_text(response.headers.get(header))
+            if value is not None:
+                rate_limit[key] = value
+        retry_after = _int_or_text(response.headers.get("retry-after"))
+
         message = f"TinyFish {operation} failed with HTTP {response.status_code}"
+        if code and code != "tinyfish_http_error":
+            message += f" [{code}]"
         if detail:
             message += f": {detail}"
-        code = "unauthorized" if response.status_code in (401, 403) else "tinyfish_http_error"
         return TinyFishError(
             message,
             status_code=response.status_code,
             code=code,
             request_id=request_id,
+            details=details,
+            retry_after=retry_after,
+            rate_limit=rate_limit,
         )
 
     # ------------------------------------------------------------------ browser
@@ -413,10 +493,15 @@ class TinyFishClient:
             return {
                 "success": False,
                 "status": exc.code,
+                "status_code": exc.status_code,
                 "mode": self.effective_mode(),
                 "message": str(exc),
                 "latency_ms": latency,
                 "proxy_region": self.config.proxy_region.upper(),
+                "request_id": exc.request_id,
+                "details": exc.details,
+                "retry_after": exc.retry_after,
+                "rate_limit": exc.rate_limit,
             }
         except Exception as exc:  # defensive: never crash a settings modal
             return {

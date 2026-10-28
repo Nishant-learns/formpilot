@@ -152,3 +152,104 @@ def test_local_targets_never_call_the_cloud_browser(tmp_path, monkeypatch):
 
     assert session.is_cloud is False
     assert "Local" in session.proxy_node
+
+
+def test_insufficient_credits_keeps_the_tinyfish_code_and_details(tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            402,
+            json={
+                "error": {
+                    "code": "INSUFFICIENT_CREDITS",
+                    "message": "Run not started: the wallet balance is too low ($-2.50).",
+                    "details": {
+                        "reason": "wallet_out_of_funds",
+                        "balance": "-2.50",
+                        "currency": "usd",
+                        "wallet_url": "https://agent.tinyfish.ai/wallet",
+                    },
+                }
+            },
+        )
+
+    client = TinyFishClient(
+        config_path=str(tmp_path / "engine_config.json"),
+        transport=httpx.MockTransport(handler),
+    )
+    result = asyncio.run(client.test_connection(api_key="test-key"))
+
+    assert result["success"] is False
+    assert result["status"] == "INSUFFICIENT_CREDITS"
+    assert result["status_code"] == 402
+    assert result["details"]["reason"] == "wallet_out_of_funds"
+    assert result["details"]["balance"] == "-2.50"
+    assert "INSUFFICIENT_CREDITS" in result["message"]
+
+
+def test_rate_limit_exposes_retry_after_and_budget(tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            headers={
+                "Retry-After": "30",
+                "X-RateLimit-Limit": "30",
+                "X-RateLimit-Remaining": "0",
+                "X-RateLimit-Reset": "1790000000",
+                "X-Request-ID": "req-123",
+            },
+            json={
+                "error": {
+                    "code": "RATE_LIMIT_EXCEEDED",
+                    "message": "Rate limit exceeded.",
+                    "details": {"limit": 30, "unit": "requests", "window_seconds": 60},
+                }
+            },
+        )
+
+    client = TinyFishClient(
+        config_path=str(tmp_path / "engine_config.json"),
+        transport=httpx.MockTransport(handler),
+    )
+    result = asyncio.run(client.test_connection(api_key="test-key"))
+
+    assert result["success"] is False
+    assert result["status"] == "RATE_LIMIT_EXCEEDED"
+    assert result["status_code"] == 429
+    assert result["retry_after"] == 30
+    assert result["rate_limit"] == {"limit": 30, "remaining": 0, "reset": 1790000000}
+    assert result["details"]["unit"] == "requests"
+    assert result["request_id"] == "req-123"
+
+
+def test_invalid_api_key_keeps_the_tinyfish_code(tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            401,
+            json={"error": {"code": "INVALID_API_KEY", "message": "Invalid or expired API key"}},
+        )
+
+    client = TinyFishClient(
+        config_path=str(tmp_path / "engine_config.json"),
+        transport=httpx.MockTransport(handler),
+    )
+    result = asyncio.run(client.test_connection(api_key="bad-key"))
+
+    assert result["success"] is False
+    assert result["status"] == "INVALID_API_KEY"
+    assert result["status_code"] == 401
+    assert result["details"] == {}
+
+
+def test_error_without_a_tinyfish_code_falls_back_to_the_http_status(tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, text="Too many requests")
+
+    client = TinyFishClient(
+        config_path=str(tmp_path / "engine_config.json"),
+        transport=httpx.MockTransport(handler),
+    )
+    result = asyncio.run(client.test_connection(api_key="test-key"))
+
+    assert result["status"] == "rate_limit_exceeded"
+    assert result["status_code"] == 429
+    assert "Too many requests" in result["message"]

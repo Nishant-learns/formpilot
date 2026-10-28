@@ -298,28 +298,76 @@ function SettingsContent({ onClose, onConfigSaved }) {
 
                 {testResult && (
                   <div
-                    className={`text-xs font-semibold px-3 py-1.5 rounded-lg border flex items-center gap-1.5 ${
+                    className={`text-xs font-semibold px-3 py-1.5 rounded-lg border flex flex-col items-start gap-1 ${
                       testResult.success
                         ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
                         : 'bg-amber-500/10 text-amber-300 border-amber-500/30'
                     }`}
                   >
-                    {testResult.success ? (
-                      <CheckCircle2 className="w-3.5 h-3.5" />
-                    ) : (
-                      <AlertTriangle className="w-3.5 h-3.5" />
+                    <div className="flex items-center gap-1.5">
+                      {testResult.success ? (
+                        <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                      ) : (
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                      )}
+                      <span>{testResult.message}</span>
+                    </div>
+                    {!testResult.success && (
+                      <div className="flex flex-wrap items-center gap-2 pl-5 font-mono text-[10px] text-slate-400">
+                        {testResult.status && (
+                          <span className="rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-amber-200">
+                            {testResult.status}
+                          </span>
+                        )}
+                        {testResult.status_code && <span>HTTP {testResult.status_code}</span>}
+                        {testResult.retry_after != null && (
+                          <span>Retry in {testResult.retry_after}s</span>
+                        )}
+                        {testResult.rate_limit?.remaining != null && (
+                          <span>
+                            {testResult.rate_limit.remaining}
+                            {testResult.rate_limit.limit != null ? `/${testResult.rate_limit.limit}` : ''} left
+                            this minute
+                          </span>
+                        )}
+                        {['INSUFFICIENT_CREDITS', 'FREE_ALLOWANCE_EXHAUSTED', 'FORBIDDEN'].includes(
+                          testResult.status,
+                        ) && (
+                          <a
+                            href="https://agent.tinyfish.ai/wallet"
+                            target="_blank"
+                            rel="noreferrer"
+                            className="underline text-amber-200"
+                          >
+                            Open wallet
+                          </a>
+                        )}
+                      </div>
                     )}
-                    <span>{testResult.message}</span>
                   </div>
                 )}
               </div>
 
               {wallet?.available_balance != null && (
-                <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
-                  <Wallet className="w-3.5 h-3.5 text-emerald-400" />
+                <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-400">
+                  <Wallet
+                    className={`w-3.5 h-3.5 ${
+                      Number(wallet.available_balance) > 0 ? 'text-emerald-400' : 'text-red-400'
+                    }`}
+                  />
                   <span>
                     TinyFish balance: {wallet.available_balance} {wallet.currency || 'USD'}
                   </span>
+                  {Number(wallet.available_balance) <= 0 && (
+                    <a
+                      href="https://agent.tinyfish.ai/wallet"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-amber-300 underline font-semibold"
+                    >
+                      Top up to resume cloud runs
+                    </a>
+                  )}
                 </div>
               )}
             </div>

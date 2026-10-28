@@ -119,6 +119,34 @@ All requests send the key in the `X-API-Key` header. The key is read from `TINYF
 
 Cloud browser sessions are metered by TinyFish. Use them deliberately, and check the wallet endpoint in **Settings → TinyFish connection** before a long run.
 
+### Checking status and limits
+
+Two endpoints answer “is TinyFish working, and do I have budget?”:
+
+```bash
+# Free Search call: verifies the key and connectivity without spending the wallet
+curl -s -X POST http://127.0.0.1:8000/api/engine/test-tinyfish \
+  -H 'Content-Type: application/json' -d '{}'
+
+# Wallet balance
+curl -s http://127.0.0.1:8000/api/engine/wallet
+```
+
+`test-tinyfish` returns `status: authenticated` when the key and Search API are working. On failure it returns the exact TinyFish code instead of a generic error:
+
+| `status` | Meaning |
+|---|---|
+| `missing_key` / `INVALID_API_KEY` | No key, or the key was revoked. |
+| `INSUFFICIENT_CREDITS` | Wallet balance is zero or negative (HTTP 402). Not retryable until you top up; minimum $10. |
+| `FREE_ALLOWANCE_EXHAUSTED` | The product's daily free allowance is used; wait for the 00:00 UTC reset. |
+| `RATE_LIMIT_EXCEEDED` | Per-minute limit hit (HTTP 429). `retry_after`, `rate_limit.limit`, `rate_limit.remaining` and `rate_limit.reset` are returned. |
+| `FORBIDDEN` | Legacy credits exhausted, missing entitlement, or an organization spending limit. |
+| `network_error` / `BACKEND_UNAVAILABLE` | TinyFish could not be reached; retry with backoff. |
+
+Search and Fetch are free within daily allowances (12,000 searches and 1,000 fetched URLs, reset at 00:00 UTC) and have per-minute limits (30 searches/min, 150 fetches/min). The cloud browser is metered at $0.002/minute; the Agent API at $0.016/step. FormPilot uses Search, Fetch, Browser and Wallet — not the Agent automation API.
+
+If a cloud browser session cannot start, the run continues locally. `GET /api/agent/state` exposes `engine_session.is_cloud`, `engine_session.proxy_node` and `engine_session.fallback_reason`, so you can tell a real cloud session from a local fallback and read the TinyFish error code behind it. The activity log also names the code.
+
 ---
 
 ## Quickstart
@@ -261,6 +289,9 @@ The cockpit uses these endpoints; the full schema is available at **http://127.0
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/api/health` | Health, demo status, TinyFish configuration status |
+| `GET` / `POST` | `/api/engine/config` | Read redacted TinyFish settings, or save them |
+| `POST` | `/api/engine/test-tinyfish` | Test the key and Search API; returns the exact TinyFish error code |
+| `GET` | `/api/engine/wallet` | Read-only TinyFish wallet balance |
 | `GET` | `/api/oracle/search?q=...&live=false` | Resolve a portal from the registry or a direct URL |
 | `GET` | `/api/oracle/directory` | List the verified portal registry |
 | `GET` / `POST` | `/api/vault` | Read or update the candidate profile |
