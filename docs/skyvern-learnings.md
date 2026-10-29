@@ -259,14 +259,24 @@ Target: `run_store.py`, `evaluation.py`, `tests/`. Effort S/M.
   `not_held`; a value dropped once is re-entered and verified; no duplicate
   audit rows.
 
-### Slice H — Run ledger and structured events (next)
+### Slice H — Run ledger and structured events (done)
 
-- `run_store` gains `run_steps` with phase, page signature, status, digest,
-  output, error code, attempt, token/cost columns.
-- Orchestrator emits `step_started/step_finished/gate_waiting/failure`.
-- `GET /api/runs`, `GET /api/runs/{id}/steps`.
-- Acceptance: a full run can be reconstructed after a restart; a retry is a
-  new attempt row; no secrets in stored rows.
+- `run_store` writes `steps.json` per run: `step_id`, `seq`, `kind`, `status`,
+  `page_signature`, `input_digest`, `attempt`, timings, `output`,
+  `error_code`, `retryable`.
+- `failures.py` adds a closed failure taxonomy (`navigation`, `auth`,
+  `anti_bot`, `element_not_found`, `field_not_held`, `wrong_page`, `timeout`,
+  `budget`, `portal_error`, `internal`) with a classifier and a retryability
+  rule.
+- Orchestrator records `run`, `perceive`, `fill`, `advance`, `error`, `gate`,
+  `takeover` and `submit` steps. A gate is one row from `waiting` to
+  `resolved`; a retry is a new attempt row.
+- Every write is redacted: secret-looking keys become `***`, long text is
+  truncated, and answers (OTP, password, identifier values) are never stored.
+- API: `GET /api/runs` (limit/offset, enriched), `GET /api/runs/{id}`
+  (meta + steps + summary + events + audit), `GET /api/runs/{id}/steps`.
+- Acceptance met: a run is reconstructable from disk after a restart; retries
+  are visible; `tests/test_run_store.py` asserts no secret reaches the ledger.
 
 ### Slice I — Security boundaries
 

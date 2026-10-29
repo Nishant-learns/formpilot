@@ -27,6 +27,7 @@ from .action_resolver import ActionResolver, ActionResult
 from .biometrics import BiometricCompressor
 from .blueprint import BlueprintElement, PageBlueprint
 from .dom_scanner import DOMScanner
+from .failures import classify_failure
 from .facts import FactBook
 from .fill_plan import build_fill_plan
 from .form_model import FormModel
@@ -120,6 +121,8 @@ class FormPilotOrchestrator:
         self._last_gateway_signature = ""
         self._last_scan_key = ""
         self._handled_conflicts: set = set()
+        self._open_gate_step: Optional[str] = None
+        self._open_gate_signature: str = ""
         self._last_screenshot_at = 0.0
         self._idle_cycles = 0
 
@@ -232,10 +235,16 @@ class FormPilotOrchestrator:
         self._last_gateway_signature = ""
         self._last_scan_key = ""
         self._handled_conflicts: set = set()
+        self._open_gate_step: Optional[str] = None
+        self._open_gate_signature: str = ""
         self._idle_cycles = 0
         self.run_id = f"run-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
         self.state = "RESOLVING"
         self.run_store.start(self.run_id, {"query": self.query, "mode": self.mode, "run_mode": self.run_mode})
+        self._record_step(
+            "run",
+            output={"query": self.query, "mode": self.mode, "run_mode": self.run_mode},
+        )
 
         try:
             await self.emit_event(
@@ -310,6 +319,12 @@ class FormPilotOrchestrator:
             self.is_running = False
             if self.state not in {"AWAITING_PAYMENT", "INSPECT_READY"}:
                 await self._cleanup()
+            self._record_step(
+                "run",
+                status="ok" if self.state in {"DONE", "AWAITING_PAYMENT", "INSPECT_READY"} else "failed",
+                error_code=None if self.state in {"DONE", "AWAITING_PAYMENT", "INSPECT_READY"} else "internal_error",
+                output={"state": self.state, "error": self.last_error},
+            )
             self.run_store.finish(
                 self.run_id or "unknown",
                 self.state,
@@ -442,6 +457,7 @@ class FormPilotOrchestrator:
 
         self._takeover_active = True
         self._takeover_started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        self._record_step("takeover", output={"event": "started", "state": self.state})
         waiting_at_gate = self.active_gate is not None or self.state in {
             "WAITING_FOR_USER",
             "AWAITING_PAYMENT",
@@ -479,6 +495,7 @@ class FormPilotOrchestrator:
             }
 
         self._takeover_active = False
+        self._record_step("takeover", output={"event": "returned", "state": self.state})
         if self.live and not self.live.closed:
             self.live.set_allow_control(
                 False, "FormPilot is reading the page again. Control returns in a moment."
@@ -552,6 +569,104 @@ class FormPilotOrchestrator:
         except Exception:
             traceback.print_exc()
 
+    # ---------------------------------------------------------------- ledger
+
+    def _page_signature(self) -> str:
+        if isinstance(self.form_map, dict):
+            return str(self.form_map.get("fingerprint") or "")
+        return ""
+
+    def _record_step(
+        self,
+        kind: str,
+        *,
+        status: str = "ok",
+        page_signature: str = "",
+        input_digest: str = "",
+        output: Optional[Dict[str, Any]] = None,
+        error_code: Optional[str] = None,
+        duration_ms: Optional[int] = None,
+        attempt: int = 1,
+    ) -> Optional[str]:
+        """Write one row to the run ledger.  Never let bookkeeping break a run."""
+        if not self.run_id:
+            return None
+        try:
+            return self.run_store.record_step(
+                self.run_id,
+                kind,
+                status=status,
+                page_signature=page_signature or self._page_signature(),
+                input_digest=input_digest,
+                output=output,
+                error_code=error_code,
+                duration_ms=duration_ms,
+                attempt=attempt,
+            )
+        except Exception:
+            traceback.print_exc()
+            return None
+
+    def _open_step(self, kind: str, **kwargs: Any) -> Optional[str]:
+        if not self.run_id:
+            return None
+        try:
+            return self.run_store.start_step(self.run_id, kind, **kwargs)
+        except Exception:
+            traceback.print_exc()
+            return None
+
+    def _close_step(self, step_id: Optional[str], status: str, **kwargs: Any) -> None:
+        if not step_id or not self.run_id:
+            return
+        try:
+            self.run_store.finish_step(self.run_id, step_id, status, **kwargs)
+        except Exception:
+            traceback.print_exc()
+
+    def _start_gate_step(self, gate: Dict[str, Any]) -> None:
+        """Open a ledger row for a gate that is waiting on a human."""
+        gate_type = str(gate.get("gate_type") or "GATE")
+        signature = "|".join(
+            [
+                gate_type,
+                str(gate.get("stage") or ""),
+                str(gate.get("title") or ""),
+                str(gate.get("field_key") or ""),
+            ]
+        )
+        if signature == self._open_gate_signature:
+            return
+        if self._open_gate_step:
+            self._close_step(
+                self._open_gate_step,
+                "replaced",
+                output={"gate_type": gate_type},
+            )
+        self._open_gate_signature = signature
+        self._open_gate_step = self._open_step(
+            "gate",
+            status="waiting",
+            page_signature=self._page_signature(),
+            detail={"gate_type": gate_type, "title": gate.get("title")},
+        )
+
+    def _close_gate_step(self, action: str) -> None:
+        if not self._open_gate_step:
+            return
+        status = {
+            "DISMISS": "dismissed",
+            "STOPPED": "stopped",
+            "TIMEOUT": "timed_out",
+        }.get(str(action or ""), "resolved")
+        self._close_step(
+            self._open_gate_step,
+            status,
+            output={"action": action or "UNKNOWN"},
+        )
+        self._open_gate_step = None
+        self._open_gate_signature = ""
+
     def _portal_account_summary(self) -> Dict[str, Any]:
         domain = self._current_domain()
         if not domain:
@@ -588,6 +703,7 @@ class FormPilotOrchestrator:
         )
 
     def submit_user_response(self, data: Dict[str, Any]):
+        self._close_gate_step(str((data or {}).get("action") or ""))
         if self.active_event_future and not self.active_event_future.done():
             self.active_event_future.set_result(data)
         elif self.active_gate is not None:
@@ -1004,6 +1120,11 @@ class FormPilotOrchestrator:
             "login_method": self._login_method,
             "login_identifier": self._login_identifier,
         }
+        if phase == "DECIDE" and (active_gate or self.active_gate):
+            try:
+                self._start_gate_step(active_gate or self.active_gate or {})
+            except Exception:
+                traceback.print_exc()
         if self.broadcast_fn:
             try:
                 result = self.broadcast_fn(payload)
@@ -1084,6 +1205,15 @@ class FormPilotOrchestrator:
 
         self.form_map = form_map
         self._recipe_status = recipe_status
+        self._record_step(
+            "perceive",
+            output={
+                "page_type": form_map.get("page_type"),
+                "field_count": form_map.get("field_count"),
+                "confidence": form_map.get("page_confidence"),
+                "recipe": recipe_status.get("status"),
+            },
+        )
         try:
             self._entry_options = decision_policy.entry_options(dom, form_map)
         except Exception:
@@ -1449,6 +1579,12 @@ class FormPilotOrchestrator:
                 continue
 
             advanced = await self._advance(dom)
+            self._record_step(
+                "advance",
+                status="ok" if advanced else "failed",
+                error_code=None if advanced else "navigation_failure",
+                output={"url": self.page.url if self.page else self.target_url},
+            )
             if not advanced:
                 fresh = await self._scan_dom()
                 if adapter.is_payment_page(self.page, fresh):
@@ -2923,6 +3059,20 @@ class FormPilotOrchestrator:
             "verified_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
 
+        self._record_step(
+            "fill",
+            status="ok" if status in {"FILLED", "NO_FIELDS"} else "partial" if status == "PARTIAL" else "failed",
+            output={
+                "status": status,
+                "attempted": attempted,
+                "verified": verified,
+                "failed": failed_count,
+                "skipped": skipped_count,
+                "reformatted": reformatted_count,
+                "retried": len(retry_indexes),
+                "section": self.current_section,
+            },
+        )
         if verified:
             await self.emit_event(
                 "ACT",
@@ -3906,6 +4056,12 @@ class FormPilotOrchestrator:
             return
         self._last_error_signature = signature
 
+        self._record_step(
+            "error",
+            status="failed",
+            error_code=classify_failure(errors[0]).value,
+            output={"message": errors[0][:300]},
+        )
         await self.emit_event(
             "SENSE",
             f"The portal reported: {errors[0]}",
@@ -4368,6 +4524,15 @@ class FormPilotOrchestrator:
             ),
             gate,
             force_screenshot=True,
+        )
+        self._record_step(
+            "submit",
+            status="waiting",
+            output={
+                "final_action": bool(final_action),
+                "gate_type": str((gate or {}).get("gate_type") or ""),
+                "audit_hash": audit_payload.get("audit_hash"),
+            },
         )
         if self.run_id:
             self.run_store.finish(

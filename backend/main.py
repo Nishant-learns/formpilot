@@ -531,19 +531,30 @@ def health():
 
 
 @app.get("/api/runs")
-def list_runs(limit: int = Query(25, ge=1, le=100)):
-    return {"runs": run_store.list_runs(limit=limit)}
+def list_runs(
+    limit: int = Query(25, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    return {"runs": run_store.list_runs(limit=limit, offset=offset)}
 
 
 @app.get("/api/runs/{run_id}")
 def get_run(run_id: str):
+    detail = run_store.run_detail(run_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    return detail
+
+
+@app.get("/api/runs/{run_id}/steps")
+def get_run_steps(run_id: str):
     meta = run_store.read_meta(run_id)
     if not meta:
         raise HTTPException(status_code=404, detail="Run not found.")
     return {
-        "meta": meta,
-        "events": run_store.read_events(run_id),
-        "audit": run_store.read_audit(run_id),
+        "run_id": run_id,
+        "steps": run_store.read_steps(run_id),
+        "summary": run_store.step_summary(run_id),
     }
 
 

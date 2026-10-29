@@ -1812,3 +1812,43 @@ Commit accuracy and false-success rate, reformat rate, retry rate, gate dwell
 time, fields per minute, LLM calls per section, run completion and
 abandonment point. The offline evaluation harness remains the merge gate and
 will assert these as the ledger lands.
+
+### 17.6 Slice H — run ledger and structured events (done)
+
+A log says what was said; a ledger says what was attempted, against which
+page, with what result, and how long it took. `run_store.py` now writes
+`steps.json` beside `meta.json`, `events.jsonl` and `audit.json`.
+
+Step rows:
+
+- `step_id`, `seq`, `kind`, `status`, `page_signature`, `input_digest`,
+  `attempt`, `started_at`, `finished_at`, `duration_ms`, `output`,
+  `error_code`, `retryable`.
+
+Recorded phases: `run`, `perceive`, `fill`, `advance`, `error`, `gate`,
+`takeover`, `submit`. A gate is one row from `waiting` to `resolved` (or
+`dismissed`/`stopped`/`timed_out`); a retry is a new row with
+`attempt > 1`, never an overwrite. The pre-payment/final-submit lock records a
+`submit` row with the audit hash and `final_action`.
+
+Failure taxonomy (`failures.py`): `navigation_failure`, `auth_failure`,
+`anti_bot`, `element_not_found`, `field_not_held`, `wrong_page`, `timeout`,
+`budget_exceeded`, `portal_error`, `internal_error`. Only navigation, element
+loss, timeout and portal errors are retryable; auth, anti-bot, wrong page and
+a value the portal did not keep are not.
+
+Redaction is enforced at the storage boundary: secret-looking keys become
+`***`, text is capped, and a gate stores only the action name, never the
+answer itself. A test
+asserts an OTP never reaches `steps.json`.
+
+API: `GET /api/runs` (limit/offset, now includes duration, error code, step
+count), `GET /api/runs/{run_id}` (meta + steps + summary + events + audit),
+`GET /api/runs/{run_id}/steps`.
+
+Acceptance: a run can be reconstructed from disk after a restart; a retry is
+its own row; no secret is stored. `tests/test_run_store.py` covers the ledger,
+redaction, persistence, failure codes and the API.
+
+Next: Slice I (security boundaries), then J (gate quality and attended time),
+K (legibility) and L (scale-out).
