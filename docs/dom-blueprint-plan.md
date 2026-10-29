@@ -1888,3 +1888,44 @@ a changed URL. Full suite: 335 passed, 2 skipped.
 
 Next: Slice J (typed gate reasons, recommended option, attended-time
 budgeting), then K (legibility) and L (scale-out).
+
+### 17.8 Slice J — typed gates and attended time (done)
+
+A gate is now a typed stop, not a free-text interruption.
+
+`backend/core/gates.py` owns a closed `GateReason` enum and maps every
+`gate_type` to one reason: entry path, next step, account conflict, login
+method, account identifier, missing fact, unknown field, incomplete fill,
+section review, CAPTCHA, OTP, live photo, file upload, human handoff,
+pre-payment review, error diagnosis, and `unknown` as the explicit fallback.
+
+`apply_gate_metadata` stamps each gate with `reason`, `gate_opened_at`,
+`gate_timeout_seconds` and `gate_deadline_at`. The ledger's `gate` row carries
+the reason, and the chat state context exposes it with the optional
+`recommended` entry.
+
+**Recommendations are conservative.** A gate that exists because the human
+must choose never carries a recommendation: entry path, login method, account
+identifier, account conflict, section review, pre-payment review and every
+human-only gate. Only two gates recommend a safer first move:
+`FILL_INCOMPLETE` recommends `FILL_RECHECK`, and `ERROR_DIAGNOSIS` recommends
+reading the portal message before retrying.
+
+**Attended time.** The run clock separates active work from attended gate
+time. `RUN_CEILING_SECONDS` (30 min) budgets active work and pauses while a
+gate is open; `RUN_WALL_CEILING_SECONDS` (2 h) is the absolute ceiling that
+still applies to a paused run. The gate timeout default moved from 5 to 30
+minutes so a real ten-minute human pause cannot expire the gate. The clock is
+exposed in `get_state` and every event as `run_clock`:
+`wall_seconds`, `attended_seconds`, `active_seconds`, `ceiling_seconds`,
+`wall_ceiling_seconds`, `gate_open`.
+
+The cockpit modal renders the reason label and the suggested first step from
+the enum, with a generic fallback for an unknown code.
+
+Acceptance: `tests/test_gates.py` covers every gate type, the
+no-recommendation rule, the two safe recommendations, gate dwell in the
+ledger, the paused run clock and the absolute wall ceiling. Full suite:
+362 passed, 2 skipped.
+
+Next: Slice K (legibility), then L (scale-out).

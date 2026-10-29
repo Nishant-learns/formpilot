@@ -36,6 +36,30 @@ export default function HumanCheckpointModal(props) {
   return <CheckpointContent key={key} {...props} />;
 }
 
+const GATE_REASON_LABELS = {
+  entry_path_choice: 'You need to choose how to start',
+  next_step_choice: 'You need to choose the next step',
+  account_conflict: 'The portal says this account already exists',
+  login_method_choice: 'You need to choose how to sign in',
+  account_identifier_choice: 'You need to choose which detail identifies the account',
+  missing_fact: 'One detail is still missing',
+  unknown_field: 'A field needs your decision',
+  incomplete_fill: 'Some fields were not kept by the portal',
+  section_review: 'This section is ready for your review',
+  captcha_human_only: 'A security check is yours to complete',
+  otp_human_only: 'The one-time code is yours to enter',
+  live_photo: 'A live photo is yours to provide',
+  file_upload: 'A document is yours to attach',
+  human_handoff: 'This step needs you in the browser',
+  pre_payment_review: 'Review the form before payment or submission',
+  error_diagnosis: 'The portal needs your attention',
+  unknown: 'FormPilot stopped for your review',
+};
+
+function gateReasonLabel(reason) {
+  return GATE_REASON_LABELS[reason] || 'FormPilot stopped for your review';
+}
+
 function statusLabel(status) {
   if (status === 'MATCH') return 'Matches';
   if (status === 'EMPTY') return 'Empty on form';
@@ -349,6 +373,22 @@ function CheckpointContent({ activeGate, onSubmitResponse, onClose, onDismissGat
                 This panel is docked so you can use the live browser at the same time. Click and
                 type directly on the portal; FormPilot stays paused until you continue here.
               </span>
+            </div>
+          )}
+
+          {activeGate.reason && (
+            <div className="mb-4 rounded-xl border border-slate-700 bg-slate-950/60 px-3 py-2 text-[11px] text-slate-300">
+              <div className="flex items-center gap-2">
+                <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                  Why this stopped
+                </span>
+                <span className="text-sky-300">{gateReasonLabel(activeGate.reason)}</span>
+              </div>
+              {activeGate.recommended?.label && (
+                <div className="mt-1 text-emerald-300">
+                  Suggested first step: {activeGate.recommended.label}
+                </div>
+              )}
             </div>
           )}
 

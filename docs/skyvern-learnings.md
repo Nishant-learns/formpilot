@@ -298,12 +298,27 @@ Target: `run_store.py`, `evaluation.py`, `tests/`. Effort S/M.
   never sent to a model. A fact-key-only plan becomes necessary only if the
   plan itself is exposed to an LLM or persisted; revisit before Slice L.
 
-### Slice J — Gate quality and attended time
+### Slice J — Gate quality and attended time (done)
 
-- Closed `reason` enum per gate, optional `recommended`, `gate_opened_at`.
-- Pause the run clock while a gate is open; absolute ceiling still applies.
-- Acceptance: every gate in the cockpit renders from the enum; a 10-minute
-  human pause does not trip the run timeout.
+- `gates.py` adds a closed `GateReason` enum, a `gate_type` mapping, and
+  `apply_gate_metadata` to stamp `reason`, `gate_opened_at`,
+  `gate_timeout_seconds` and `gate_deadline_at` on every gate.
+- `recommended` is optional and conservative: choice gates
+  (`entry path`, `login method`, `account identifier`, `account conflict`,
+  `section review`, `pre-payment review`) never carry one. `FILL_INCOMPLETE`
+  recommends rechecking; `ERROR_DIAGNOSIS` recommends reading the portal
+  message first.
+- The run clock has two budgets: active work (`RUN_CEILING_SECONDS`, 30 min)
+  and absolute wall time (`RUN_WALL_CEILING_SECONDS`, 2 h). Gate time is
+  attended time and pauses the active clock; the wall ceiling still applies.
+- Gate timeout default is 30 min, so a 10-minute human pause does not expire
+  the gate.
+- The cockpit modal renders the reason label and the suggested first step
+  from the enum, with a generic fallback for an unknown code.
+- Acceptance met: `tests/test_gates.py` covers every gate type, the
+  no-recommendation rule, recheck/error recommendations, gate dwell in the
+  ledger, the paused run clock and the absolute wall ceiling. Full suite:
+  362 passed, 2 skipped.
 
 ### Slice K — Legibility
 

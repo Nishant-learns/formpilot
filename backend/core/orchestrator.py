@@ -31,6 +31,7 @@ from .failures import classify_failure
 from .facts import FactBook
 from .fill_plan import build_fill_plan
 from .form_model import FormModel
+from .gates import apply_gate_metadata, gate_reason
 from .live_browser import LiveBrowserSession, live_sessions
 from .navigator import ResilientNavigator
 from .oracle import OracleResult, PortalOracle
@@ -126,6 +127,12 @@ class FormPilotOrchestrator:
         # Frozen review snapshot: URL + field-value digest + audit hash.  A
         # changed page invalidates the human's pre-payment review.
         self._approval_snapshot: Optional[Dict[str, Any]] = None
+        # Attended-time clock.  The run clock pauses while a gate is open; the
+        # wall clock does not, so an absolute ceiling still applies.
+        self._run_started_at: Optional[str] = None
+        self._run_started_monotonic: Optional[float] = None
+        self._gate_seconds = 0.0
+        self._gate_opened_monotonic: Optional[float] = None
         self._last_screenshot_at = 0.0
         self._idle_cycles = 0
 
@@ -187,6 +194,7 @@ class FormPilotOrchestrator:
             "oracle": self.oracle_result.model_dump() if self.oracle_result else None,
             "takeover": self.takeover_state(),
             "portal_account": self._portal_account_summary(),
+            "run_clock": self.run_clock(),
         }
 
     async def start_application(self, query_or_url: str, run_mode: str = "fill"):
@@ -241,6 +249,10 @@ class FormPilotOrchestrator:
         self._open_gate_step: Optional[str] = None
         self._open_gate_signature: str = ""
         self._approval_snapshot = None
+        self._run_started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        self._run_started_monotonic = time.monotonic()
+        self._gate_seconds = 0.0
+        self._gate_opened_monotonic = None
         self._idle_cycles = 0
         self.run_id = f"run-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
         self.state = "RESOLVING"
@@ -394,6 +406,10 @@ class FormPilotOrchestrator:
         self._takeover_paused_run = False
         self._takeover_started_at = None
         self._approval_snapshot = None
+        self._run_started_at = None
+        self._run_started_monotonic = None
+        self._gate_seconds = 0.0
+        self._gate_opened_monotonic = None
         self.run_mode = "fill"
         return True
 
@@ -646,26 +662,38 @@ class FormPilotOrchestrator:
         if signature == self._open_gate_signature:
             return
         if self._open_gate_step:
-            self._close_step(
-                self._open_gate_step,
-                "replaced",
-                output={"gate_type": gate_type},
-            )
+            self._close_gate_step("REPLACED")
+        # A gate that is re-opened after a close gets a fresh opening time and
+        # deadline; a re-emit of the same open gate keeps the original.
+        gate.pop("gate_opened_at", None)
+        gate.pop("gate_deadline_at", None)
+        apply_gate_metadata(gate)
         self._open_gate_signature = signature
+        if self._gate_opened_monotonic is None:
+            self._gate_opened_monotonic = time.monotonic()
         self._open_gate_step = self._open_step(
             "gate",
             status="waiting",
             page_signature=self._page_signature(),
-            detail={"gate_type": gate_type, "title": gate.get("title")},
+            detail={
+                "gate_type": gate_type,
+                "title": gate.get("title"),
+                "reason": gate.get("reason"),
+                "recommended": gate.get("recommended"),
+            },
         )
 
     def _close_gate_step(self, action: str) -> None:
+        if self._gate_opened_monotonic is not None:
+            self._gate_seconds += max(0.0, time.monotonic() - self._gate_opened_monotonic)
+            self._gate_opened_monotonic = None
         if not self._open_gate_step:
             return
         status = {
             "DISMISS": "dismissed",
             "STOPPED": "stopped",
             "TIMEOUT": "timed_out",
+            "REPLACED": "replaced",
         }.get(str(action or ""), "resolved")
         self._close_step(
             self._open_gate_step,
@@ -674,6 +702,44 @@ class FormPilotOrchestrator:
         )
         self._open_gate_step = None
         self._open_gate_signature = ""
+
+    def run_clock(self) -> Dict[str, Any]:
+        """Active work time, attended gate time, and the absolute wall clock."""
+        if self._run_started_monotonic is None:
+            return {
+                "started_at": None,
+                "wall_seconds": 0.0,
+                "attended_seconds": 0.0,
+                "active_seconds": 0.0,
+                "ceiling_seconds": settings.RUN_CEILING_SECONDS,
+                "wall_ceiling_seconds": settings.RUN_WALL_CEILING_SECONDS,
+                "gate_open": self._gate_opened_monotonic is not None,
+            }
+        now = time.monotonic()
+        wall = max(0.0, now - self._run_started_monotonic)
+        open_gate = (
+            max(0.0, now - self._gate_opened_monotonic)
+            if self._gate_opened_monotonic is not None
+            else 0.0
+        )
+        attended = self._gate_seconds + open_gate
+        active = max(0.0, wall - attended)
+        return {
+            "started_at": self._run_started_at,
+            "wall_seconds": round(wall, 1),
+            "attended_seconds": round(attended, 1),
+            "active_seconds": round(active, 1),
+            "ceiling_seconds": settings.RUN_CEILING_SECONDS,
+            "wall_ceiling_seconds": settings.RUN_WALL_CEILING_SECONDS,
+            "gate_open": self._gate_opened_monotonic is not None,
+        }
+
+    def _run_ceiling_exceeded(self) -> bool:
+        clock = self.run_clock()
+        return (
+            clock["active_seconds"] >= settings.RUN_CEILING_SECONDS
+            or clock["wall_seconds"] >= settings.RUN_WALL_CEILING_SECONDS
+        )
 
     def _portal_account_summary(self) -> Dict[str, Any]:
         domain = self._current_domain()
@@ -1127,6 +1193,7 @@ class FormPilotOrchestrator:
             "entry_options": decision_policy.entry_summary(self._entry_options),
             "login_method": self._login_method,
             "login_identifier": self._login_identifier,
+            "run_clock": self.run_clock(),
         }
         if phase == "DECIDE" and (active_gate or self.active_gate):
             try:
@@ -1476,6 +1543,13 @@ class FormPilotOrchestrator:
 
     async def _autonomous_drive_loop(self):
         while self.is_running:
+            if self._run_ceiling_exceeded():
+                clock = self.run_clock()
+                raise AgentRunError(
+                    "This run has reached its time limit "
+                    f"({int(clock['active_seconds'])}s of active work). "
+                    "Please continue from the portal yourself."
+                )
             if self._is_paused:
                 self.state = "PAUSED"
                 await asyncio.sleep(0.4)
@@ -4833,6 +4907,7 @@ class FormPilotOrchestrator:
 
     def _stopped_gate_result(self) -> Dict[str, Any]:
         """Keep a stop request authoritative even if a gate opened mid-teardown."""
+        self._close_gate_step("STOPPED")
         self.state = "STOPPED"
         self.active_gate = None
         return {"action": "STOPPED"}
@@ -4856,6 +4931,7 @@ class FormPilotOrchestrator:
             result = await asyncio.wait_for(self.active_event_future, timeout=settings.GATE_TIMEOUT_SECONDS)
         except asyncio.TimeoutError:
             self.active_event_future = None
+            self._close_gate_step("TIMEOUT")
             await self.emit_event(
                 "DECIDE",
                 "No response was received, so the application was paused.",

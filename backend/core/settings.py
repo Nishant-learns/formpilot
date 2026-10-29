@@ -79,8 +79,13 @@ CORS_ORIGINS = [
     if origin.strip()
 ]
 
-# Human gate timeout.  A gate that never resolves is a support incident.
-GATE_TIMEOUT_SECONDS = int(os.getenv("FORMPILOT_GATE_TIMEOUT_SECONDS", "300"))
+# Human gate timeout.  A gate that never resolves is a support incident, but a
+# real person may need many minutes.  Ten-minute pauses must not expire a gate.
+GATE_TIMEOUT_SECONDS = int(os.getenv("FORMPILOT_GATE_TIMEOUT_SECONDS", "1800"))
+# The run clock pauses while a gate is open.  These are the budgets on active
+# work and on absolute wall time; the wall ceiling still applies to a paused run.
+RUN_CEILING_SECONDS = int(os.getenv("FORMPILOT_RUN_CEILING_SECONDS", "1800"))
+RUN_WALL_CEILING_SECONDS = int(os.getenv("FORMPILOT_RUN_WALL_CEILING_SECONDS", "7200"))
 SCREENSHOT_MIN_INTERVAL_MS = int(os.getenv("FORMPILOT_SCREENSHOT_INTERVAL_MS", "700"))
 
 # Demo-only by default; production deployments must opt in explicitly.
