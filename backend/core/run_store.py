@@ -16,6 +16,7 @@ outcomes instead of prose.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -37,6 +38,17 @@ _SENSITIVE_KEY_RE = re.compile(
 )
 
 _MAX_TEXT = 500
+
+# These exact keys are counters, not credentials: they hold a token *count*.
+# Anything else containing "token" (access_token, bearer_token, token) is a
+# secret and stays masked.
+_SAFE_COUNTER_KEYS = {
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "token_reports",
+    "token_count",
+}
 
 
 def _now() -> str:
@@ -63,7 +75,12 @@ def redact(value: Any, depth: int = 0) -> Any:
         return "…"
     if isinstance(value, dict):
         return {
-            str(key): ("***" if _SENSITIVE_KEY_RE.search(str(key)) else redact(item, depth + 1))
+            str(key): (
+                "***"
+                if _SENSITIVE_KEY_RE.search(str(key))
+                and str(key) not in _SAFE_COUNTER_KEYS
+                else redact(item, depth + 1)
+            )
             for key, item in value.items()
         }
     if isinstance(value, (list, tuple)):
@@ -80,10 +97,15 @@ class RunStore:
         self.root = Path(root or settings.RUNS_DIR)
         self.root.mkdir(parents=True, exist_ok=True)
 
-    def _dir(self, run_id: str) -> Path:
+    def _path(self, run_id: str) -> Path:
+        """The run directory for reading.  Never creates anything."""
         if not _RUN_ID_RE.match(run_id or ""):
             raise ValueError("Invalid run id")
-        path = self.root / run_id
+        return self.root / run_id
+
+    def _dir(self, run_id: str) -> Path:
+        """The run directory for writing; created on demand."""
+        path = self._path(run_id)
         path.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -148,7 +170,7 @@ class RunStore:
     # ------------------------------------------------------------------ steps
 
     def read_steps(self, run_id: str) -> list[dict[str, Any]]:
-        path = self._dir(run_id) / "steps.json"
+        path = self._path(run_id) / "steps.json"
         if not path.exists():
             return []
         try:
@@ -299,7 +321,7 @@ class RunStore:
     # ------------------------------------------------------------------ reading
 
     def read_events(self, run_id: str) -> list[dict[str, Any]]:
-        path = self._dir(run_id) / "events.jsonl"
+        path = self._path(run_id) / "events.jsonl"
         if not path.exists():
             return []
         events = []
@@ -311,7 +333,7 @@ class RunStore:
         return events
 
     def read_audit(self, run_id: str) -> Optional[dict[str, Any]]:
-        path = self._dir(run_id) / "audit.json"
+        path = self._path(run_id) / "audit.json"
         if not path.exists():
             return None
         try:
@@ -320,7 +342,7 @@ class RunStore:
             return None
 
     def read_meta(self, run_id: str) -> Optional[dict[str, Any]]:
-        path = self._dir(run_id) / "meta.json"
+        path = self._path(run_id) / "meta.json"
         if not path.exists():
             return None
         try:
@@ -340,12 +362,38 @@ class RunStore:
             "audit": self.read_audit(run_id),
         }
 
-    def list_runs(self, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+    @staticmethod
+    def _sort_key(run: dict[str, Any]) -> tuple[float, str]:
+        # Newest first; the run id breaks mtime ties so paging is stable.
+        return (float(run.get("mtime") or 0), str(run.get("run_id") or ""))
+
+    @staticmethod
+    def encode_cursor(run: dict[str, Any]) -> str:
+        """An opaque keyset cursor: the last run's (mtime, run_id)."""
+        raw = f"{float(run.get('mtime') or 0):.6f}|{run.get('run_id') or ''}"
+        return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii").rstrip("=")
+
+    @staticmethod
+    def decode_cursor(cursor: str) -> Optional[tuple[float, str]]:
+        if not cursor:
+            return None
+        try:
+            padded = cursor + "=" * (-len(cursor) % 4)
+            raw = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+            stamp, _, run_id = raw.partition("|")
+            return (float(stamp), run_id)
+        except Exception:
+            return None
+
+    def _all_runs(self) -> list[dict[str, Any]]:
         runs: list[dict[str, Any]] = []
         for child in self.root.iterdir():
             if not child.is_dir() or not _RUN_ID_RE.match(child.name):
                 continue
-            meta = self.read_meta(child.name) or {}
+            meta = self.read_meta(child.name)
+            if not meta:
+                # A stray directory (or a crash before start) is not a run.
+                continue
             steps = self.read_steps(child.name)
             runs.append(
                 {
@@ -362,6 +410,37 @@ class RunStore:
                     "mtime": child.stat().st_mtime,
                 }
             )
-        runs.sort(key=lambda item: item.get("mtime", 0), reverse=True)
+        runs.sort(key=self._sort_key, reverse=True)
+        return runs
+
+    def list_runs(self, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        runs = self._all_runs()
         start = max(0, int(offset or 0))
         return runs[start : start + max(1, limit)]
+
+    def list_runs_page(
+        self,
+        limit: int = 50,
+        *,
+        cursor: Optional[str] = None,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """One page plus the cursor for the next, without offset drift.
+
+        ``offset`` is still honoured for older callers, but a client that
+        follows ``next_cursor`` never sees a run twice or skips one when a new
+        run starts mid-page.
+        """
+        limit = max(1, int(limit or 50))
+        runs = self._all_runs()
+        after = self.decode_cursor(cursor or "")
+        if cursor:
+            if after is None:
+                # An unreadable cursor must not silently restart from the top.
+                raise ValueError("Invalid cursor.")
+            runs = [run for run in runs if self._sort_key(run) < after]
+        elif offset:
+            runs = runs[max(0, int(offset)) :]
+        page = runs[:limit]
+        next_cursor = self.encode_cursor(page[-1]) if len(runs) > len(page) and page else None
+        return {"runs": page, "next_cursor": next_cursor}

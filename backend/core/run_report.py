@@ -236,6 +236,7 @@ def _stats(steps: List[Dict[str, Any]], meta: Dict[str, Any]) -> Dict[str, Any]:
     fill_steps = [step for step in steps if step.get("kind") == "fill"]
     gate_steps = [step for step in steps if step.get("kind") == "gate"]
     clock = meta.get("run_clock") if isinstance(meta.get("run_clock"), dict) else {}
+    usage = meta.get("llm_usage") if isinstance(meta.get("llm_usage"), dict) else {}
     return {
         "steps": len(steps),
         "pages_read": sum(1 for step in steps if step.get("kind") == "perceive"),
@@ -253,6 +254,12 @@ def _stats(steps: List[Dict[str, Any]], meta: Dict[str, Any]) -> Dict[str, Any]:
         "active_seconds": clock.get("active_seconds"),
         "attended_seconds": clock.get("attended_seconds"),
         "wall_seconds": clock.get("wall_seconds"),
+        "model_calls": usage.get("calls"),
+        "model_errors": usage.get("errors"),
+        "prompt_tokens": usage.get("prompt_tokens"),
+        "completion_tokens": usage.get("completion_tokens"),
+        "total_tokens": usage.get("total_tokens"),
+        "estimated_cost_usd": usage.get("estimated_cost_usd"),
     }
 
 
@@ -303,6 +310,13 @@ def _what_happened(
         lines.append("You took control of the live browser at least once.")
     if stats["retried"]:
         lines.append(f"{_plural(stats['retried'], 'field')} needed a second attempt.")
+    if stats.get("model_calls"):
+        line = f"The model was called {_plural(stats['model_calls'], 'time')}"
+        if stats.get("total_tokens"):
+            line += f" and used {stats['total_tokens']:,} tokens"
+        if stats.get("estimated_cost_usd"):
+            line += f" (about ${stats['estimated_cost_usd']:.4f})"
+        lines.append(line + ".")
     if failure:
         lines.append(
             f"The last problem was classified as {failure['code']}"
@@ -541,6 +555,10 @@ def render_run_report_html(report: Dict[str, Any]) -> str:
             cards.append((f"{stats['active_seconds']}s", "active work"))
         if stats.get("attended_seconds") is not None:
             cards.append((f"{stats['attended_seconds']}s", "with you"))
+        if stats.get("model_calls") is not None:
+            cards.append((stats["model_calls"], "model calls"))
+        if stats.get("total_tokens"):
+            cards.append((f"{int(stats['total_tokens']):,}", "tokens"))
         card_html = "".join(
             f'      <div class="stat"><b>{_e(value)}</b>{_e(label)}</div>\n'
             for value, label in cards

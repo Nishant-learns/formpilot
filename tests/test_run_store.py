@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from backend.core.failures import FailureCode, classify_failure, is_retryable
 from backend.core.run_store import RunStore
 from backend.core.orchestrator import FormPilotOrchestrator
@@ -265,3 +267,114 @@ def test_the_api_lists_and_reads_a_run_with_its_steps(client):
         assert steps.json()["summary"]["by_kind"] == {"perceive": 1, "fill": 1}
     finally:
         shutil.rmtree(run_store.root / run_id, ignore_errors=True)
+
+
+# ------------------------------------------------------------ keyset paging
+
+
+def _seed_runs(store, count: int) -> list[str]:
+    import os
+
+    ids = []
+    for index in range(count):
+        run_id = f"run-page-{index:02d}"
+        store.start(run_id, {"query": f"q{index}", "run_mode": "fill"})
+        store.finish(run_id, "DONE")
+        # A deterministic, increasing mtime so the order is known.
+        os.utime(store.root / run_id, (1_700_000_000 + index, 1_700_000_000 + index))
+        ids.append(run_id)
+    return ids
+
+
+def test_a_cursor_walks_every_run_once(tmp_path):
+    store = RunStore(tmp_path / "runs")
+    seeded = _seed_runs(store, 5)
+
+    first = store.list_runs_page(limit=2)
+    assert [run["run_id"] for run in first["runs"]] == [seeded[-1], seeded[-2]]
+    assert first["next_cursor"]
+
+    second = store.list_runs_page(limit=2, cursor=first["next_cursor"])
+    assert [run["run_id"] for run in second["runs"]] == [seeded[-3], seeded[-4]]
+
+    third = store.list_runs_page(limit=2, cursor=second["next_cursor"])
+    assert [run["run_id"] for run in third["runs"]] == [seeded[-5]]
+    assert third["next_cursor"] is None
+
+    seen = [run["run_id"] for page in (first, second, third) for run in page["runs"]]
+    assert seen == list(reversed(seeded))
+    assert len(seen) == len(set(seen))
+
+
+def test_a_new_run_does_not_shift_an_open_page(tmp_path):
+    import os
+
+    store = RunStore(tmp_path / "runs")
+    seeded = _seed_runs(store, 3)
+    first = store.list_runs_page(limit=2)
+
+    store.start("run-page-99", {"query": "late", "run_mode": "fill"})
+    store.finish("run-page-99", "DONE")
+    os.utime(store.root / "run-page-99", (1_700_000_999, 1_700_000_999))
+
+    second = store.list_runs_page(limit=2, cursor=first["next_cursor"])
+
+    assert [run["run_id"] for run in second["runs"]] == [seeded[0]]
+    assert "run-page-99" not in [run["run_id"] for run in second["runs"]]
+
+
+def test_an_unreadable_cursor_is_rejected(tmp_path):
+    store = RunStore(tmp_path / "runs")
+    _seed_runs(store, 2)
+
+    with pytest.raises(ValueError):
+        store.list_runs_page(limit=2, cursor="not-a-cursor")
+
+
+def test_the_api_rejects_a_bad_cursor(client):
+    response = client.get("/api/runs", params={"cursor": "not-a-cursor"})
+
+    assert response.status_code == 400
+
+
+def test_reading_a_missing_run_creates_nothing(tmp_path):
+    store = RunStore(tmp_path / "runs")
+    store.root.mkdir(parents=True, exist_ok=True)
+
+    assert store.read_meta("run-ghost") is None
+    assert store.read_steps("run-ghost") == []
+    assert store.read_events("run-ghost") == []
+    assert store.read_audit("run-ghost") is None
+    assert store.run_detail("run-ghost") is None
+
+    assert not (store.root / "run-ghost").exists()
+    assert store.list_runs_page()["runs"] == []
+
+
+def test_a_directory_without_meta_is_not_listed(tmp_path):
+    store = RunStore(tmp_path / "runs")
+    store.root.mkdir(parents=True, exist_ok=True)
+    (store.root / "run-empty").mkdir()
+
+    assert store.list_runs_page()["runs"] == []
+
+
+def test_token_counters_are_kept_but_token_secrets_are_masked():
+    from backend.core.run_store import redact
+
+    payload = {
+        "prompt_tokens": 1200,
+        "completion_tokens": 150,
+        "total_tokens": 1350,
+        "token_reports": 1,
+        "access_token": "sk-live-abc",
+        "token": "abc",
+    }
+
+    cleaned = redact(payload)
+
+    assert cleaned["prompt_tokens"] == 1200
+    assert cleaned["total_tokens"] == 1350
+    assert cleaned["token_reports"] == 1
+    assert cleaned["access_token"] == "***"
+    assert cleaned["token"] == "***"

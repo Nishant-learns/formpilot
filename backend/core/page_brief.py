@@ -640,10 +640,20 @@ class PageInterpreter:
         return brief
 
     def _default_llm(self) -> Optional[LLMClient]:
-        try:
-            return LLMClient()
-        except Exception:
+        # One client per interpreter, so its usage counters can be snapshotted
+        # per run and the config file is not re-read on every page.
+        if self._llm is None:
+            try:
+                self._llm = LLMClient()
+            except Exception:
+                return None
+        return self._llm
+
+    def usage_snapshot(self) -> Optional[Dict[str, Any]]:
+        client = self._llm
+        if client is None or not hasattr(client, "usage_snapshot"):
             return None
+        return client.usage_snapshot()
 
     async def _interpret_with_model(
         self,

@@ -535,8 +535,12 @@ def health():
 def list_runs(
     limit: int = Query(25, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    cursor: Optional[str] = Query(None, description="Opaque cursor from a previous page."),
 ):
-    return {"runs": run_store.list_runs(limit=limit, offset=offset)}
+    try:
+        return run_store.list_runs_page(limit=limit, offset=offset, cursor=cursor)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid cursor.")
 
 
 @app.get("/api/runs/{run_id}")

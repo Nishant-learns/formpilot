@@ -1976,3 +1976,50 @@ exercised through the API. Full suite: 372 passed, 2 skipped.
 
 Next: Slice L (scale-out: SDK/CLI, cost metering, keyset pagination), only if
 the local product stays reliable.
+
+### 17.10 Slice L — scale-out (done)
+
+**The CLI is a client, not a bypass.** `python -m backend.cli` has eight
+commands. Three read the journal from disk and work with the server stopped:
+`runs` (paginated list), `show` (the plain-language report, or `--json`), and
+`report` (write the printable HTML page). The rest talk to the local cockpit:
+`status`, `start`, `follow`, `answer` and `stop`.
+
+`answer` accepts only `CONTINUE`, `FILL_CONTINUE`, `FILL_RECHECK`, `RECHECK`,
+`SECTION_APPROVAL`, `DISMISS` and `STOPPED`. Every human-only action — the
+one-time code, the CAPTCHA, the live photo, the upload, the handoff, the
+pre-payment lock — is refused with a pointer back to the cockpit. The terminal
+is a convenience, not a way to skip the person. A test asserts the refusal for
+each of those actions.
+
+**Cost metering.** `LLMClient` keeps cumulative counters: calls, errors,
+prompt tokens, completion tokens, total tokens, how many responses actually
+reported usage, and the model name. The orchestrator snapshots them at run
+start and stores the delta as `llm_usage` in `meta.json`, so a long-lived
+process still reports per-run cost. `get_state` exposes the same delta live,
+and the run report adds a "model calls"/"tokens" line and stat cards. Prices
+are opt-in: `FORMPILOT_LLM_PRICE_INPUT_PER_MTOK` and
+`FORMPILOT_LLM_PRICE_OUTPUT_PER_MTOK` add `estimated_cost_usd`; with no price
+table the report shows tokens and no invented dollar figure.
+
+**Keyset pagination.** `/api/runs` returns `{"runs": [...], "next_cursor": ...}`
+where the cursor is an opaque base64 `(mtime, run_id)` key. Following the
+cursor is stable: a run that starts mid-page never shifts an open page, and a
+run is never served twice. `offset` still works for older callers; an
+unreadable cursor is a 400 rather than a silent restart from the top.
+
+**Ledger hygiene, found while building the CLI.** `RunStore._dir` used to
+create the directory on *read*, so `GET /api/runs/not-a-real-run/steps` left an
+empty `data/runs/not-a-real-run` behind, which then appeared in the list as an
+`UNKNOWN` run. Reads now use `_path` and never create anything, and a
+directory without `meta.json` is not a run. A stray directory from the old
+behaviour was removed. The redactor also learned that `prompt_tokens`,
+`completion_tokens`, `total_tokens`, `token_reports` and `token_count` are
+counters, not credentials: `access_token` and `token` stay masked, the counts
+survive.
+
+Acceptance: `tests/test_cli.py`, `tests/test_llm_metering.py`, and new paging
+and redaction tests in `tests/test_run_store.py`. Full suite: 400 passed,
+2 skipped. The live practice portal is still paused until the user can handle
+the human steps; the CLI was exercised against the local cockpit (status,
+runs, show) and the paging endpoints, not against a portal run.

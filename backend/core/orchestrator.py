@@ -33,6 +33,7 @@ from .fill_plan import build_fill_plan
 from .form_model import FormModel
 from .gates import apply_gate_metadata, gate_reason
 from .live_browser import LiveBrowserSession, live_sessions
+from .llm_client import LLMClient
 from .navigator import ResilientNavigator
 from .oracle import OracleResult, PortalOracle
 from .page_brief import PageInterpreter
@@ -133,6 +134,9 @@ class FormPilotOrchestrator:
         self._run_started_monotonic: Optional[float] = None
         self._gate_seconds = 0.0
         self._gate_opened_monotonic: Optional[float] = None
+        # Model usage is metered per run by snapshotting the interpreter's
+        # client at start and storing the delta at finish.
+        self._llm_usage_start: Optional[Dict[str, Any]] = None
         self._last_screenshot_at = 0.0
         self._idle_cycles = 0
 
@@ -195,6 +199,7 @@ class FormPilotOrchestrator:
             "takeover": self.takeover_state(),
             "portal_account": self._portal_account_summary(),
             "run_clock": self.run_clock(),
+            "llm_usage": self.llm_usage(),
         }
 
     async def start_application(self, query_or_url: str, run_mode: str = "fill"):
@@ -253,6 +258,7 @@ class FormPilotOrchestrator:
         self._run_started_monotonic = time.monotonic()
         self._gate_seconds = 0.0
         self._gate_opened_monotonic = None
+        self._llm_usage_start = self.page_interpreter.usage_snapshot()
         self._idle_cycles = 0
         self.run_id = f"run-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
         self.state = "RESOLVING"
@@ -349,6 +355,7 @@ class FormPilotOrchestrator:
                     "target_url": self.target_url,
                     "run_mode": self.run_mode,
                     "run_clock": self.run_clock(),
+                    "llm_usage": self.llm_usage(),
                 },
             )
 
@@ -415,6 +422,7 @@ class FormPilotOrchestrator:
         self._run_started_monotonic = None
         self._gate_seconds = 0.0
         self._gate_opened_monotonic = None
+        self._llm_usage_start = None
         self.run_mode = "fill"
         return True
 
@@ -738,6 +746,23 @@ class FormPilotOrchestrator:
             "wall_ceiling_seconds": settings.RUN_WALL_CEILING_SECONDS,
             "gate_open": self._gate_opened_monotonic is not None,
         }
+
+    def llm_usage(self) -> Optional[Dict[str, Any]]:
+        """Model calls and tokens spent by this run, with an optional cost."""
+        after = self.page_interpreter.usage_snapshot()
+        if after is None:
+            return None
+        before = self._llm_usage_start or {}
+        delta = LLMClient.usage_delta(before, after)
+        input_price = settings.LLM_PRICE_INPUT_PER_MTOK
+        output_price = settings.LLM_PRICE_OUTPUT_PER_MTOK
+        if input_price > 0 or output_price > 0:
+            delta["estimated_cost_usd"] = round(
+                (delta["prompt_tokens"] / 1_000_000) * input_price
+                + (delta["completion_tokens"] / 1_000_000) * output_price,
+                6,
+            )
+        return delta
 
     def _run_ceiling_exceeded(self) -> bool:
         clock = self.run_clock()
@@ -4753,6 +4778,7 @@ class FormPilotOrchestrator:
                     "audit_hash": audit_payload["audit_hash"],
                     "target_url": self.target_url,
                     "run_clock": self.run_clock(),
+                    "llm_usage": self.llm_usage(),
                 },
             )
 

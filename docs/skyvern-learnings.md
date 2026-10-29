@@ -339,10 +339,29 @@ Target: `run_store.py`, `evaluation.py`, `tests/`. Effort S/M.
   timeline labels, and that page text cannot inject HTML. Full suite:
   372 passed, 2 skipped.
 
-### Slice L — Scale-out
+### Slice L — Scale-out (done)
 
-- SDK/CLI (`formpilot run --portal ...`), cost metering, keyset pagination.
-- Only when the local product is reliable.
+- **CLI** (`python -m backend.cli`): `status`, `runs`, `show`, `report`,
+  `start`, `follow`, `answer`, `stop`. Reads work offline; control commands
+  talk to the local cockpit over HTTP.
+- **The CLI is not a way around the human boundary.** It sends only safe
+  actions (`CONTINUE`, `FILL_RECHECK`, `SECTION_APPROVAL`, `DISMISS`,
+  `STOPPED`). OTP, CAPTCHA, live photo, upload, handoff and the pre-payment
+  lock are refused and pointed back to the cockpit.
+- **Cost metering**: `LLMClient` counts calls, errors, prompt/completion/total
+  tokens and token reports. The orchestrator snapshots at run start and stores
+  the delta as `llm_usage` in the run meta; the report shows calls, tokens and
+  an optional cost when `FORMPILOT_LLM_PRICE_INPUT_PER_MTOK` /
+  `..._OUTPUT_PER_MTOK` are set. No price table means no dollar figure.
+- **Keyset pagination**: `/api/runs` returns an opaque `next_cursor` from
+  `(mtime, run_id)`. Following it never repeats or skips a run when a new run
+  starts mid-page; a bad cursor is a 400, not a silent restart.
+- **Ledger hygiene**: reading a run no longer creates its directory, and a
+  directory without `meta.json` is not listed. Token *counters* survive
+  redaction while `access_token` and `token` stay masked.
+- Acceptance met: `tests/test_cli.py` (14), `tests/test_llm_metering.py` (7)
+  and the new paging/redaction tests in `tests/test_run_store.py`. Full suite:
+  400 passed, 2 skipped.
 
 ---
 

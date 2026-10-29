@@ -87,6 +87,10 @@ GATE_TIMEOUT_SECONDS = int(os.getenv("FORMPILOT_GATE_TIMEOUT_SECONDS", "1800"))
 RUN_CEILING_SECONDS = int(os.getenv("FORMPILOT_RUN_CEILING_SECONDS", "1800"))
 RUN_WALL_CEILING_SECONDS = int(os.getenv("FORMPILOT_RUN_WALL_CEILING_SECONDS", "7200"))
 SCREENSHOT_MIN_INTERVAL_MS = int(os.getenv("FORMPILOT_SCREENSHOT_INTERVAL_MS", "700"))
+# Optional price table for cost metering, in USD per million tokens.  Zero
+# means "do not estimate money"; token counts are always recorded.
+LLM_PRICE_INPUT_PER_MTOK = float(os.getenv("FORMPILOT_LLM_PRICE_INPUT_PER_MTOK", "0"))
+LLM_PRICE_OUTPUT_PER_MTOK = float(os.getenv("FORMPILOT_LLM_PRICE_OUTPUT_PER_MTOK", "0"))
 
 # Demo-only by default; production deployments must opt in explicitly.
 ALLOW_DEMO_BACKDOORS = _env_bool("FORMPILOT_ALLOW_DEMO_BACKDOORS", DEMO_MODE)

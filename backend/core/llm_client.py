@@ -12,6 +12,7 @@ persists to ``data/llm_config.json``.
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import tempfile
@@ -71,6 +72,19 @@ class LLMClient:
         )
         self._transport = transport
         self.config = self.load_config()
+        # Cumulative usage for this client instance.  The orchestrator snapshots
+        # it at run start and stores the delta, so a long-lived process can
+        # still report per-run cost.
+        self.usage: Dict[str, Any] = {
+            "calls": 0,
+            "errors": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "token_reports": 0,
+            "model": "",
+            "last_at": None,
+        }
 
     # ------------------------------------------------------------------ config
 
@@ -137,6 +151,43 @@ class LLMClient:
     def configured(self) -> bool:
         return bool(self.config.model and (self.api_key or _is_local(self.config.base_url)))
 
+    # ------------------------------------------------------------------ usage
+
+    def _record_usage(self, body: Any = None, *, error: bool = False) -> None:
+        usage = self.usage
+        usage["calls"] = int(usage.get("calls") or 0) + 1
+        if error:
+            usage["errors"] = int(usage.get("errors") or 0) + 1
+        reported = body.get("usage") if isinstance(body, dict) else None
+        if isinstance(reported, dict):
+            prompt = reported.get("prompt_tokens")
+            completion = reported.get("completion_tokens")
+            total = reported.get("total_tokens")
+            if prompt is not None:
+                usage["prompt_tokens"] = int(usage.get("prompt_tokens") or 0) + int(prompt or 0)
+            if completion is not None:
+                usage["completion_tokens"] = int(usage.get("completion_tokens") or 0) + int(
+                    completion or 0
+                )
+            if total is not None:
+                usage["total_tokens"] = int(usage.get("total_tokens") or 0) + int(total or 0)
+            usage["token_reports"] = int(usage.get("token_reports") or 0) + 1
+        usage["model"] = self.config.model
+        usage["last_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    def usage_snapshot(self) -> Dict[str, Any]:
+        return dict(self.usage)
+
+    @staticmethod
+    def usage_delta(before: Dict[str, Any], after: Dict[str, Any]) -> Dict[str, Any]:
+        """The usage that happened between two snapshots."""
+        keys = ("calls", "errors", "prompt_tokens", "completion_tokens", "total_tokens", "token_reports")
+        delta = {
+            key: int(after.get(key) or 0) - int(before.get(key) or 0) for key in keys
+        }
+        delta["model"] = after.get("model") or before.get("model") or ""
+        return delta
+
     def public_config(self) -> Dict[str, Any]:
         return {
             "configured": self.configured,
@@ -184,6 +235,7 @@ class LLMClient:
             ) as client:
                 response = await client.post(url, json=payload, headers=headers)
         except httpx.HTTPError as exc:
+            self._record_usage(error=True)
             raise LLMError(
                 f"The assistant could not reach the model: {exc.__class__.__name__}.",
                 code="llm_unreachable",
@@ -200,6 +252,7 @@ class LLMClient:
                 )[:300]
             except Exception:
                 detail = response.text[:300]
+            self._record_usage(error=True)
             raise LLMError(
                 f"The model returned {response.status_code}: {detail}",
                 status_code=response.status_code,
@@ -210,5 +263,7 @@ class LLMClient:
             body = response.json()
             message = body["choices"][0]["message"]
         except Exception as exc:
+            self._record_usage(error=True)
             raise LLMError("The model returned an unexpected response.", code="llm_bad_response") from exc
+        self._record_usage(body)
         return message
