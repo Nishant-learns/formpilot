@@ -43,6 +43,7 @@ _KIND_LABELS = {
     "takeover": "Browser control",
     "submit": "Payment and final submission",
     "error": "Portal problem",
+    "stall": "Stall check",
 }
 
 _TERMINAL = {"DONE", "COMPLETED", "STOPPED", "FAILED", "AWAITING_PAYMENT", "INSPECT_READY"}
@@ -163,6 +164,14 @@ def _step_detail(step: Dict[str, Any]) -> str:
         if output.get("final_action"):
             return "Stopped before the final submission. The last step is yours."
         return "Stopped before payment. The payment step is yours."
+    if kind == "stall":
+        attempts = output.get("repeat_run")
+        if status == "shadow":
+            return (
+                f"Progress check: the page looked unchanged after {attempts} "
+                "attempts (recorded only)."
+            )
+        return "Progress check: the page did not change."
     if kind == "error":
         message = str(output.get("message") or "").strip()
         return message or "The portal reported a problem."

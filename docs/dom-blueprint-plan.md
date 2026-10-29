@@ -2023,3 +2023,63 @@ and redaction tests in `tests/test_run_store.py`. Full suite: 400 passed,
 2 skipped. The live practice portal is still paused until the user can handle
 the human steps; the CLI was exercised against the local cockpit (status,
 runs, show) and the paging endpoints, not against a portal run.
+
+### 17.11 Slice M — no-progress detection (done)
+
+A form agent's most expensive failure is not a crash. It is a loop: the page
+never changes, the loop re-reads it, re-fills it and re-asks the human, and the
+time budget drains while nothing moves. The run ceiling catches it eventually,
+but only after the budget is gone. Slice M adds the guard in front of it.
+
+`backend/core/progress.py` is pure. The loop feeds it one observation per
+cycle — the page identity (`url | step | field count`) and a SHA-256 digest of
+the visible field values — and gets back a verdict:
+
+- `PROGRESS` — the key changed. A new page, a new step, a different field
+  count or a different value all count.
+- `REPEAT` — same key, below both thresholds.
+- `SHADOW_STALL` — same key for the low threshold. **Records evidence only.**
+- `STALL` — same key for the high threshold. The run stops and asks.
+
+The thresholds are deliberately different and each needs both cycles *and*
+time: 3 repeats and 15 seconds for the shadow, 6 repeats and 45 seconds for the
+stall. The time gate matters: a slow portal that takes ten seconds to render
+must not be called stuck after three fast re-reads. All five values are
+environment knobs (`FORMPILOT_STALL_REPEAT_THRESHOLD`, `..._STALL_THRESHOLD`,
+`..._STALL_MIN_SHADOW_SECONDS`, `..._STALL_MIN_SECONDS`, `..._STALL_SHADOW`).
+
+**Shadow-first.** The low threshold is a measurement, not a behaviour change.
+It writes a single `stall` ledger row per stalled key (`status: "shadow"`,
+`repeat_run`, `threshold`) and carries on. That is how we will learn the false
+positive rate before trusting the high threshold, and it is why the high
+threshold is not configurable to fire on the first repeat.
+
+**The high threshold hands over, it does not fail.** It records a `no_progress`
+error row and opens an `ERROR_DIAGNOSIS` checkpoint — the same gate the portal
+error path uses — with the page, the field digest and the attempt count in the
+row. The human can look at the live page, fix the thing that is blocking it, and
+continue; or stop and take the portal. `FailureCode.NO_PROGRESS` is
+non-retryable: repeating the same step will not fix an unchanged page.
+
+**Counters measure episodes.** `shadow_stalls` and `stalls` increment once when
+a key *enters* the state, not on every cycle inside it, so a two-minute stall is
+one data point rather than thirty. `repeat_run` and `unchanged_seconds` carry
+the current episode, and `get_state.progress` exposes the whole snapshot.
+
+**The budget resets** on a human answer, on returning from a takeover, and
+after the stall checkpoint itself. Without those resets the first human action
+would leave the loop one repeat away from a second checkpoint.
+
+The report translates the rows: a shadow row reads "Progress check: the page
+looked unchanged after 3 attempts (recorded only)"; a stall surfaces as the
+classified failure with its next step.
+
+Acceptance: `tests/test_progress.py` (16) covers the verdict ladder, the
+episode counters, the time gate (a slow page is not a stall; a long unchanged
+page is), the reset paths, the taxonomy, the single shadow row, the checkpoint
+gate and the stop. Full suite: 416 passed, 2 skipped.
+
+Next, if the local product stays reliable: 2.6 action post-conditions (a click
+is only done when the URL or the content digest changes), 2.5 observation
+epochs, and 2.7 fact-key-only plans. The live practice portal remains paused
+until the user is available for the OTP and human steps.

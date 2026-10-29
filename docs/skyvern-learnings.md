@@ -101,7 +101,7 @@ instructions found in a label, error message or help text.
 Target: `page_brief.py` prompt, `chat_assistant.py` system prompt.
 Effort S. Risk low.
 
-### 2.4 No-progress detection, shadow-first — **next**
+### 2.4 No-progress detection, shadow-first — **adopt now (done)**
 
 Skyvern has layered stall detection: identical perception after 6 nudges,
 identical tool+args after 3, both with higher termination thresholds, and
@@ -109,9 +109,15 @@ several guards ship shadow-only to measure false positives
 (`taskv3/loop.py:949-1018, 1494-1577`). Revisits and cycles never count as
 progress.
 
-FormPilot tracks `_idle_cycles` and `_last_scan_key` but does not compare the
+FormPilot tracked `_idle_cycles` and `_last_scan_key` but did not compare the
 normalised brief. A portal that re-renders the same page with a new URL
-fragment can loop.
+fragment could loop.
+
+Shipped as Slice M (`backend/core/progress.py`): a page + field-value digest
+is the progress key, the low threshold (3 repeats, >= 15 s) records evidence
+only, and the high threshold (6 repeats, >= 45 s) records `no_progress` and
+opens an `ERROR_DIAGNOSIS` checkpoint. The time gate is what stops a slow
+render from being mistaken for a stall.
 
 Target: `orchestrator.py` + `perception.py` (brief hash). Effort M. Risk low.
 
@@ -362,6 +368,30 @@ Target: `run_store.py`, `evaluation.py`, `tests/`. Effort S/M.
 - Acceptance met: `tests/test_cli.py` (14), `tests/test_llm_metering.py` (7)
   and the new paging/redaction tests in `tests/test_run_store.py`. Full suite:
   400 passed, 2 skipped.
+
+### Slice M — No-progress detection, shadow-first (done)
+
+- `progress.py`: a pure `ProgressTracker` keyed on `(url, step, field count)`
+  plus a hash of the visible values. `PROGRESS`, `REPEAT`, `SHADOW_STALL`,
+  `STALL`.
+- Two thresholds and two clocks: the low one (3 repeats, 15 s) is shadow-only
+  and writes one `stall` evidence row; the high one (6 repeats, 45 s) writes
+  a `no_progress` error and opens an `ERROR_DIAGNOSIS` checkpoint. A page that
+  renders slowly is never called a stall after three fast re-reads.
+- Counters measure *episodes* (entering the state), not cycles, so a long
+  stall is one data point rather than dozens. `get_state.progress` exposes the
+  tracker for the cockpit and the report translates `stall` rows into plain
+  language.
+- The budget resets on a human answer, on returning from a takeover, and after
+  the stall checkpoint. A stop at the checkpoint stops the run.
+- `FailureCode.NO_PROGRESS = "no_progress"`, non-retryable: repeating the same
+  step will not fix an unchanged page.
+- Knobs: `FORMPILOT_STALL_REPEAT_THRESHOLD`, `FORMPILOT_STALL_THRESHOLD`,
+  `FORMPILOT_STALL_MIN_SHADOW_SECONDS`, `FORMPILOT_STALL_MIN_SECONDS`,
+  `FORMPILOT_STALL_SHADOW`.
+- Acceptance met: `tests/test_progress.py` (16) covers the verdict ladder, the
+  episode counters, the time gate, the reset paths, the taxonomy, the shadow
+  row, the checkpoint and the stop. Full suite: 416 passed, 2 skipped.
 
 ---
 

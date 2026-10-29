@@ -24,6 +24,7 @@ class FailureCode(str, Enum):
     FIELD_NOT_HELD = "field_not_held"
     WRONG_PAGE = "wrong_page"
     TIMEOUT = "timeout"
+    NO_PROGRESS = "no_progress"
     BUDGET = "budget_exceeded"
     PORTAL_ERROR = "portal_error"
     INTERNAL = "internal_error"
@@ -39,7 +40,8 @@ _RULES = (
     (FailureCode.NAVIGATION, r"did not move|navigation|did not advance|wrong step"),
     (FailureCode.WRONG_PAGE, r"unexpected page|wrong page|not the .* page"),
     (FailureCode.TIMEOUT, r"timed? ?out|timeout|too long"),
-    (FailureCode.BUDGET, r"stalled|no progress|budget|too many (?:steps|attempts)"),
+    (FailureCode.NO_PROGRESS, r"no progress|not changed|unchanged|stalled|same page"),
+    (FailureCode.BUDGET, r"budget|too many (?:steps|attempts)"),
     (FailureCode.PORTAL_ERROR, r"portal (?:reported|error|rejected)|server error|validation"),
 )
 

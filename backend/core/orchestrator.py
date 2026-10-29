@@ -38,6 +38,7 @@ from .navigator import ResilientNavigator
 from .oracle import OracleResult, PortalOracle
 from .page_brief import PageInterpreter
 from .perception import Perception
+from .progress import ProgressTracker, ProgressVerdict
 from .portal_accounts import CONFLICT_CHOICES, PortalAccountStore, build_conflict_gate
 from .portal_adapter import BasePortalAdapter, get_adapter
 from .recipe import RecipeStore
@@ -137,6 +138,10 @@ class FormPilotOrchestrator:
         # Model usage is metered per run by snapshotting the interpreter's
         # client at start and storing the delta at finish.
         self._llm_usage_start: Optional[Dict[str, Any]] = None
+        # Stall detection.  The low threshold is shadow-only; only the high
+        # threshold stops the run and asks the human.
+        self._progress = self._new_progress_tracker()
+        self._shadow_stall_key = None
         self._last_screenshot_at = 0.0
         self._idle_cycles = 0
 
@@ -200,6 +205,7 @@ class FormPilotOrchestrator:
             "portal_account": self._portal_account_summary(),
             "run_clock": self.run_clock(),
             "llm_usage": self.llm_usage(),
+            "progress": self._progress.snapshot(),
         }
 
     async def start_application(self, query_or_url: str, run_mode: str = "fill"):
@@ -259,6 +265,8 @@ class FormPilotOrchestrator:
         self._gate_seconds = 0.0
         self._gate_opened_monotonic = None
         self._llm_usage_start = self.page_interpreter.usage_snapshot()
+        self._progress = self._new_progress_tracker()
+        self._shadow_stall_key = None
         self._idle_cycles = 0
         self.run_id = f"run-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
         self.state = "RESOLVING"
@@ -423,6 +431,8 @@ class FormPilotOrchestrator:
         self._gate_seconds = 0.0
         self._gate_opened_monotonic = None
         self._llm_usage_start = None
+        self._progress = self._new_progress_tracker()
+        self._shadow_stall_key = None
         self.run_mode = "fill"
         return True
 
@@ -571,6 +581,8 @@ class FormPilotOrchestrator:
         )
         self._takeover_paused_run = False
         self._takeover_started_at = None
+        self._progress.reset("takeover_return")
+        self._shadow_stall_key = None
         return {
             "success": True,
             "state": self.state,
@@ -1592,6 +1604,9 @@ class FormPilotOrchestrator:
             step = adapter.current_step(self.page, dom)
             self.current_section = step
 
+            if await self._observe_progress(dom, step):
+                continue
+
             if await self._account_conflict_checkpoint(dom):
                 continue
 
@@ -1707,6 +1722,117 @@ class FormPilotOrchestrator:
                     continue
                 raise AgentRunError("The portal did not move to the next step. Please review the page and try again.")
             await asyncio.sleep(0.3)
+
+    # ------------------------------------------------------------------ progress
+
+    @staticmethod
+    def _new_progress_tracker() -> ProgressTracker:
+        return ProgressTracker(
+            repeat_threshold=settings.STALL_REPEAT_THRESHOLD,
+            stall_threshold=settings.STALL_THRESHOLD,
+            shadow=settings.STALL_SHADOW,
+            min_shadow_seconds=settings.STALL_MIN_SHADOW_SECONDS,
+            min_stall_seconds=settings.STALL_MIN_SECONDS,
+        )
+
+    async def _observe_progress(self, dom: Dict[str, Any], step: Any) -> bool:
+        """Measure one cycle; stop and ask the human if nothing changes.
+
+        The low threshold only writes evidence to the ledger (shadow mode).
+        The high threshold records a ``no_progress`` error and opens an
+        ``ERROR_DIAGNOSIS`` checkpoint, because a page that will not move is a
+        page only the human can unstick.
+        """
+        page_key = (
+            f"{dom.get('url') or (self.page.url if self.page else '')}"
+            f"|{step}"
+            f"|{len(dom.get('inputs') or [])}"
+        )
+        fields = self._digest_field_values(dom.get("inputs") or [])
+        verdict = self._progress.observe(page_key, fields)
+        if verdict is ProgressVerdict.PROGRESS:
+            return False
+
+        key = (page_key, fields)
+        if verdict is ProgressVerdict.SHADOW_STALL:
+            # Measure, do not act.  One row per stalled key, not per cycle.
+            if self._shadow_stall_key != key:
+                self._shadow_stall_key = key
+                self._record_step(
+                    "stall",
+                    status="shadow",
+                    output={
+                        "page": page_key,
+                        "fields": fields,
+                        "repeat_run": self._progress.repeat_run + 1,
+                        "threshold": self._progress.repeat_threshold,
+                    },
+                )
+            return False
+
+        if verdict is ProgressVerdict.STALL:
+            attempts = self._progress.repeat_run + 1
+            message = (
+                "The page has not changed after "
+                f"{attempts} attempts, so FormPilot stopped to avoid repeating "
+                "the same step."
+            )
+            self._record_step(
+                "error",
+                status="failed",
+                error_code="no_progress",
+                output={
+                    "message": message,
+                    "page": page_key,
+                    "fields": fields,
+                    "attempts": attempts,
+                },
+            )
+            await self._no_progress_checkpoint(message, page_key)
+            return True
+        return False
+
+    async def _no_progress_checkpoint(self, message: str, page_key: str) -> None:
+        """Hand a stalled run to the human instead of failing it outright."""
+        self.active_gate = None
+        gate = {
+            "gate_type": "ERROR_DIAGNOSIS",
+            "title": "The page is not changing",
+            "hindi_title": "Page badal nahi raha",
+            "error_text": message,
+            "description": (
+                "FormPilot repeated the same step because the page did not "
+                "change. Look at the live page, fix or skip whatever is "
+                "blocking it, then continue."
+            ),
+            "suggested_actions": [
+                "Review the page",
+                "Continue after fixing it",
+                "Stop and open the portal myself",
+            ],
+            "live_session": self.live.public_info() if self.live and not self.live.closed else None,
+            "can_takeover": bool(self.live),
+        }
+        self.active_gate = gate
+        self.state = "WAITING_FOR_USER"
+        if self.live:
+            self.live.set_allow_control(True, "The page is not changing. Check it here.")
+        await self.emit_event(
+            "DECIDE",
+            "The page is not changing. FormPilot is waiting for you.",
+            "Page badal nahi raha. FormPilot aapke liye ruka hai.",
+            gate,
+            force_screenshot=True,
+        )
+        response = await self._wait_for_user_response()
+        self.active_gate = None
+        if self.live:
+            self._release_live_control("The agent is driving again.")
+        self.state = "RUNNING" if self.is_running else self.state
+        if response.get("action") in {"STOPPED", "TIMEOUT"}:
+            self.is_running = False
+        self._progress.reset("stall_checkpoint")
+        self._shadow_stall_key = None
 
     # ---------------------------------------------------------------- gateways
 
@@ -4977,5 +5103,8 @@ class FormPilotOrchestrator:
             self.active_event_future = None
         if result.get("action") == "STOPPED":
             return self._stopped_gate_result()
+        # A human answer is progress: give the loop a fresh stall budget.
+        self._progress.reset("human_answer")
+        self._shadow_stall_key = None
         return result
 
