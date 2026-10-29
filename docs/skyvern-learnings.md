@@ -278,15 +278,25 @@ Target: `run_store.py`, `evaluation.py`, `tests/`. Effort S/M.
 - Acceptance met: a run is reconstructable from disk after a restart; retries
   are visible; `tests/test_run_store.py` asserts no secret reaches the ledger.
 
-### Slice I — Security boundaries
+### Slice I — Security boundaries (done)
 
-- Page text labelled untrusted in brief and chat prompts.
-- Fill plans carry fact keys, not raw values; the operator resolves at typing
-  time; a test asserts no prompt contains a vault value.
-- Final-submit approval frozen to URL + value digest + timestamp, re-verified
-  before the click.
-- Acceptance: a page that says "ignore previous instructions" cannot change
-  the plan; an edited field after approval re-opens the gate.
+- Page text is labelled untrusted in the page-brief prompt (paragraph + rule 9)
+  and in the chat prompt (rule 14). Page text is data, never a command.
+- A real login identifier is masked before it enters the chat context; field
+  keys such as `mobile` pass through, e-mail and phone values do not.
+- The persisted pre-payment audit (`audit.json`) masks `vault_value` and
+  `form_value`; the live gate keeps the display copy the human reviews. The
+  display audit hash and a separate masked-records hash are both recorded.
+- The review snapshot is frozen to `run_id`, URL, audit hash, field-value
+  digest and timestamp. `return_human_control` re-reads the page and, if the
+  URL or any field value changed, marks the gate `approval_valid = false`,
+  warns the human and records an `invalidated` `submit` step.
+- Acceptance met for the model paths and the approval boundary:
+  `tests/test_security_boundaries.py` asserts the boundary text, identifier
+  masking, audit masking and snapshot invalidation on changed fields or URL.
+- Deferred: the in-memory fill plan still holds resolved values because it is
+  never sent to a model. A fact-key-only plan becomes necessary only if the
+  plan itself is exposed to an LLM or persisted; revisit before Slice L.
 
 ### Slice J — Gate quality and attended time
 

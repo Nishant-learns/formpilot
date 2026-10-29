@@ -123,6 +123,9 @@ class FormPilotOrchestrator:
         self._handled_conflicts: set = set()
         self._open_gate_step: Optional[str] = None
         self._open_gate_signature: str = ""
+        # Frozen review snapshot: URL + field-value digest + audit hash.  A
+        # changed page invalidates the human's pre-payment review.
+        self._approval_snapshot: Optional[Dict[str, Any]] = None
         self._last_screenshot_at = 0.0
         self._idle_cycles = 0
 
@@ -237,6 +240,7 @@ class FormPilotOrchestrator:
         self._handled_conflicts: set = set()
         self._open_gate_step: Optional[str] = None
         self._open_gate_signature: str = ""
+        self._approval_snapshot = None
         self._idle_cycles = 0
         self.run_id = f"run-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
         self.state = "RESOLVING"
@@ -389,6 +393,7 @@ class FormPilotOrchestrator:
         self._takeover_active = False
         self._takeover_paused_run = False
         self._takeover_started_at = None
+        self._approval_snapshot = None
         self.run_mode = "fill"
         return True
 
@@ -509,6 +514,8 @@ class FormPilotOrchestrator:
             except Exception:
                 traceback.print_exc()
 
+        approval = await self._verify_approval_snapshot()
+
         # At a checkpoint the human is still expected to act, so control goes
         # back to them once the rescan is complete.  A paused driving run stays
         # with the operator until the human presses Continue.
@@ -541,6 +548,7 @@ class FormPilotOrchestrator:
             "paused": self.paused or self._is_paused,
             "refreshed": refreshed,
             "page_brief": brief,
+            "approval": approval,
             "takeover": self.takeover_state(),
         }
 
@@ -2360,6 +2368,119 @@ class FormPilotOrchestrator:
         return True
 
     # ---------------------------------------------------------------- filling
+
+    @staticmethod
+    def _digest_field_values(values: List[Dict[str, Any]]) -> str:
+        """A value digest for the review snapshot; the values themselves are not stored."""
+        pairs = []
+        for item in values or []:
+            if not isinstance(item, dict):
+                continue
+            pairs.append(
+                {
+                    "id": str(item.get("id") or ""),
+                    "name": str(item.get("name") or ""),
+                    "value": str(item.get("value") or ""),
+                    "selected": str(item.get("selectedText") or ""),
+                    "checked": bool(item.get("checked")),
+                }
+            )
+        pairs.sort(key=lambda item: (item["id"], item["name"], item["value"], item["selected"]))
+        return hashlib.sha256(json.dumps(pairs, sort_keys=True).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _mask_persisted_value(value: Any) -> Any:
+        text = str(value or "")
+        if not text or text == "provided by you":
+            return value
+        if len(text) <= 4:
+            return "*" * len(text)
+        return f"{'*' * (len(text) - 4)}{text[-4:]}"
+
+    def _persisted_audit(self, audit: Dict[str, Any]) -> Dict[str, Any]:
+        """The on-disk audit keeps masked values; the gate keeps the display copy."""
+        records = [
+            {
+                **record,
+                "vault_value": self._mask_persisted_value(record.get("vault_value")),
+                "form_value": self._mask_persisted_value(record.get("form_value")),
+            }
+            for record in (audit.get("records") or [])
+        ]
+        return {
+            **audit,
+            "records": records,
+            "values_masked": True,
+            "persisted_records_hash": hashlib.sha256(
+                json.dumps(records, sort_keys=True).encode("utf-8")
+            ).hexdigest(),
+        }
+
+    async def _verify_approval_snapshot(self) -> Optional[Dict[str, Any]]:
+        """Re-check the frozen review snapshot after the human returns control."""
+        snapshot = self._approval_snapshot
+        if not snapshot or not self.page or self.page.is_closed():
+            return None
+        at_gate = self.state == "AWAITING_PAYMENT" or (
+            isinstance(self.active_gate, dict)
+            and self.active_gate.get("gate_type") == "PRE_PAYMENT_SAFETY_LOCK"
+        )
+        if not at_gate:
+            return None
+        try:
+            values = await self.page.evaluate(DOMScanner.EXTRACT_VALUES_JS, True)
+        except Exception:
+            values = []
+        current_url = str(self.page.url or "")
+        current_digest = self._digest_field_values(values)
+        url_changed = current_url != str(snapshot.get("url") or "")
+        fields_changed = current_digest != str(snapshot.get("field_digest") or "")
+        if not url_changed and not fields_changed:
+            return {
+                "valid": not bool(snapshot.get("invalidated")),
+                "reason": "already_invalidated" if snapshot.get("invalidated") else None,
+                "url": current_url,
+            }
+        if snapshot.get("invalidated"):
+            return {
+                "valid": False,
+                "reason": "already_invalidated",
+                "url": current_url,
+            }
+        reason = "url_changed" if url_changed else "fields_changed"
+        snapshot_url = str(snapshot.get("url") or "")
+        self._record_step(
+            "submit",
+            status="invalidated",
+            error_code="wrong_page" if url_changed else "field_not_held",
+            output={
+                "reason": reason,
+                "snapshot_url": snapshot_url,
+                "current_url": current_url,
+                "snapshot_digest": snapshot.get("field_digest"),
+                "current_digest": current_digest,
+            },
+        )
+        if isinstance(self.active_gate, dict):
+            self.active_gate["approval_valid"] = False
+            self.active_gate["snapshot_changed"] = True
+            self.active_gate["snapshot_reason"] = reason
+        snapshot["invalidated"] = True
+        snapshot["invalidated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        snapshot["url"] = current_url
+        snapshot["field_digest"] = current_digest
+        await self.emit_event(
+            "SENSE",
+            "The page changed after you reviewed it. Check the form again before you pay or submit.",
+            "Aapke review ke baad page badal gaya. Payment ya final submit se pehle form dobara check karein.",
+            force_screenshot=True,
+        )
+        return {
+            "valid": False,
+            "reason": reason,
+            "url": current_url,
+            "snapshot_url": snapshot_url,
+        }
 
     def _public_audit(self) -> List[Dict[str, Any]]:
         public: List[Dict[str, Any]] = []
@@ -4447,9 +4568,18 @@ class FormPilotOrchestrator:
                 "FormPilot never clicks a payment button or a final submission button."
             ),
         }
+        approval_snapshot = {
+            "run_id": self.run_id,
+            "url": audit_payload["portal_url"],
+            "audit_hash": audit_payload["audit_hash"],
+            "field_digest": self._digest_field_values(current_values),
+            "captured_at": audit_payload["generated_at"],
+        }
+        self._approval_snapshot = approval_snapshot
+        audit_payload["approval_snapshot"] = approval_snapshot
         if self.run_id:
             try:
-                self.run_store.save_audit(self.run_id, audit_payload)
+                self.run_store.save_audit(self.run_id, self._persisted_audit(audit_payload))
             except Exception:
                 pass
 
@@ -4500,6 +4630,8 @@ class FormPilotOrchestrator:
             "registration_id": reg_id,
             "portal_url": self.page.url if self.page else self.target_url,
             "audit_hash": audit_payload["audit_hash"],
+            "approval_snapshot": approval_snapshot,
+            "approval_valid": True,
             "download_available": True,
             "live_session": self.live.public_info() if self.live and not self.live.closed else None,
             "can_takeover": bool(self.live),
