@@ -10,13 +10,38 @@ a last-resort disambiguator after the unique id, CSS and XPath have failed.
 
 from __future__ import annotations
 
+import asyncio
+import os
 import re
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from playwright.async_api import Frame, Locator, Page
 
 from .blueprint import BlueprintElement, PageBlueprint
+
+
+class Postcondition(str, Enum):
+    """What the page said after an action, not just whether it was dispatched.
+
+    A dispatched click is not a committed action.  Skyvern learned this the
+    hard way: ``locator.click`` returning is evidence that the event was sent,
+    not that the portal accepted it.  Each action type gets the check that
+    actually means something for it:
+
+    * ``HELD`` — a typed control holds the requested value or state.
+    * ``CHANGED`` — the page identity, text or field structure moved.
+    * ``NO_CHANGE`` — the click was dispatched and nothing changed.
+    * ``NOT_HELD`` — the control reverted or refused the value.
+    * ``UNVERIFIED`` — the page could not be read; say so instead of guessing.
+    """
+
+    HELD = "held"
+    CHANGED = "changed"
+    NO_CHANGE = "no_change"
+    NOT_HELD = "not_held"
+    UNVERIFIED = "unverified"
 
 
 class ResolverError(RuntimeError):
@@ -40,6 +65,7 @@ class ActionResult:
     drift: bool = False
     attempts: int = 1
     scan_id: str = ""
+    postcondition: str = ""
     details: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -53,6 +79,7 @@ class ActionResult:
             "drift": self.drift,
             "attempts": self.attempts,
             "scan_id": self.scan_id,
+            "postcondition": self.postcondition,
             "details": self.details,
         }
 
@@ -232,6 +259,88 @@ class ActionResolver:
         except Exception:
             return ""
 
+    # --------------------------------------------------------- post-conditions
+
+    # A cheap page identity: URL, title, a text digest, the visible field
+    # structure and the values.  Deliberately not the full DOM scan — this runs
+    # after every click.
+    _PAGE_STATE_JS = r"""
+    () => {
+        const visible = (el) => el && el.getClientRects().length > 0;
+        const text = (document.body && document.body.innerText
+            ? document.body.innerText : '').replace(/\s+/g, ' ').trim();
+        let digest = 0;
+        for (let i = 0; i < text.length && i < 2000; i += 1) {
+            digest = ((digest << 5) - digest + text.charCodeAt(i)) | 0;
+        }
+        const fields = Array.from(document.querySelectorAll(
+            'input:not([type="hidden"]), select, textarea'
+        )).filter(visible);
+        return {
+            url: location.href,
+            title: document.title || '',
+            textDigest: String(digest),
+            textLength: text.length,
+            fieldCount: fields.length,
+            fields: fields.map((el) => [
+                el.tagName.toLowerCase(),
+                el.getAttribute('name') || '',
+                String(el.value || ''),
+                el.checked ? '1' : '0',
+                String(el.selectedIndex === undefined ? '' : el.selectedIndex),
+            ].join(':')).join('|'),
+        };
+    }
+    """
+
+    async def _page_state(self) -> Optional[Dict[str, Any]]:
+        """The page identity, or ``None`` when it cannot be read."""
+        try:
+            state = await self.page.evaluate(self._PAGE_STATE_JS)
+        except Exception:
+            return None
+        return state if isinstance(state, dict) else None
+
+    @staticmethod
+    def _state_changed(before: Dict[str, Any], after: Dict[str, Any]) -> bool:
+        keys = ("url", "title", "textDigest", "textLength", "fieldCount", "fields")
+        return any(str(before.get(key) or "") != str(after.get(key) or "") for key in keys)
+
+    async def _settle(
+        self,
+        before: Optional[Dict[str, Any]],
+        *,
+        timeout_ms: int = 600,
+    ) -> Postcondition:
+        """Wait briefly for a click to show an effect, then say what happened."""
+        if not before:
+            return Postcondition.UNVERIFIED
+        before_url = str(before.get("url") or "")
+        deadline = asyncio.get_running_loop().time() + max(0.0, timeout_ms / 1000)
+        while True:
+            after = await self._page_state()
+            if after is None:
+                # A navigation can destroy the execution context mid-read.
+                try:
+                    if before_url and self.page.url != before_url:
+                        return Postcondition.CHANGED
+                except Exception:
+                    pass
+            elif self._state_changed(before, after):
+                return Postcondition.CHANGED
+            if asyncio.get_running_loop().time() >= deadline:
+                return Postcondition.NO_CHANGE
+            await asyncio.sleep(0.1)
+
+    @staticmethod
+    def _click_result(
+        result: ActionResult,
+        verdict: Postcondition,
+    ) -> ActionResult:
+        result.postcondition = verdict.value
+        result.details = {**(result.details or {}), "postcondition": verdict.value}
+        return result
+
     # ------------------------------------------------------------------ click
 
     async def click(self, element_id: str) -> ActionResult:
@@ -319,27 +428,34 @@ class ActionResolver:
             )
 
         attempts: List[Dict[str, str]] = []
+        before_state = await self._page_state()
         try:
             await locator.click(timeout=self.timeout_ms)
-            return ActionResult(
-                ok=True,
-                action=action,
-                element_id=element_id,
-                method=f"playwright:{strategy}",
-                message=f"Clicked {element.label!r}.",
-                scan_id=self.blueprint.scan_id,
+            return self._click_result(
+                ActionResult(
+                    ok=True,
+                    action=action,
+                    element_id=element_id,
+                    method=f"playwright:{strategy}",
+                    message=f"Clicked {element.label!r}.",
+                    scan_id=self.blueprint.scan_id,
+                ),
+                await self._settle(before_state),
             )
         except Exception as exc:
             attempts.append({"method": "playwright", "error": str(exc)[:240]})
             if navigated():
-                return ActionResult(
-                    ok=True,
-                    action=action,
-                    element_id=element_id,
-                    method=f"playwright:navigated:{strategy}",
-                    message=f"Clicked {element.label!r} and the page moved.",
-                    scan_id=self.blueprint.scan_id,
-                    details={"attempts": attempts},
+                return self._click_result(
+                    ActionResult(
+                        ok=True,
+                        action=action,
+                        element_id=element_id,
+                        method=f"playwright:navigated:{strategy}",
+                        message=f"Clicked {element.label!r} and the page moved.",
+                        scan_id=self.blueprint.scan_id,
+                        details={"attempts": attempts},
+                    ),
+                    Postcondition.CHANGED,
                 )
 
         # A coordinate click is useful when a framework intercepts the
@@ -351,26 +467,32 @@ class ActionResolver:
                     box["x"] + box["width"] / 2,
                     box["y"] + box["height"] / 2,
                 )
-                return ActionResult(
-                    ok=True,
-                    action=action,
-                    element_id=element_id,
-                    method=f"mouse:{strategy}",
-                    message=f"Clicked {element.label!r} at its screen position.",
-                    scan_id=self.blueprint.scan_id,
-                    details={"attempts": attempts},
+                return self._click_result(
+                    ActionResult(
+                        ok=True,
+                        action=action,
+                        element_id=element_id,
+                        method=f"mouse:{strategy}",
+                        message=f"Clicked {element.label!r} at its screen position.",
+                        scan_id=self.blueprint.scan_id,
+                        details={"attempts": attempts},
+                    ),
+                    await self._settle(before_state),
                 )
         except Exception as exc:
             attempts.append({"method": "mouse", "error": str(exc)[:240]})
             if navigated():
-                return ActionResult(
-                    ok=True,
-                    action=action,
-                    element_id=element_id,
-                    method=f"mouse:navigated:{strategy}",
-                    message=f"Clicked {element.label!r} at its screen position and the page moved.",
-                    scan_id=self.blueprint.scan_id,
-                    details={"attempts": attempts},
+                return self._click_result(
+                    ActionResult(
+                        ok=True,
+                        action=action,
+                        element_id=element_id,
+                        method=f"mouse:navigated:{strategy}",
+                        message=f"Clicked {element.label!r} at its screen position and the page moved.",
+                        scan_id=self.blueprint.scan_id,
+                        details={"attempts": attempts},
+                    ),
+                    Postcondition.CHANGED,
                 )
 
         # Last resort: a JS click, but only when the target is still the
@@ -391,26 +513,32 @@ class ActionResolver:
             )
         try:
             await locator.evaluate("el => el.click()")
-            return ActionResult(
-                ok=True,
-                action=action,
-                element_id=element_id,
-                method=f"js:{strategy}",
-                message=f"Clicked {element.label!r} with a DOM click.",
-                scan_id=self.blueprint.scan_id,
-                details={"attempts": attempts},
+            return self._click_result(
+                ActionResult(
+                    ok=True,
+                    action=action,
+                    element_id=element_id,
+                    method=f"js:{strategy}",
+                    message=f"Clicked {element.label!r} with a DOM click.",
+                    scan_id=self.blueprint.scan_id,
+                    details={"attempts": attempts},
+                ),
+                await self._settle(before_state),
             )
         except Exception as exc:
             attempts.append({"method": "js", "error": str(exc)[:240]})
             if navigated():
-                return ActionResult(
-                    ok=True,
-                    action=action,
-                    element_id=element_id,
-                    method=f"js:navigated:{strategy}",
-                    message=f"Clicked {element.label!r} with a DOM click and the page moved.",
-                    scan_id=self.blueprint.scan_id,
-                    details={"attempts": attempts},
+                return self._click_result(
+                    ActionResult(
+                        ok=True,
+                        action=action,
+                        element_id=element_id,
+                        method=f"js:navigated:{strategy}",
+                        message=f"Clicked {element.label!r} with a DOM click and the page moved.",
+                        scan_id=self.blueprint.scan_id,
+                        details={"attempts": attempts},
+                    ),
+                    Postcondition.CHANGED,
                 )
 
         return ActionResult(
@@ -487,6 +615,7 @@ class ActionResolver:
                     method=f"fill:{strategy}",
                     message=f"Filled {element.label!r}.",
                     scan_id=self.blueprint.scan_id,
+                    postcondition=Postcondition.HELD.value,
                 )
             attempts.append({"method": "fill", "error": "value did not stick"})
         except Exception as exc:
@@ -505,6 +634,7 @@ class ActionResolver:
                     method=f"type:{strategy}",
                     message=f"Typed into {element.label!r}.",
                     scan_id=self.blueprint.scan_id,
+                    postcondition=Postcondition.HELD.value,
                     details={"attempts": attempts},
                 )
             attempts.append({"method": "type", "error": "value did not stick"})
@@ -541,6 +671,7 @@ class ActionResolver:
                     method=f"js:{strategy}",
                     message=f"Filled {element.label!r} with a DOM setter.",
                     scan_id=self.blueprint.scan_id,
+                    postcondition=Postcondition.HELD.value,
                     details={"attempts": attempts},
                 )
         except Exception as exc:
@@ -553,6 +684,7 @@ class ActionResolver:
             error_code="FILL_FAILED",
             message=f"Could not fill {element.label!r}.",
             scan_id=self.blueprint.scan_id,
+            postcondition=Postcondition.NOT_HELD.value,
             details={"attempts": attempts, "strategy": strategy},
         )
 
@@ -567,6 +699,28 @@ class ActionResolver:
         except Exception:
             return False
         return str(actual or "").strip() == str(expected or "").strip()
+
+    @staticmethod
+    def _normalized(value: Any) -> str:
+        return re.sub(r"\s+", "", str(value or "")).casefold()
+
+    async def _selected_matches(self, locator: Locator, target: str) -> bool:
+        """True when the select now holds the requested value *or* option text."""
+        wanted = self._normalized(target)
+        if not wanted:
+            return False
+        try:
+            value = await locator.input_value(timeout=2000)
+        except Exception:
+            value = ""
+        try:
+            text = await locator.evaluate(
+                "el => (el.options && el.selectedIndex >= 0)"
+                " ? el.options[el.selectedIndex].text : ''"
+            )
+        except Exception:
+            text = ""
+        return wanted in {self._normalized(value), self._normalized(text)}
 
     # ------------------------------------------------------------------ select
 
@@ -601,13 +755,22 @@ class ActionResolver:
         for kwargs in ({"label": target}, {"value": target}):
             try:
                 await locator.select_option(**kwargs, timeout=self.timeout_ms)
-                return ActionResult(
-                    ok=True,
-                    action=action,
-                    element_id=element_id,
-                    method=f"select_option:{strategy}",
-                    message=f"Selected {target!r} in {element.label!r}.",
-                    scan_id=self.blueprint.scan_id,
+                if await self._selected_matches(locator, target):
+                    return ActionResult(
+                        ok=True,
+                        action=action,
+                        element_id=element_id,
+                        method=f"select_option:{strategy}",
+                        message=f"Selected {target!r} in {element.label!r}.",
+                        scan_id=self.blueprint.scan_id,
+                        postcondition=Postcondition.HELD.value,
+                        details={"attempts": attempts},
+                    )
+                attempts.append(
+                    {
+                        "method": f"select_option:{list(kwargs)[0]}",
+                        "error": "the select did not keep the value",
+                    }
                 )
             except Exception as exc:
                 attempts.append({"method": f"select_option:{list(kwargs)[0]}", "error": str(exc)[:240]})
@@ -625,15 +788,20 @@ class ActionResolver:
         if option is not None:
             try:
                 await locator.select_option(index=int(option.get("index") or 0), timeout=self.timeout_ms)
-                return ActionResult(
-                    ok=True,
-                    action=action,
-                    element_id=element_id,
-                    method=f"select_index:{strategy}",
-                    message=f"Selected {option.get('text')!r} in {element.label!r}.",
-                    scan_id=self.blueprint.scan_id,
-                    details={"attempts": attempts},
-                )
+                if await self._selected_matches(locator, target) or await self._selected_matches(
+                    locator, str(option.get("text") or "")
+                ):
+                    return ActionResult(
+                        ok=True,
+                        action=action,
+                        element_id=element_id,
+                        method=f"select_index:{strategy}",
+                        message=f"Selected {option.get('text')!r} in {element.label!r}.",
+                        scan_id=self.blueprint.scan_id,
+                        postcondition=Postcondition.HELD.value,
+                        details={"attempts": attempts},
+                    )
+                attempts.append({"method": "select_index", "error": "the select did not keep the value"})
             except Exception as exc:
                 attempts.append({"method": "select_index", "error": str(exc)[:240]})
 
@@ -641,9 +809,10 @@ class ActionResolver:
             ok=False,
             action=action,
             element_id=element_id,
-            error_code="SELECT_FAILED",
-            message=f"Could not select {target!r} in {element.label!r}.",
+            error_code="SELECT_NOT_HELD",
+            message=f"The select {element.label!r} did not keep {target!r}.",
             scan_id=self.blueprint.scan_id,
+            postcondition=Postcondition.NOT_HELD.value,
             details={"attempts": attempts, "options": element.options[:20]},
         )
 
@@ -665,25 +834,67 @@ class ActionResolver:
             )
 
         await self._scroll(locator)
+
+        async def holds() -> bool:
+            try:
+                return bool(await locator.is_checked(timeout=2000)) is bool(checked)
+            except Exception:
+                return False
+
         try:
             if checked:
                 await locator.check(timeout=self.timeout_ms)
             else:
                 await locator.uncheck(timeout=self.timeout_ms)
-            return ActionResult(
-                ok=True,
-                action=action,
-                element_id=element_id,
-                method=f"check:{strategy}",
-                message=f"{'Checked' if checked else 'Unchecked'} {element.label!r}.",
-                scan_id=self.blueprint.scan_id,
-            )
+            if await holds():
+                return ActionResult(
+                    ok=True,
+                    action=action,
+                    element_id=element_id,
+                    method=f"check:{strategy}",
+                    message=f"{'Checked' if checked else 'Unchecked'} {element.label!r}.",
+                    scan_id=self.blueprint.scan_id,
+                    postcondition=Postcondition.HELD.value,
+                )
         except Exception as exc:
             try:
                 await locator.evaluate(
                     "(el, value) => { el.checked = value; el.dispatchEvent(new Event('input', {bubbles:true})); el.dispatchEvent(new Event('change', {bubbles:true})); }",
                     checked,
                 )
+                if await holds():
+                    return ActionResult(
+                        ok=True,
+                        action=action,
+                        element_id=element_id,
+                        method=f"js:{strategy}",
+                        message=f"{'Checked' if checked else 'Unchecked'} {element.label!r} with a DOM setter.",
+                        scan_id=self.blueprint.scan_id,
+                        postcondition=Postcondition.HELD.value,
+                    )
+            except Exception:
+                pass
+            return ActionResult(
+                ok=False,
+                action=action,
+                element_id=element_id,
+                error_code="CHECK_NOT_HELD",
+                message=(
+                    f"Could not {'check' if checked else 'uncheck'} {element.label!r}: "
+                    "the control did not keep the state."
+                ),
+                scan_id=self.blueprint.scan_id,
+                postcondition=Postcondition.NOT_HELD.value,
+                details={"attempts": [{"method": "check", "error": str(exc)[:240]}]},
+            )
+
+        # The click path returned without raising but the state did not stick.
+        try:
+            await locator.evaluate(
+                "(el, value) => { el.checked = value; el.dispatchEvent(new Event('input', {bubbles:true})); el.dispatchEvent(new Event('change', {bubbles:true})); }",
+                checked,
+            )
+            if await holds():
                 return ActionResult(
                     ok=True,
                     action=action,
@@ -691,16 +902,22 @@ class ActionResolver:
                     method=f"js:{strategy}",
                     message=f"{'Checked' if checked else 'Unchecked'} {element.label!r} with a DOM setter.",
                     scan_id=self.blueprint.scan_id,
+                    postcondition=Postcondition.HELD.value,
                 )
-            except Exception:
-                return ActionResult(
-                    ok=False,
-                    action=action,
-                    element_id=element_id,
-                    error_code="CHECK_FAILED",
-                    message=f"Could not {'check' if checked else 'uncheck'} {element.label!r}: {str(exc)[:160]}",
-                    scan_id=self.blueprint.scan_id,
-                )
+        except Exception:
+            pass
+        return ActionResult(
+            ok=False,
+            action=action,
+            element_id=element_id,
+            error_code="CHECK_NOT_HELD",
+            message=(
+                f"Could not {'check' if checked else 'uncheck'} {element.label!r}: "
+                "the control did not keep the state."
+            ),
+            scan_id=self.blueprint.scan_id,
+            postcondition=Postcondition.NOT_HELD.value,
+        )
 
     # ------------------------------------------------------------------ upload
 
@@ -720,14 +937,6 @@ class ActionResolver:
             )
         try:
             await locator.set_input_files(str(path), timeout=max(self.timeout_ms, 15000))
-            return ActionResult(
-                ok=True,
-                action=action,
-                element_id=element_id,
-                method=f"set_input_files:{strategy}",
-                message=f"Attached {path} to {element.label!r}.",
-                scan_id=self.blueprint.scan_id,
-            )
         except Exception as exc:
             return ActionResult(
                 ok=False,
@@ -737,6 +946,51 @@ class ActionResolver:
                 message=f"Could not attach the file to {element.label!r}: {str(exc)[:160]}",
                 scan_id=self.blueprint.scan_id,
             )
+        # The file picker accepting a path is not the same as the input holding
+        # the file: a framework can clear it on change.
+        try:
+            names = await locator.evaluate(
+                "el => Array.from(el.files || []).map((file) => file.name)"
+            )
+        except Exception:
+            names = None
+        if isinstance(names, list):
+            expected = os.path.basename(str(path))
+            if not names:
+                return ActionResult(
+                    ok=False,
+                    action=action,
+                    element_id=element_id,
+                    error_code="UPLOAD_NOT_HELD",
+                    message=f"The file input {element.label!r} did not keep the file.",
+                    scan_id=self.blueprint.scan_id,
+                    postcondition=Postcondition.NOT_HELD.value,
+                )
+            if expected and expected not in names:
+                return ActionResult(
+                    ok=False,
+                    action=action,
+                    element_id=element_id,
+                    error_code="UPLOAD_NOT_HELD",
+                    message=(
+                        f"The file input {element.label!r} holds a different file "
+                        f"({', '.join(str(name) for name in names[:3])})."
+                    ),
+                    scan_id=self.blueprint.scan_id,
+                    postcondition=Postcondition.NOT_HELD.value,
+                    details={"held": names[:5]},
+                )
+        return ActionResult(
+            ok=True,
+            action=action,
+            element_id=element_id,
+            method=f"set_input_files:{strategy}",
+            message=f"Attached {os.path.basename(str(path))} to {element.label!r}.",
+            scan_id=self.blueprint.scan_id,
+            postcondition=(
+                Postcondition.HELD.value if isinstance(names, list) else Postcondition.UNVERIFIED.value
+            ),
+        )
 
     # ------------------------------------------------------------------ press
 
@@ -754,15 +1008,19 @@ class ActionResolver:
                 scan_id=self.blueprint.scan_id,
                 details=exc.details,
             )
+        before_state = await self._page_state()
         try:
             await locator.press(key, timeout=self.timeout_ms)
-            return ActionResult(
-                ok=True,
-                action=action,
-                element_id=element_id,
-                method=f"press:{strategy}",
-                message=f"Pressed {key} on {element.label!r}.",
-                scan_id=self.blueprint.scan_id,
+            return self._click_result(
+                ActionResult(
+                    ok=True,
+                    action=action,
+                    element_id=element_id,
+                    method=f"press:{strategy}",
+                    message=f"Pressed {key} on {element.label!r}.",
+                    scan_id=self.blueprint.scan_id,
+                ),
+                await self._settle(before_state),
             )
         except Exception as exc:
             return ActionResult(

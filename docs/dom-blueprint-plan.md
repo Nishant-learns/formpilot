@@ -2083,3 +2083,62 @@ Next, if the local product stays reliable: 2.6 action post-conditions (a click
 is only done when the URL or the content digest changes), 2.5 observation
 epochs, and 2.7 fact-key-only plans. The live practice portal remains paused
 until the user is available for the OTP and human steps.
+
+### 17.12 Slice N — typed action post-conditions (done)
+
+Slice G made a *fill* a verdict: the field is read back and classified. Slice N
+does the same for every other action. The rule is Skyvern's, and it is the
+difference between "we sent an event" and "the portal accepted it": a
+dispatched click is not a committed action.
+
+`backend/core/action_resolver.py` now returns a `Postcondition` with every
+`ActionResult`:
+
+- `HELD` — a typed control holds the requested value or state.
+- `CHANGED` — the page identity, text or field structure moved.
+- `NO_CHANGE` — the click was dispatched and nothing changed.
+- `NOT_HELD` — the control reverted or refused the value.
+- `UNVERIFIED` — the page could not be read; we say so instead of guessing.
+
+The check is type-specific, because the honest check differs by control:
+
+- **fill** already read the value back through three strategies; it now labels
+  the result `HELD` / `NOT_HELD` so the ledger and the cockpit agree.
+- **select** reads the selected value *and* the selected option text after
+  every attempt. A framework that resets the select on `change` is retried by
+  value, then by option text, then by index; if it still will not hold, the
+  action fails as `SELECT_NOT_HELD` instead of pretending to succeed.
+- **check** reads `is_checked` back. If the click path did not stick, it tries
+  the DOM setter once and verifies again; otherwise `CHECK_NOT_HELD`.
+- **upload** reads `input.files` back and compares the file name. A file input
+  that clears itself on `change` is `UPLOAD_NOT_HELD`, not "attached".
+- **click** and **press** capture a cheap page identity before dispatch — URL,
+  title, a text digest, the visible field structure and the values — and poll
+  for up to 600 ms. That is enough to see a tab swap, a validation banner or a
+  navigation, and cheap enough to run after every click. A click that changes
+  nothing is `NO_CHANGE` with `ok=True`: the event was sent, but the page did
+  not react. It is a signal, not a failure — an already-active tab does this.
+
+**The signal changes behaviour in one place.** `_advance` used to click
+"Save & Next", wait nine seconds, and raise a fatal error when nothing moved.
+Now it remembers the signature of the page that ignored the click
+(`_blocked_advance`) and will not click that exact page again. The loop stops
+raising: it sleeps, lets the Slice M stall guard's clock run, and the human is
+asked through the `ERROR_DIAGNOSIS` checkpoint once the page has been unchanged
+long enough. A real advance, a human answer or a takeover return lifts the
+block. That is the action/commit separation in practice: retrying a click that
+the portal already ignored is how duplicate submissions happen.
+
+The report translates the failed advance to plain language: "The button was
+clicked but the page did not react." The step's `output.postcondition` keeps
+the typed word for the journal and for support.
+
+Acceptance: `tests/test_action_postconditions.py` (12) covers each verdict with
+a real browser — a click that changes the page, a click that does nothing, a
+select that holds and one that reverts, a checkbox that reverts, an upload that
+holds and one that is cleared — plus both re-click guards and the report line.
+Full suite: 428 passed, 2 skipped.
+
+Next: 2.5 observation epochs (execute only against the scan that produced the
+instruction) and 2.7 fact-key-only plans. The live practice portal remains
+paused until the user is available for the OTP and human steps.

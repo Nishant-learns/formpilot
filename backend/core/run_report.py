@@ -136,6 +136,8 @@ def _step_detail(step: Dict[str, Any]) -> str:
     if kind == "advance":
         if status == "ok":
             return "Moved to the next step."
+        if output.get("postcondition") == "no_change":
+            return "The button was clicked but the page did not react."
         return "The portal did not move to the next step."
     if kind == "gate":
         title = output.get("title") or output.get("gate_type") or "checkpoint"

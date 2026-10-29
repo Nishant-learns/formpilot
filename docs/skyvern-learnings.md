@@ -137,17 +137,20 @@ content-digest change invalidates the queue.
 Target: `perception.py` (`page_signature` already exists), `fill_plan.py`.
 Effort S/M. Risk medium (will surface real staleness bugs as failures).
 
-### 2.6 Actions need type-specific post-conditions — **adopt**
+### 2.6 Actions need type-specific post-conditions — **adopt (done)**
 
 Text inputs use typed read-back; selects check `selected` before and after;
 a custom dropdown is "done" when its menu is gone (`webeye/actions/handler.py:16439-16497,
 2674-2694`). Clicks are the weak spot: the only generic post-condition is a
 URL change (`handler.py:8155-8168`).
 
-FormPilot's fills now have read-back. Our remaining weak spot is the same:
-clicking a gateway or "Save & Next" and assuming the step advanced. The
-`_advance` logic already rescans; we should make the post-condition explicit
-per action type (URL change, step change, error banner, field set).
+FormPilot's fills already had read-back. The remaining weak spot was the same:
+clicking a gateway or "Save & Next" and assuming the step advanced. Shipped as
+Slice N: every `ActionResult` now carries a typed verdict — `HELD`,
+`CHANGED`, `NO_CHANGE`, `NOT_HELD`, `UNVERIFIED` — and a click that changed
+nothing is a signal, not a success and not a crash. `_advance` refuses to
+re-click a page that has already ignored the click, and hands it to the stall
+guard instead of failing the run.
 
 Target: `orchestrator.py` (`_advance`, `_click_gateway`). Effort M. Risk medium.
 
@@ -392,6 +395,28 @@ Target: `run_store.py`, `evaluation.py`, `tests/`. Effort S/M.
 - Acceptance met: `tests/test_progress.py` (16) covers the verdict ladder, the
   episode counters, the time gate, the reset paths, the taxonomy, the shadow
   row, the checkpoint and the stop. Full suite: 416 passed, 2 skipped.
+
+### Slice N — Typed action post-conditions (done)
+
+- `action_resolver.Postcondition`: `HELD`, `CHANGED`, `NO_CHANGE`, `NOT_HELD`,
+  `UNVERIFIED`. Every `ActionResult` carries the verdict and repeats it in
+  `details`, so the ledger and the cockpit see the same word.
+- `fill`, `select` and `check` read the control back. A select that reverts is
+  tried by value, then by option text, then by index, and finally reported as
+  `SELECT_NOT_HELD`; a checkbox that reverts is `CHECK_NOT_HELD`; an upload
+  whose input loses the file is `UPLOAD_NOT_HELD`.
+- `click` and `press` take a cheap page identity before the action (URL,
+  title, text digest, visible field structure and values) and poll for up to
+  600 ms. A dispatched click that changes nothing returns `ok=True` with
+  `NO_CHANGE`: the event was sent, but the page did not commit it.
+- `_advance` remembers the signature of a page that ignored its save click
+  (`_blocked_advance`) and refuses to click it again; the loop lets the stall
+  guard ask the human instead of raising a fatal error. The block is lifted
+  by a real advance, a human answer or a takeover return.
+- The report says "The button was clicked but the page did not react."
+- Acceptance met: `tests/test_action_postconditions.py` (12) covers each
+  verdict, both re-click guards (a no-change click and a toast-only change)
+  and the report line. Full suite: 428 passed, 2 skipped.
 
 ---
 

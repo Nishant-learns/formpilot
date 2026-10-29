@@ -119,6 +119,10 @@ class FormPilotOrchestrator:
         self._otp_cleared = False
         self._otp_signature = ""
         self._last_advance_signature = ""
+        # A save click that changed nothing must not be repeated blindly; the
+        # signature of the stuck page is remembered until the page moves or a
+        # human acts.
+        self._blocked_advance = ""
         self._captcha_signature = ""
         self._last_error_signature = ""
         self._last_gateway_signature = ""
@@ -252,6 +256,10 @@ class FormPilotOrchestrator:
         self._otp_cleared = False
         self._otp_signature = ""
         self._last_advance_signature = ""
+        # A save click that changed nothing must not be repeated blindly; the
+        # signature of the stuck page is remembered until the page moves or a
+        # human acts.
+        self._blocked_advance = ""
         self._captcha_signature = ""
         self._last_error_signature = ""
         self._last_gateway_signature = ""
@@ -583,6 +591,7 @@ class FormPilotOrchestrator:
         self._takeover_started_at = None
         self._progress.reset("takeover_return")
         self._shadow_stall_key = None
+        self._blocked_advance = ""
         return {
             "success": True,
             "state": self.state,
@@ -1706,11 +1715,24 @@ class FormPilotOrchestrator:
                 continue
 
             advanced = await self._advance(dom)
+            if advanced is None:
+                # Already blocked on this page: do not click again, let the
+                # stall guard's clock run.
+                await asyncio.sleep(1.0)
+                continue
+            postcondition = (
+                self._last_action_result.postcondition
+                if self._last_action_result is not None
+                else ""
+            )
             self._record_step(
                 "advance",
                 status="ok" if advanced else "failed",
                 error_code=None if advanced else "navigation_failure",
-                output={"url": self.page.url if self.page else self.target_url},
+                output={
+                    "url": self.page.url if self.page else self.target_url,
+                    "postcondition": postcondition,
+                },
             )
             if not advanced:
                 fresh = await self._scan_dom()
@@ -1720,7 +1742,11 @@ class FormPilotOrchestrator:
                 if fresh.get("errors"):
                     await self._handle_errors(fresh)
                     continue
-                raise AgentRunError("The portal did not move to the next step. Please review the page and try again.")
+                # A click that changed nothing is not a crash.  The page has
+                # been handed to the stall guard; ask the human once it has
+                # been unchanged long enough instead of failing the run.
+                await asyncio.sleep(1.0)
+                continue
             await asyncio.sleep(0.3)
 
     # ------------------------------------------------------------------ progress
@@ -4584,7 +4610,7 @@ class FormPilotOrchestrator:
         )
         return f"{dom.get('url') or ''}|{dom.get('formAction') or ''}|{fields}"
 
-    async def _advance(self, dom: Dict[str, Any]) -> bool:
+    async def _advance(self, dom: Dict[str, Any]) -> Optional[bool]:
         adapter = self._adapter or get_adapter(self.page.url if self.page else "")
         # Field filling and the security checkpoints may have re-rendered the
         # page, so never click a button id from an older scan.  Take a fresh
@@ -4612,6 +4638,15 @@ class FormPilotOrchestrator:
             await self._trigger_pre_payment_lock(final_action=True)
             return True
         before_signature = self._dom_signature(dom)
+        if self._blocked_advance and before_signature == self._blocked_advance:
+            # The last click on this exact page changed nothing.  Clicking
+            # again cannot help; the stall guard will ask the human.
+            await self.emit_event(
+                "SENSE",
+                "The portal is still showing the same step. FormPilot will not click it again.",
+                "Portal abhi bhi wahi step dikha raha hai. FormPilot dobara click nahi karega.",
+            )
+            return None
         before = await self._page_snapshot()
         await self.emit_event(
             "ACT",
@@ -4624,11 +4659,25 @@ class FormPilotOrchestrator:
 
         changed = await self._wait_for_page_change(before)
         if not changed:
+            self._blocked_advance = before_signature
+            postcondition = (
+                self._last_action_result.postcondition
+                if self._last_action_result is not None
+                else ""
+            )
             await self.emit_event(
                 "SENSE",
                 "The portal did not move to the next step. Nothing was saved.",
                 "Portal agle step par nahi gaya. Kuch save nahi hua.",
             )
+            if postcondition == "no_change":
+                # The click was dispatched and the page did not react; that is
+                # a page only the human can unstick.
+                await self.emit_event(
+                    "SENSE",
+                    "The button accepted the click but the page did not react.",
+                    "Button click hua, lekin page par kuch nahi badla.",
+                )
             return False
 
         self._captcha_signature = ""
@@ -4640,6 +4689,7 @@ class FormPilotOrchestrator:
                 # A validation toast or a transient overlay can change the
                 # page text without moving the form.  Never report a save
                 # twice for the same form.
+                self._blocked_advance = before_signature
                 await self.emit_event(
                     "SENSE",
                     "The portal is still showing the same step. Nothing was saved.",
@@ -4647,6 +4697,7 @@ class FormPilotOrchestrator:
                 )
                 return False
             self._last_advance_signature = fresh_signature
+            self._blocked_advance = ""
             self.current_section = adapter.current_step(self.page, fresh)
             visible = str(fresh.get("visibleText") or "").lower()
             if any(token in visible for token in ("dashboard", "logged in", "sign out", "logout")):
@@ -5103,8 +5154,10 @@ class FormPilotOrchestrator:
             self.active_event_future = None
         if result.get("action") == "STOPPED":
             return self._stopped_gate_result()
-        # A human answer is progress: give the loop a fresh stall budget.
+        # A human answer is progress: give the loop a fresh stall budget and
+        # let it try the page again.
         self._progress.reset("human_answer")
         self._shadow_stall_key = None
+        self._blocked_advance = ""
         return result
 
