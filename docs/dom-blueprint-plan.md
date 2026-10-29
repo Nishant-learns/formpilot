@@ -1737,3 +1737,78 @@ Deliberately not run in this slice: the live practice-portal conflict flow.
 The user cannot supply OTP/human steps right now. The automated tests cover
 detection, correction, gate shape and both orchestrator outcomes (stop, and
 switch to login) offline.
+
+## 17. Engineering lessons from Skyvern (2026-10-29)
+
+We studied Skyvern at `/tmp/BharatCode/skyvern` (commit `b04c3f7`) in six
+parallel deep reads: agent loop, perception/actions, workflow engine,
+human-in-the-loop/security, infra/testing, and product/UX. The full CTO
+write-up, with file-level evidence, lives in `docs/skyvern-learnings.md`.
+This section records the decisions that affect the product plan.
+
+### 17.1 The separations worth copying
+
+Skyvern's value is not "an LLM that clicks"; it is five separations:
+
+1. **Perception vs action** — reads are explicit tools, so the model cannot
+   act on a page it has not just read.
+2. **Action vs commit** — a value is filled only when a fresh read shows the
+   portal kept it, classified as `same`, `reformatted`, `not_held` or
+   `different`.
+3. **Completion vs claim** — finishing is a gated verdict, not a sentence the
+   agent writes about itself.
+4. **Agent vs judge** — the verifier sees page evidence and tool results, not
+   the agent's reasoning.
+5. **Policy vs effect** — one human approval authorises exactly one effect,
+   bound to a snapshot of the page.
+
+FormPilot already has the right product shape (human-gated, explainable, no
+guessing). These separations are the engineering discipline around it.
+
+### 17.2 Slice G — field commit verdicts (done)
+
+- `backend/core/field_commit.py` classifies what the portal kept:
+  `same / reformatted / not_held / different`, mapped to
+  `ok / did_not_commit / unverified`.
+- Comparison is kind-aware: text, password, email, digits (country code is a
+  reformat; truncation is not), date (ISO vs DD/MM/YYYY is a reformat;
+  a different day is not), select, multiline. A plain text box labelled
+  "Date of Birth" or "Mobile Number" gets the right rules.
+- `_verify_fill_targets` now does one bounded retry for values the portal
+  dropped or replaced, then reads back again. Selects, checkboxes and
+  uploads are never retried.
+- `fill_summary` gains `reformatted` and `retried`; each field result carries
+  its commit verdict; failures carry the verdict and whether they were
+  retried.
+- `_values_match` delegates to the same rules, so "already filled" and
+  "verified after fill" can never disagree.
+- Tests: `tests/test_field_commit.py` (unit matrix + three real-DOM cases:
+  dropped-once, truncating, reformatting).
+
+### 17.3 Roadmap after Slice G
+
+- **H. Run ledger** — steps, attempts, outputs, error codes, token/cost
+  columns; structured events; run history API.
+- **I. Security boundaries** — page text labelled untrusted; fill plans carry
+  fact keys rather than raw values; final-submit approval frozen to a
+  snapshot and re-verified before the click.
+- **J. Gate quality** — closed reason enums, a recommended option, and
+  attended-time budgeting.
+- **K. Legibility** — summary strip, failure line, timeline linked to the
+  brief, screenshot and fill plan for each step.
+- **L. Scale-out** — SDK/CLI, cost metering, keyset pagination. Only after the
+  local product is reliable.
+
+### 17.4 Rejected on purpose
+
+CAPTCHA solving, credential pools, policy that does not block, "take control"
+that does not pause the agent, a 33-block workflow DSL, 100k-token prompts,
+marathon turn budgets, email approvals, and fail-open completion. Reasons are
+in `docs/skyvern-learnings.md` §3.
+
+### 17.5 Metrics
+
+Commit accuracy and false-success rate, reformat rate, retry rate, gate dwell
+time, fields per minute, LLM calls per section, run completion and
+abandonment point. The offline evaluation harness remains the merge gate and
+will assert these as the ledger lands.

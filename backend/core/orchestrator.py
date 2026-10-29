@@ -22,7 +22,7 @@ from playwright.async_api import (
     async_playwright,
 )
 
-from . import decision_policy, field_registry, settings
+from . import decision_policy, field_commit, field_registry, settings
 from .action_resolver import ActionResolver, ActionResult
 from .biometrics import BiometricCompressor
 from .blueprint import BlueprintElement, PageBlueprint
@@ -2610,27 +2610,21 @@ class FormPilotOrchestrator:
         actual: str,
         raw_value: str,
     ) -> bool:
-        field_type = str(item.get("type") or "text").lower()
-        tag = str(item.get("tagName") or "").lower()
-        if field_type == "password":
-            return expected == actual
-        if tag == "select":
-            return any(
-                cls._normalise_value(candidate) == cls._normalise_value(actual)
-                for candidate in (expected, raw_value)
-                if candidate
+        """True when the field holds the value, allowing equivalent formats.
+
+        The comparison rules live in ``field_commit`` so verification, the
+        "already filled" check and the UI all agree on what "held" means.
+        """
+        kind = field_commit.kind_for(item)
+        if field_commit.committed(
+            field_commit.classify_commit(expected, actual, kind=kind)
+        ):
+            return True
+        if raw_value and raw_value != expected:
+            return field_commit.committed(
+                field_commit.classify_commit(raw_value, actual, kind=kind)
             )
-        if field_type in {"date", "tel", "number", "email"}:
-            return any(
-                cls._normalise_value(candidate) == cls._normalise_value(actual)
-                for candidate in (expected, raw_value)
-                if candidate
-            )
-        return any(
-            cls._norm_exact(candidate) == cls._norm_exact(actual)
-            for candidate in (expected, raw_value)
-            if candidate
-        )
+        return False
 
     @classmethod
     def _field_value_matches(cls, item: Dict[str, Any], expected: str) -> bool:
@@ -2723,6 +2717,83 @@ class FormPilotOrchestrator:
                 kept.append(record)
         self.filled_audit = kept
 
+    def _evaluate_fill_target(
+        self,
+        target: Dict[str, Any],
+        fresh: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Compare one fill target against a fresh read of the page.
+
+        Returns ``status`` (``VERIFIED``/``FAILED``), a human reason, the
+        commit verdict when one applies, and whether a single retry is
+        justified.  Uploads and checkboxes are never retried: re-attaching a
+        file or toggling a box can undo a value the portal already accepted.
+        """
+        item = target.get("item") or {}
+        if not target.get("apply_ok"):
+            return {
+                "status": "FAILED",
+                "reason": str(target.get("reason") or "The portal did not accept this value."),
+                "retryable": False,
+            }
+
+        if target.get("kind") == "upload":
+            if self._file_attached(item, fresh):
+                return {"status": "VERIFIED", "reason": "", "retryable": False}
+            return {
+                "status": "FAILED",
+                "reason": "The portal did not keep the attached file.",
+                "retryable": False,
+            }
+
+        current = self._find_current_input(item, fresh)
+        if current is None:
+            return {
+                "status": "FAILED",
+                "reason": "The field disappeared after it was filled.",
+                "retryable": False,
+            }
+
+        field_type = str(item.get("type") or "text").lower()
+        value = str(target.get("value") or "")
+        if field_type in {"checkbox", "radio"}:
+            wanted = value.strip().lower() not in {"", "no", "false", "0", "unchecked"}
+            matches = bool(current.get("checked")) == wanted
+            return {
+                "status": "VERIFIED" if matches else "FAILED",
+                "reason": "" if matches else "The portal did not keep this choice.",
+                "retryable": False,
+            }
+
+        kind = field_commit.kind_for(item)
+        verdict: Optional[Dict[str, Any]] = None
+        actual_values = [
+            str(current.get("value") or ""),
+            str(current.get("selectedText") or ""),
+        ]
+        for actual in actual_values:
+            candidate = field_commit.classify_commit(value, actual, kind=kind)
+            if field_commit.committed(candidate):
+                verdict = candidate
+                break
+            verdict = verdict or candidate
+
+        if verdict is None:
+            verdict = field_commit.classify_commit(value, "", kind=kind)
+
+        ok = field_commit.committed(verdict)
+        retryable = (
+            field_commit.retryable(verdict)
+            and kind not in {"select"}
+            and str(item.get("tagName") or "").lower() != "select"
+        )
+        return {
+            "status": "VERIFIED" if ok else "FAILED",
+            "reason": "" if ok else str(verdict.get("reason") or "The portal did not keep the value that was entered."),
+            "retryable": retryable,
+            "commit": verdict,
+        }
+
     async def _verify_fill_targets(
         self,
         targets: List[Dict[str, Any]],
@@ -2739,106 +2810,72 @@ class FormPilotOrchestrator:
         except Exception:
             fresh = {"inputs": [], "fileInputs": []}
 
-        for target in targets:
+        results = [self._evaluate_fill_target(target, fresh) for target in targets]
+
+        # One bounded retry, only for values the portal dropped or replaced.
+        # This mirrors Skyvern's read-back rule: a silent rejection gets one
+        # atomic re-entry, not a loop.
+        retry_indexes = [index for index, result in enumerate(results) if result.get("retryable")]
+        if retry_indexes and self.page:
+            for index in retry_indexes:
+                target = targets[index]
+                try:
+                    await self._apply_field_value(
+                        target.get("item") or {}, str(target.get("value") or "")
+                    )
+                except Exception:
+                    traceback.print_exc()
+            await asyncio.sleep(0.15)
+            try:
+                second_read = await self._scan_dom()
+            except Exception:
+                second_read = None
+            if second_read is not None:
+                for index in retry_indexes:
+                    results[index] = self._evaluate_fill_target(targets[index], second_read)
+                    results[index]["retried"] = True
+                await self.emit_event(
+                    "ACT",
+                    f"Re-entered {len(retry_indexes)} field(s) the portal had dropped, then read them back.",
+                    f"Portal ne {len(retry_indexes)} field drop kar diye the; dobara bhar kar check kiya.",
+                )
+
+        for target, result in zip(targets, results):
             item = target.get("item") or {}
             sem_key = str(target.get("sem_key") or "")
             label = str(target.get("label") or sem_key or "field")
-            if not target.get("apply_ok"):
-                reason = str(target.get("reason") or "The portal did not accept this value.")
-                self._drop_audit_for(item, sem_key)
-                self.fill_failures.append(
-                    {"field_label": label, "vault_key": sem_key, "status": "FAILED", "reason": reason}
-                )
-                field_results.append(
-                    {"field_label": label, "vault_key": sem_key, "status": "FAILED"}
-                )
-                continue
-
-            if target.get("kind") == "upload":
-                attached = self._file_attached(item, fresh)
-                if attached:
-                    verified += 1
-                    self._record_fill(item, sem_key, str(target.get("value") or ""), "file")
-                    field_results.append(
-                        {"field_label": label, "vault_key": sem_key, "status": "VERIFIED"}
-                    )
-                else:
-                    self._drop_audit_for(item, sem_key)
-                    self.fill_failures.append(
-                        {
-                            "field_label": label,
-                            "vault_key": sem_key,
-                            "status": "FAILED",
-                            "reason": "The portal did not keep the attached file.",
-                        }
-                    )
-                    field_results.append(
-                        {"field_label": label, "vault_key": sem_key, "status": "FAILED"}
-                    )
-                continue
-
-            current = self._find_current_input(item, fresh)
-            field_type = str(item.get("type") or "text").lower()
-            if current is None:
-                self._drop_audit_for(item, sem_key)
-                self.fill_failures.append(
-                    {
-                        "field_label": label,
-                        "vault_key": sem_key,
-                        "status": "FAILED",
-                        "reason": "The field disappeared after it was filled.",
-                    }
-                )
-                field_results.append(
-                    {"field_label": label, "vault_key": sem_key, "status": "FAILED"}
-                )
-                continue
-
-            if field_type in {"checkbox", "radio"}:
-                expected = str(target.get("value") or "").strip().lower()
-                wanted = expected not in {"", "no", "false", "0", "unchecked"}
-                matches = bool(current.get("checked")) == wanted
-            else:
-                actual_values = [
-                    str(current.get("value") or ""),
-                    str(current.get("selectedText") or ""),
-                ]
-                matches = any(
-                    self._values_match(
-                        item,
-                        str(target.get("value") or ""),
-                        actual,
-                        str(target.get("value") or ""),
-                    )
-                    for actual in actual_values
-                    if actual
-                )
-
-            if matches:
+            if result.get("status") == "VERIFIED":
                 verified += 1
+                method = "file" if target.get("kind") == "upload" else str(target.get("method") or "input")
                 self._record_fill(
                     item,
                     sem_key,
                     str(target.get("value") or ""),
-                    str(target.get("method") or "input"),
+                    method,
                     custom=bool(target.get("custom")),
                 )
-                field_results.append(
-                    {"field_label": label, "vault_key": sem_key, "status": "VERIFIED"}
-                )
-            else:
-                self._drop_audit_for(item, sem_key)
-                self.fill_failures.append(
-                    {
-                        "field_label": label,
-                        "vault_key": sem_key,
-                        "status": "FAILED",
-                        "reason": "The portal did not keep the value that was entered.",
-                    }
-                )
-                field_results.append(
-                    {"field_label": label, "vault_key": sem_key, "status": "FAILED"}
-                )
+                entry = {"field_label": label, "vault_key": sem_key, "status": "VERIFIED"}
+                if result.get("commit"):
+                    entry["commit"] = result["commit"]["match"]
+                field_results.append(entry)
+                continue
+
+            self._drop_audit_for(item, sem_key)
+            failure = {
+                "field_label": label,
+                "vault_key": sem_key,
+                "status": "FAILED",
+                "reason": str(result.get("reason") or "The portal did not keep the value that was entered."),
+            }
+            if result.get("commit"):
+                failure["commit"] = result["commit"]
+            if result.get("retried"):
+                failure["retried"] = True
+            self.fill_failures.append(failure)
+            entry = {"field_label": label, "vault_key": sem_key, "status": "FAILED"}
+            if result.get("commit"):
+                entry["commit"] = result["commit"]["match"]
+            field_results.append(entry)
 
         for skip in skipped:
             item = skip.get("item") or {}
@@ -2860,6 +2897,9 @@ class FormPilotOrchestrator:
         attempted = len(targets)
         skipped_count = len(skipped)
         failed_count = sum(1 for failure in self.fill_failures if failure.get("status") == "FAILED")
+        reformatted_count = sum(
+            1 for entry in field_results if entry.get("commit") == "reformatted"
+        )
         if attempted == 0 and skipped_count == 0:
             status = "NO_FIELDS"
         elif verified == 0:
@@ -2877,6 +2917,8 @@ class FormPilotOrchestrator:
             "verified": verified,
             "failed": failed_count,
             "skipped": skipped_count,
+            "reformatted": reformatted_count,
+            "retried": len(retry_indexes),
             "fields": field_results,
             "verified_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
