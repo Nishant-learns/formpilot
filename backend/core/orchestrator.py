@@ -344,7 +344,12 @@ class FormPilotOrchestrator:
             self.run_store.finish(
                 self.run_id or "unknown",
                 self.state,
-                {"error": self.last_error, "target_url": self.target_url, "run_mode": self.run_mode},
+                {
+                    "error": self.last_error,
+                    "target_url": self.target_url,
+                    "run_mode": self.run_mode,
+                    "run_clock": self.run_clock(),
+                },
             )
 
     async def stop(self):
@@ -4744,7 +4749,11 @@ class FormPilotOrchestrator:
             self.run_store.finish(
                 self.run_id,
                 self.state,
-                {"audit_hash": audit_payload["audit_hash"], "target_url": self.target_url},
+                {
+                    "audit_hash": audit_payload["audit_hash"],
+                    "target_url": self.target_url,
+                    "run_clock": self.run_clock(),
+                },
             )
 
     # ---------------------------------------------------------------- helpers

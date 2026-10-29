@@ -1929,3 +1929,50 @@ ledger, the paused run clock and the absolute wall ceiling. Full suite:
 362 passed, 2 skipped.
 
 Next: Slice K (legibility), then L (scale-out).
+
+### 17.9 Slice K — legibility (done)
+
+The cockpit already showed the live page, the plan and the events. What it did
+not answer on one page was the two questions a candidate actually asks: *what
+happened?* and *what do I do now?*
+
+`backend/core/run_report.py` builds that answer from the persisted journal only
+(`meta.json`, `steps.json`, `events.jsonl`, the masked `audit.json`). It never
+reads the live page, the vault, or an unmasked value.
+
+The report has five parts:
+
+1. **State + headline** — "Ready for your review · 11 of 12 fields verified ·
+   4m 7s", from the state label, the fill totals and the wall duration.
+2. **What do I do now?** — exactly one action with a tone: *human* (pay,
+   submit, answer a checkpoint, review again), *error* (with retryability) or
+   *info* (in progress, finished, stopped). An invalidated pre-payment review
+   says the page changed and asks for a fresh look.
+3. **What happened** — short bullets: pages read, fields the portal kept,
+   checkpoints resolved or waiting, takeovers, retries, the classified failure,
+   then the last few events.
+4. **At a glance** — fields verified, checkpoints, retries, portal errors,
+   active work and attended time. Missing clock values are omitted rather than
+   printed as zero.
+5. **Timeline** — every step in plain language ("Read the page", "Filled
+   fields", "Checkpoint resolved: one-time code entered"), with status,
+   duration and failure code. Internal action codes are translated; unknown
+   ones fall back to spaced lowercase rather than leaking.
+
+Routes: `/api/runs/{id}/report` (JSON) and `/runs/{id}` (a self-contained,
+printable HTML page with no external assets). The session strip links to the
+report and keeps the raw journal as a second link; the pre-payment gate links
+to the report next to the audit download. Every string is HTML-escaped, and a
+test injects `<script>` through an event to prove it.
+
+Runs recorded before the step ledger still render: when `steps.json` is empty
+the timeline is built from the events, and the at-a-glance strip explains that
+only the event timeline is available.
+
+Acceptance: `tests/test_run_report.py` covers payment, final submission, an
+invalidated review, a failure with retryability, a waiting gate, the plain
+timeline labels, legacy runs and HTML escaping; the report and page are also
+exercised through the API. Full suite: 372 passed, 2 skipped.
+
+Next: Slice L (scale-out: SDK/CLI, cost metering, keyset pagination), only if
+the local product stays reliable.

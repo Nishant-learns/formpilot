@@ -26,7 +26,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -40,6 +40,7 @@ from .core.live_browser import live_sessions
 from .core.oracle import PortalOracle
 from .core.orchestrator import AgentRunError, FormPilotOrchestrator
 from .core.recipe import RecipeStore
+from .core.run_report import build_run_report, render_run_report_html
 from .core.run_store import RunStore
 from .core.tinyfish_client import EngineConfig, TinyFishClient, TinyFishError
 from .core.vault import CandidateVault, VaultManager
@@ -556,6 +557,22 @@ def get_run_steps(run_id: str):
         "steps": run_store.read_steps(run_id),
         "summary": run_store.step_summary(run_id),
     }
+
+
+@app.get("/api/runs/{run_id}/report")
+def get_run_report(run_id: str):
+    detail = run_store.run_detail(run_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    return build_run_report(detail)
+
+
+@app.get("/runs/{run_id}", response_class=HTMLResponse)
+def get_run_page(run_id: str):
+    detail = run_store.run_detail(run_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    return HTMLResponse(render_run_report_html(build_run_report(detail)))
 
 
 @app.get("/api/runs/{run_id}/audit")

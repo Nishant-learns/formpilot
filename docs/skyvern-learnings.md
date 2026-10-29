@@ -320,11 +320,24 @@ Target: `run_store.py`, `evaluation.py`, `tests/`. Effort S/M.
   ledger, the paused run clock and the absolute wall ceiling. Full suite:
   362 passed, 2 skipped.
 
-### Slice K — Legibility
+### Slice K — Legibility (done)
 
-- Summary strip, failure line, timeline linked to brief/screenshot/plan.
-- Acceptance: a non-engineer can answer "what happened?" and "what do I do
-  now?" from the run page without reading the log.
+- `run_report.py` turns the persisted journal into a plain-language report:
+  state label, one-line headline, "what happened" bullets, "what do I do now?"
+  with a single next action, a failure line with its taxonomy code and whether
+  a retry can help, an at-a-glance strip, and a readable timeline.
+- `/api/runs/{id}/report` returns the report as JSON; `/runs/{id}` renders it
+  as a self-contained printable page. The cockpit links to the page from the
+  session strip and from the pre-payment gate.
+- The report reads only persisted data (`meta.json`, `steps.json`,
+  `events.jsonl`, masked `audit.json`); it never touches the live page or the
+  vault. Every string is HTML-escaped.
+- Runs recorded before the step ledger still get a timeline built from their
+  events, so the page is never blank.
+- Acceptance met: `tests/test_run_report.py` asserts the payment, final-submit,
+  invalidated-review, failure, waiting-gate and legacy-run answers, the plain
+  timeline labels, and that page text cannot inject HTML. Full suite:
+  372 passed, 2 skipped.
 
 ### Slice L — Scale-out
 

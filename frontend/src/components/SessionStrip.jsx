@@ -250,14 +250,26 @@ export default function SessionStrip({
           <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-800/70 pt-2.5">
             {runId && (
               <a
+                href={`/runs/${runId}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1.5 rounded-lg border border-sky-500/35 bg-sky-500/10 px-2.5 py-1.5 text-[10px] font-semibold text-sky-300 transition-colors hover:bg-sky-500/20"
+                title="Open the plain-language run report"
+              >
+                <FileText className="h-3 w-3" />
+                Run report
+              </a>
+            )}
+            {runId && (
+              <a
                 href={`/api/runs/${runId}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800/70 px-2.5 py-1.5 text-[10px] font-semibold text-slate-300 transition-colors hover:bg-slate-700"
-                title="Open the recorded run journal"
+                title="Open the raw run journal"
               >
                 <FileText className="h-3 w-3" />
-                Run journal
+                Journal JSON
               </a>
             )}
             {auditAvailable && runId && (

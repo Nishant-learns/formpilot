@@ -9,6 +9,7 @@ import {
   Download,
   ExternalLink,
   FileCheck2,
+  FileText,
   FileUp,
   HelpCircle,
   Image as ImageIcon,
@@ -1341,13 +1342,24 @@ function CheckpointContent({ activeGate, onSubmitResponse, onClose, onDismissGat
 
               <div className="flex items-center justify-between gap-3 pt-1">
                 {activeGate.run_id ? (
-                  <a
-                    href={`/api/runs/${activeGate.run_id}/audit`}
-                    className="px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs font-semibold border border-slate-700 flex items-center gap-1.5"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>Download details</span>
-                  </a>
+                  <div className="flex items-center gap-2">
+                    <a
+                      href={`/runs/${activeGate.run_id}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-sky-300 text-xs font-semibold border border-sky-500/40 flex items-center gap-1.5"
+                    >
+                      <FileText className="w-3.5 h-3.5" />
+                      <span>Run report</span>
+                    </a>
+                    <a
+                      href={`/api/runs/${activeGate.run_id}/audit`}
+                      className="px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs font-semibold border border-slate-700 flex items-center gap-1.5"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Download details</span>
+                    </a>
+                  </div>
                 ) : (
                   <span />
                 )}
