@@ -11,9 +11,9 @@ import {
   UserCheck,
   HelpCircle,
 } from 'lucide-react';
+import { PRACTICE_PORTAL_URL } from '../apiConfig';
 
-const LIVE_TEST_PORTAL_URL = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_PRACTICE_PORTAL_URL)
-  || (typeof window !== 'undefined' && window.location?.origin ? `${window.location.origin}/gov-portal-demo` : 'http://127.0.0.1:8000/gov-portal-demo');
+const LIVE_TEST_PORTAL_URL = PRACTICE_PORTAL_URL;
 
 const DEFAULT_QUERY = LIVE_TEST_PORTAL_URL;
 const LAST_QUERY_KEY = 'formpilot.lastQuery';

@@ -27,6 +27,10 @@ APP_ENV = os.getenv("FORMPILOT_ENV", "demo").strip().lower()
 IS_PRODUCTION = APP_ENV in {"prod", "production"}
 DEMO_MODE = _env_bool("FORMPILOT_DEMO_MODE", not IS_PRODUCTION)
 ENABLE_SIMULATOR = _env_bool("FORMPILOT_ENABLE_SIMULATOR", DEMO_MODE)
+PRACTICE_PORTAL_URL = os.getenv(
+    "FORMPILOT_PRACTICE_PORTAL_URL",
+    "https://gov-portal-simulator.vercel.app" if IS_PRODUCTION else "http://127.0.0.1:8000/gov-portal-demo",
+).strip()
 
 DATA_DIR = Path(os.getenv("FORMPILOT_DATA_DIR", ROOT_DIR / "data")).resolve()
 UPLOADS_DIR = Path(os.getenv("FORMPILOT_UPLOADS_DIR", ROOT_DIR / "uploads")).resolve()

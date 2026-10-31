@@ -13,3 +13,5 @@ services:
         value: "https://*.vercel.app,http://localhost:5173"
       - key: FORMPILOT_ENABLE_SIMULATOR
         value: "1"
+      - key: FORMPILOT_PRACTICE_PORTAL_URL
+        value: "https://gov-portal-simulator.vercel.app"

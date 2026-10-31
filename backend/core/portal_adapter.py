@@ -259,6 +259,7 @@ class SimulatorAdapter(BasePortalAdapter):
 
 
 def get_adapter(url: str) -> BasePortalAdapter:
-    if "gov-portal-demo" in (url or ""):
+    clean_url = (url or "").lower()
+    if "gov-portal-demo" in clean_url or "gov-portal-simulator" in clean_url:
         return SimulatorAdapter()
     return BasePortalAdapter()

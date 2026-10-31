@@ -12,7 +12,7 @@ import BiometricsStudio from './components/BiometricsStudio';
 import TinyFishSettingsModal from './components/TinyFishSettingsModal';
 import SessionStrip from './components/SessionStrip';
 import Toasts from './components/Toasts';
-import { getWsUrl } from './apiConfig';
+import { getWsUrl, PRACTICE_PORTAL_URL } from './apiConfig';
 import { AlertTriangle, FileText, MessageSquare, ScanSearch, Terminal } from 'lucide-react';
 
 const ACTIVE_STATES = new Set(['RESOLVING', 'RUNNING', 'WAITING_FOR_USER', 'PAUSED']);
@@ -450,7 +450,7 @@ export default function App() {
   };
 
   const handlePractice = () => {
-    handleLaunch('http://127.0.0.1:8000/gov-portal-demo', 'fill');
+    handleLaunch(PRACTICE_PORTAL_URL, 'fill');
   };
 
   // Emergency Stop Agent

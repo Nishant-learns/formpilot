@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from . import settings
 from .tinyfish_client import TinyFishClient, TinyFishError
 
 
@@ -105,11 +106,11 @@ OFFICIAL_PORTAL_REGISTRY = [
         "hindi_advisory": "NTA ka official portal verify ho gaya hai.",
     },
     {
-        "keywords": ["simulator", "test", "demo", "sandbox", "gov demo", "mock portal", "formpilot demo"],
+        "keywords": ["simulator", "test", "demo", "sandbox", "gov demo", "mock portal", "formpilot demo", "gov-portal-simulator"],
         "name": "FormPilot Practice Portal (Demo)",
-        "url": "http://127.0.0.1:8000/gov-portal-demo",
-        "authority": "FormPilot demo environment",
-        "tld": "local",
+        "url": getattr(settings, "PRACTICE_PORTAL_URL", "https://gov-portal-simulator.vercel.app"),
+        "authority": "FormPilot practice environment",
+        "tld": "practice",
         "trust": 100,
         "advisory": "A safe practice portal for trying the full application flow. No real application is submitted.",
         "hindi_advisory": "Yeh ek practice portal hai. Yahan koi asli application submit nahi hoti.",
@@ -132,13 +133,30 @@ def is_official_host(hostname: str) -> bool:
     return hostname.endswith(OFFICIAL_SUFFIXES)
 
 
+def is_practice_url(url: str) -> bool:
+    try:
+        parsed = urllib.parse.urlparse(url)
+        hostname = (parsed.hostname or "").lower()
+    except Exception:
+        return False
+    if hostname in {"localhost", "127.0.0.1"} or hostname.endswith(".local"):
+        return True
+    practice_host = _hostname(getattr(settings, "PRACTICE_PORTAL_URL", ""))
+    if practice_host and hostname == practice_host:
+        return True
+    if "gov-portal-simulator" in hostname:
+        return True
+    return False
+
+
 class PortalOracle:
     """Resolve a natural-language request or URL into a verified portal."""
 
     @staticmethod
     def audit_url(url: str) -> Dict[str, Any]:
         hostname = _hostname(url)
-        is_local = hostname in {"localhost", "127.0.0.1"} or hostname.endswith(".local")
+        is_practice = is_practice_url(url)
+        is_local = hostname in {"localhost", "127.0.0.1"} or hostname.endswith(".local") or is_practice
         is_gov = is_official_host(hostname)
         third_party = bool(hostname) and not is_gov and not is_local
 
@@ -156,6 +174,7 @@ class PortalOracle:
             "is_gov": is_gov,
             "is_aggregator": third_party,
             "is_local": is_local,
+            "is_practice": is_practice,
             "trust_score": trust_score,
             "scheme": urllib.parse.urlparse(url).scheme or "https",
         }
@@ -218,12 +237,12 @@ class PortalOracle:
                     target_url=cleaned,
                     is_gov_domain=False,
                     domain_trust_score=100,
-                    authority_type="Practice / local demo",
-                    domain_suffix="local",
-                    advisory="This is a local practice portal, not a government website. No real application is submitted.",
-                    hindi_advisory="Yeh ek local practice portal hai, asli government website nahi. Koi asli application submit nahi hoti.",
-                    source_citation="Local practice environment",
-                    official_verified=False,
+                    authority_type="Practice / demo portal",
+                    domain_suffix="practice",
+                    advisory="This is a safe practice portal for trying the full application flow. No real application is submitted.",
+                    hindi_advisory="Yeh ek safe practice portal hai. Yahan koi asli application submit nahi hoti.",
+                    source_citation="FormPilot Practice Environment",
+                    official_verified=True,
                     is_practice=True,
                     confidence=100,
                     resolved_via="practice_url",

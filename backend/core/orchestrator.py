@@ -4418,7 +4418,7 @@ class FormPilotOrchestrator:
         # portal, where it would only mislead the candidate.
         adapter_name = getattr(self._adapter, "name", "")
         portal_url = str(getattr(self.page, "url", "") or "")
-        is_simulator = adapter_name == "simulator" or "gov-portal-demo" in portal_url
+        is_simulator = adapter_name == "simulator" or "gov-portal-demo" in portal_url or "gov-portal-simulator" in portal_url
         if settings.DEMO_MODE and is_simulator:
             gate["demo_otp"] = settings.DEMO_OTP
             gate["description"] += f" Demo mode code: {settings.DEMO_OTP}."

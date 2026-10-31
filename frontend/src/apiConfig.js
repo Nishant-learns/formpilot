@@ -5,6 +5,9 @@
 
 export const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
 
+export const PRACTICE_PORTAL_URL = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_PRACTICE_PORTAL_URL)
+  || 'https://gov-portal-simulator.vercel.app';
+
 // Seamless fetch interceptor: If API_BASE is configured (e.g., hosted on Vercel connecting to Render/Railway),
 // automatically prefix relative API & upload endpoints.
 if (typeof window !== 'undefined' && API_BASE) {
