@@ -188,7 +188,9 @@ class FormModel:
         if challenge:
             generated_key = f"human_{challenge}_{int(item.get('index') or 0)}"
         else:
-            generated_key = semantic_key or f"unknown_{_slug(name or label or f'field_{item.get('index', 0)}', 'field')}"
+            field_idx = item.get("index", 0)
+            fallback_name = name or label or f"field_{field_idx}"
+            generated_key = semantic_key or f"unknown_{_slug(fallback_name, 'field')}"
         options = [
             {"text": str(option.get("text") or "")[:160], "value": str(option.get("value") or "")[:160]}
             for option in (item.get("options") or [])[:60]

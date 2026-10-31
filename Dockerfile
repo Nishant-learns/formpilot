@@ -39,4 +39,4 @@ RUN mkdir -p /app/data /app/uploads /app/data/runs
 EXPOSE 8000
 
 # Start unified server
-CMD ["python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "exec python -m uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
