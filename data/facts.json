@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "updated_at": "2026-10-30T16:35:44.585772+00:00",
+  "facts": [
+    {
+      "fact_id": "fact-35ae91d934b05fbb",
+      "concept": "name_as_matric",
+      "label": "Name as per matric certificate",
+      "value": "Nishant Kumar",
+      "value_type": "text",
+      "parts": null,
+      "aliases": [],
+      "provenance": "explicit_user",
+      "verification": "confirmed_by_human",
+      "verified_at": "2026-10-30T16:35:44.585527+00:00",
+      "scope": {
+        "kind": "global"
+      },
+      "constraints": {},
+      "notes": null,
+      "known_absent": false,
+      "updated_at": "2026-10-30T16:35:44.585601+00:00"
+    }
+  ]
+}

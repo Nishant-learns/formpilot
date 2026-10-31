@@ -22,11 +22,10 @@ import {
   ZoomOut,
 } from 'lucide-react';
 
+import { getWsUrl } from '../apiConfig';
+
 function wsUrlFor(path) {
-  if (!path) return '';
-  if (path.startsWith('ws://') || path.startsWith('wss://')) return path;
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${protocol}//${window.location.host}${path}`;
+  return getWsUrl(path);
 }
 
 function displayUrl(url) {

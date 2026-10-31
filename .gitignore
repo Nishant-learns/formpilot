@@ -28,6 +28,9 @@ slide_*_preview.png
 *_pitch_deck.*
 PITCH_DECK_SPECIFICATION.md
 
+# Standalone practice portal repository (deployed separately)
+gov-portal-site/
+
 # Uploaded test files
 uploads/*
 !uploads/.gitkeep

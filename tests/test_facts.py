@@ -67,6 +67,17 @@ def test_no_middle_name_is_a_fact_not_an_unknown(tmp_path):
     assert middle.is_known is True
 
 
+def test_two_token_name_has_no_middle_name(tmp_path):
+    """A two-part name is first + last; the middle name is known absent."""
+    book = _book(tmp_path, CandidateVault(full_name="Nishant Kumar"))
+
+    middle = book.resolve("middle_name")
+
+    assert middle.state == "known_absent"
+    assert middle.value is None
+    assert middle.is_known is True
+
+
 def test_portal_scope_wins_only_on_its_own_domain(tmp_path):
     book = _book(tmp_path)
     book.set_fact("mobile", value="9876543210")
@@ -163,7 +174,8 @@ def test_brief_questions_learn_whether_a_fact_exists(tmp_path):
     by_handle = {question.handle: question for question in brief.questions}
 
     assert by_handle["fp-1"].fact_status == "known"
-    assert by_handle["fp-2"].fact_status == "missing"
+    # "Nishant Kumar" has no middle name; that is a fact, not a missing one.
+    assert by_handle["fp-2"].fact_status == "known_absent"
     assert by_handle["fp-3"].fact_status == "needs_confirmation"
     assert by_handle["fp-1"].fact_provenance == "derived"
 

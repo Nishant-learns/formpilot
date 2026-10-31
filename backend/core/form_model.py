@@ -31,7 +31,8 @@ _SAFE_KEY_RE = re.compile(r"[^a-z0-9_]+")
 # be treated as an unknown field that FormPilot could remember or guess.
 _CAPTCHA_HINT_RE = re.compile(r"captcha|security\s*(?:check|code)", re.IGNORECASE)
 _OTP_HINT_RE = re.compile(
-    r"\botp\b|one[-\s]?time\s*(?:password|code|pin)|verification\s*code|auth(?:entication)?\s*code",
+    r"\botp\b|one[-\s]?time\s*(?:password|code|pin)|verification\s*(?:code|pin)|"
+    r"auth(?:entication)?\s*code|passcode|access\s*code|sms\s*code|email\s*code",
     re.IGNORECASE,
 )
 

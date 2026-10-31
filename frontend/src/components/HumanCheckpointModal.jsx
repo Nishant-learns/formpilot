@@ -690,24 +690,48 @@ function CheckpointContent({ activeGate, onSubmitResponse, onClose, onDismissGat
             <form onSubmit={handleMissingFieldSubmit} className="space-y-4">
               <div className="p-4 rounded-xl bg-slate-950 border border-slate-800">
                 <p className="text-xs text-slate-400 leading-relaxed">
-                  This form asks for a detail that is not saved yet. Enter it once and FormPilot
-                  will remember it for future applications.
+                  {activeGate.required
+                    ? 'This form asks for a detail that is not saved yet. Enter it once and FormPilot will remember it for future applications.'
+                    : 'This detail is optional. Leave it blank if it does not apply to you — FormPilot will not invent a value.'}
                 </p>
                 <div className="mt-3">
                   <label className="text-[10px] font-bold text-amber-300 block mb-1 uppercase tracking-wider">
                     {activeGate.field_label}
+                    {activeGate.required
+                      ? <span className="text-red-400 ml-1">required</span>
+                      : <span className="text-slate-500 ml-1 normal-case tracking-normal">optional</span>}
                   </label>
                   <input
                     type={activeGate.input_type === 'date' ? 'date' : activeGate.input_type || 'text'}
                     value={inputVal}
                     onChange={(event) => setInputVal(event.target.value)}
                     autoFocus
-                    placeholder={`Enter ${activeGate.field_label}`}
+                    placeholder={activeGate.required ? `Enter ${activeGate.field_label}` : 'Leave blank if not applicable'}
                     className="w-full px-4 py-3 rounded-xl bg-slate-900 border border-slate-700 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 text-white font-medium text-sm outline-none"
                   />
                 </div>
               </div>
-              <div className="flex justify-end gap-3 pt-1">
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                <div className="flex items-center gap-2">
+                  {activeGate.can_skip && (
+                    <button
+                      type="button"
+                      onClick={() => onSubmitResponse({ action: 'SKIP' })}
+                      className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
+                    >
+                      Skip — not applicable to me
+                    </button>
+                  )}
+                  {hasLive && (
+                    <button
+                      type="button"
+                      onClick={() => onSubmitResponse({ action: 'CONTINUE' })}
+                      className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
+                    >
+                      I filled it in the browser
+                    </button>
+                  )}
+                </div>
                 <button
                   type="submit"
                   disabled={!inputVal.trim()}

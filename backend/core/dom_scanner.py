@@ -40,11 +40,38 @@ class DOMScanner:
                 const ariaEl = document.getElementById(el.getAttribute('aria-labelledby'));
                 if (ariaEl) labelText += ' ' + ariaEl.innerText;
             }
-            if (el.placeholder) labelText += ' ' + el.placeholder;
-            if (el.title) labelText += ' ' + el.title;
-            if (el.name) labelText += ' ' + el.name;
-            const td = el.closest('td');
-            if (td && td.previousElementSibling) labelText += ' ' + td.previousElementSibling.innerText;
+            // Bootstrap-style forms put a <label> beside the input in the
+            // same wrapper without a "for" attribute.  Walk up a few levels
+            // so a date field is called "Date of Birth", not "DD-MM-YYYY".
+            // Only do this when no direct label was found, otherwise the
+            // form's first label leaks into every later field.
+            if (!labelText.trim()) {
+                try {
+                    let node = el.parentElement;
+                    for (let depth = 0; node && depth < 3; depth += 1, node = node.parentElement) {
+                        const ownLabel = node.querySelector(':scope > label, :scope > .form-label');
+                        if (ownLabel) {
+                            labelText += ' ' + (ownLabel.innerText || ownLabel.textContent || '');
+                            break;
+                        }
+                        const previous = node.previousElementSibling;
+                        if (previous) {
+                            const tag = previous.tagName.toLowerCase();
+                            const text = String(previous.innerText || previous.textContent || '').trim();
+                            if (tag === 'label' || /form-label/.test(String(previous.className || ''))) {
+                                if (text) {
+                                    labelText += ' ' + text;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                } catch (e) {}
+                const td = el.closest('td');
+                if (td && td.previousElementSibling) labelText += ' ' + td.previousElementSibling.innerText;
+            }
+            // A placeholder or framework name is a format hint / machine
+            // identifier, never the human-facing question.
             return labelText.replace(/\s+/g, ' ').trim();
         };
 
@@ -303,8 +330,8 @@ class DOMScanner:
         const livePhotoRequired = /live\s*(photo|photograph|picture)|webcam|camera|capture\s*(photo|image)|liveness/.test(lowerBody)
             && (fileInputs.length > 0 || !!document.querySelector('video'));
         const otpInputs = Array.from(document.querySelectorAll('input'))
-            .filter((el) => isVisible(el) && /otp|one[-\s]?time|verification\s*code|auth(entication)?\s*code/i.test(
-                `${el.id || ''} ${el.name || ''} ${el.placeholder || ''}`
+            .filter((el) => isVisible(el) && /otp|one[-\s]?time|verification\s*(?:code|pin)|auth(entication)?\s*code|passcode|access\s*code/i.test(
+                `${el.id || ''} ${el.name || ''} ${el.placeholder || ''} ${getLabel(el) || ''}`
             ))
             .map((el) => ({
                 id: el.id || '',

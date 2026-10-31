@@ -2142,3 +2142,25 @@ Full suite: 428 passed, 2 skipped.
 Next: 2.5 observation epochs (execute only against the scan that produced the
 instruction) and 2.7 fact-key-only plans. The live practice portal remains
 paused until the user is available for the OTP and human steps.
+
+## Slice N: re-entry counted at whichever layer performs it
+
+The dropped-value test (`test_a_value_dropped_once_is_reentered_and_then_verified`)
+was flaky three runs in five. Instrumenting the apply path showed why: the
+portal clears the input 20 ms after the first `input` event. Sometimes the
+orchestrator's 0.3 s settle caught the empty value and retried. Sometimes the
+action resolver's own fast `fill` failed its postcondition check and fell back
+to `type:`, which re-entered the value before the orchestrator ever looked. In
+the second case the page was correct but `fill_summary["retried"]` was 0,
+because only the orchestrator-level retry was counted.
+
+A re-entry is a re-entry regardless of which layer performed it. The resolver
+now reports `reentered: true` when a successful `type:` or `js:` method followed
+a failed fast fill, or when the injector ran after the resolver failed. The fill
+target keeps that flag, and `_verify_fill_targets` reports
+`retried = |retry_indexes ∪ reentered_indexes|`. An injector call that is the
+field's *first* attempt (no resolver for that widget) is not counted.
+
+Acceptance: eight consecutive runs of the dropped-value test pass, and the full
+suite is 431 passed, 2 skipped. No retry loop was added: still one bounded
+re-entry per field.

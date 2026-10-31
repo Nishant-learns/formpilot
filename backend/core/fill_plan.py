@@ -95,16 +95,109 @@ def format_value(
     return text
 
 
+# Portals spell the same option in many ways.  Normalising a small, explicit
+# set is safer than fuzzy string distance: a wrong gender or category is a
+# legal declaration, not a typo to guess at.
+_OPTION_CANON = {
+    "m": "male",
+    "male": "male",
+    "f": "female",
+    "female": "female",
+    "o": "other",
+    "other": "other",
+    "transgender": "other",
+    "y": "yes",
+    "yes": "yes",
+    "n": "no",
+    "no": "no",
+    "single": "unmarried",
+    "unmarried": "unmarried",
+    "married": "married",
+    "ur": "general",
+    "general": "general",
+    "unreserved": "general",
+    "obc": "obc",
+    "obc ncl": "obc ncl",
+    "obc non creamy layer": "obc ncl",
+    "non creamy layer": "obc ncl",
+    "sc": "sc",
+    "st": "st",
+    "ews": "ews",
+}
+
+
+_QUALIFIER_TOKENS = {
+    "ncl",
+    "creamy",
+    "non",
+    "ews",
+    "sub",
+    "pwd",
+    "ex",
+    "serviceman",
+    "minority",
+    "domicile",
+}
+
+
 def _match_option(value: str, options: List[Dict[str, Any]]) -> Optional[str]:
+    """Return the option value that means ``value``, or None if unsure.
+
+    Exact matches win.  Then explicit synonyms (M/Male, Single/Unmarried,
+    UR/General).  Then unambiguous containment for longer labels.  A tie is
+    never resolved by guessing: the caller asks the human instead.
+    """
     target = concepts.normalize(value)
     if not target:
         return None
+    canonical = _OPTION_CANON.get(target)
+    scored: List[tuple[int, Dict[str, Any]]] = []
     for option in options:
         text = concepts.normalize(str(option.get("text") or ""))
         option_value = concepts.normalize(str(option.get("value") or ""))
         if target in {text, option_value}:
-            return str(option.get("value") or option.get("text") or "")
-    return None
+            scored.append((3, option))
+            continue
+        if canonical and canonical in {
+            _OPTION_CANON.get(text),
+            _OPTION_CANON.get(option_value),
+        }:
+            scored.append((2, option))
+    if not scored and target in {"obc ncl"}:
+        for option in options:
+            text = concepts.normalize(str(option.get("text") or ""))
+            if "obc" in text and ("ncl" in text or "non creamy" in text):
+                scored.append((2, option))
+    if not scored and len(target) >= 4:
+        target_tokens = set(target.split())
+        for option in options:
+            text = concepts.normalize(str(option.get("text") or ""))
+            option_tokens = set(text.split())
+            if not target_tokens or not option_tokens:
+                continue
+            if not (
+                target_tokens <= option_tokens or option_tokens <= target_tokens
+            ):
+                continue
+            # Never widen or narrow a category by containment.  "OBC" must not
+            # match "OBC-NCL", and "General" must not match "General-EWS".
+            extra = (option_tokens - target_tokens) | (target_tokens - option_tokens)
+            if extra & _QUALIFIER_TOKENS:
+                continue
+            scored.append((1, option))
+    if not scored:
+        return None
+    best = max(score for score, _ in scored)
+    winners = [option for score, option in scored if score == best]
+    if len(winners) != 1:
+        return None
+    option = winners[0]
+    return str(option.get("value") or option.get("text") or "")
+
+
+def match_option(value: str, options: List[Dict[str, Any]]) -> Optional[str]:
+    """Public name for the option matcher used by the fill loop."""
+    return _match_option(value, options)
 
 
 def build_fill_plan(

@@ -471,13 +471,16 @@ class FactBook:
         if not tokens:
             return None
         if len(tokens) == 1:
-            return {"first": tokens[0], "middle": None, "last": None, "middle_known_absent": False}
+            return {"first": tokens[0], "middle": None, "last": None, "middle_known_absent": True}
         middle = " ".join(tokens[1:-1]) or None
         return {
             "first": tokens[0],
             "middle": middle,
             "last": tokens[-1],
-            "middle_known_absent": False,
+            # A two-token name has no middle name.  Treat that as "known
+            # absent" instead of "unknown", otherwise every two-part name
+            # opens a checkpoint asking the candidate to invent one.
+            "middle_known_absent": middle is None,
         }
 
     def all_facts(

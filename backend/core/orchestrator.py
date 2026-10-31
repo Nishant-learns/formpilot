@@ -22,14 +22,14 @@ from playwright.async_api import (
     async_playwright,
 )
 
-from . import decision_policy, field_commit, field_registry, settings
+from . import concepts, decision_policy, field_commit, field_registry, settings
 from .action_resolver import ActionResolver, ActionResult
 from .biometrics import BiometricCompressor
 from .blueprint import BlueprintElement, PageBlueprint
 from .dom_scanner import DOMScanner
 from .failures import classify_failure
 from .facts import FactBook
-from .fill_plan import build_fill_plan
+from .fill_plan import build_fill_plan, match_option
 from .form_model import FormModel
 from .gates import apply_gate_metadata, gate_reason
 from .live_browser import LiveBrowserSession, live_sessions
@@ -123,6 +123,7 @@ class FormPilotOrchestrator:
         # signature of the stuck page is remembered until the page moves or a
         # human acts.
         self._blocked_advance = ""
+        self._advance_handoff_signature = ""
         self._captcha_signature = ""
         self._last_error_signature = ""
         self._last_gateway_signature = ""
@@ -260,6 +261,7 @@ class FormPilotOrchestrator:
         # signature of the stuck page is remembered until the page moves or a
         # human acts.
         self._blocked_advance = ""
+        self._advance_handoff_signature = ""
         self._captcha_signature = ""
         self._last_error_signature = ""
         self._last_gateway_signature = ""
@@ -617,6 +619,33 @@ class FormPilotOrchestrator:
     def _current_domain(self) -> str:
         url = self.page.url if self.page else (self.target_url or "")
         return urlparse(str(url or "")).netloc.lower()
+
+    def _portal_credential(self, sem_key: str) -> str:
+        """Return the identifier this portal's account actually uses.
+
+        The vault holds one global mobile/email.  A candidate can have a
+        different account on another portal, and PortalAccountStore remembers
+        which identifier was used there.  On a login page that value must win
+        over the global one, otherwise FormPilot types the wrong account.
+        """
+        if sem_key not in {"mobile", "email", "urn"}:
+            return ""
+        domain = self._current_domain()
+        if not domain:
+            return ""
+        try:
+            accounts = PortalAccountStore.get_instance().accounts_for(domain)
+        except Exception:
+            return ""
+        matches = [
+            account
+            for account in accounts
+            if account.identifier_type == sem_key and account.identifier_value
+        ]
+        if not matches:
+            return ""
+        matches.sort(key=lambda account: account.updated_at or "", reverse=True)
+        return str(matches[0].identifier_value)
 
     def _remember_portal_account(self, **fields: Any) -> None:
         domain = self._current_domain()
@@ -2801,6 +2830,7 @@ class FormPilotOrchestrator:
         tag = str(item.get("tagName") or "input").lower()
         field_type = str(item.get("type") or "text").lower()
         resolver = self._action_resolver()
+        resolver_failed = False
 
         if element_id and resolver and field_type not in {"checkbox", "radio", "file", "hidden"}:
             if tag == "select":
@@ -2811,37 +2841,122 @@ class FormPilotOrchestrator:
                 resolved = None
 
             if resolved and resolved.ok:
-                return {"success": True, "method": resolved.method, "value": value}
+                # A successful ``type:`` or ``js:`` means the fast ``fill``
+                # did not stick and the resolver re-entered the value itself.
+                # That is still one re-entry, so the summary must count it.
+                return {
+                    "success": True,
+                    "method": resolved.method,
+                    "value": value,
+                    "reentered": str(resolved.method or "").startswith(("type:", "js:")),
+                }
             if resolved and resolved.error_code in {"NOT_VISIBLE", "DISABLED", "NOT_EDITABLE"}:
                 # Do not bypass a disabled or hidden field with a JS setter.
                 return {"success": False, "reason": resolved.message}
             # Any other resolver failure falls through to the injector, which
             # uses name/id/index and can handle unusual widgets.
             if resolved and resolved.error_code:
+                resolver_failed = True
                 self._last_action_result = resolved
 
         try:
-            return await self.page.evaluate(DOMScanner.INJECTION_JS, [item, value])
+            injected = await self.page.evaluate(DOMScanner.INJECTION_JS, [item, value])
+            if isinstance(injected, dict):
+                # The injector only counts as a re-entry when the resolver
+                # already tried and failed; it is the first attempt for a
+                # widget the resolver cannot address.
+                injected.setdefault("reentered", resolver_failed)
+            return injected
         except Exception:
             return {"success": False, "reason": "The field could not be reached."}
 
-    @staticmethod
-    def _is_security_code_field(item: Dict[str, Any]) -> bool:
+    # A one-time secret is never a profile fact.  These labels are matched on
+    # the field itself, so a portal that names its code box "code" instead of
+    # "otp" still gets a human checkpoint instead of a stored value.
+    _SECURITY_HINT_RE = re.compile(
+        r"otp|one[-\s]?time\s*(?:password|code|pin)|verification\s*(?:code|pin)|"
+        r"auth(?:entication)?\s*code|passcode|access\s*code|security\s*(?:code|check)|"
+        r"sms\s*code|email\s*code|captcha|code\s*(?:sent|shown|above)|"
+        r"enter\s*(?:the\s*)?(?:code|pin)\b",
+        re.IGNORECASE,
+    )
+    # Codes that are ordinary data, not secrets.
+    _NON_SECRET_CODE_RE = re.compile(
+        r"\b(?:postal|zip|pin\s*code|area|country|dial|std|course|subject|"
+        r"application|registration|roll|centre|center|exam|course|coupon|promo|"
+        r"voucher|discount|gift)\s*code\b",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _is_security_code_field(cls, item: Dict[str, Any]) -> bool:
         """OTP and CAPTCHA inputs have their own human-only checkpoints.
 
         They must not count as skipped form fields, otherwise every OTP page
-        would be reported as an incomplete fill.
+        would be reported as an incomplete fill.  More importantly, their
+        value must never be remembered as a reusable fact.
         """
         haystack = " ".join(
             str(item.get(key) or "")
             for key in ("label", "name", "id", "placeholder", "aria_label")
         ).lower()
-        return bool(
-            re.search(
-                r"otp|one[-\s]?time\s*(?:password|code)|verification\s*code|"
-                r"auth(?:entication)?\s*code|captcha|security\s*check",
-                haystack,
-            )
+        if cls._NON_SECRET_CODE_RE.search(haystack):
+            return False
+        return bool(cls._SECURITY_HINT_RE.search(haystack))
+
+    _DECLARATION_RE = re.compile(
+        r"\b(?:i\s+(?:hereby\s+)?(?:agree|declare|confirm|consent|accept|undertake|affirm|solemnly)|"
+        r"terms\s*(?:and|&)\s*conditions|privacy\s*policy|declaration|i\s+am\s+aware)\b",
+        re.IGNORECASE,
+    )
+    _NON_DECLARATION_RE = re.compile(
+        r"\b(?:remember|subscribe|newsletter|notify|updates?|offers?|whatsapp)\b",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _is_declaration(cls, item: Dict[str, Any]) -> bool:
+        """True for a consent/declaration checkbox that a form needs ticked.
+
+        These boxes are legal statements, not optional preferences, but they
+        are also not profile facts.  The human must accept each one; the value
+        is never stored.
+        """
+        if str(item.get("type") or "").lower() != "checkbox":
+            return False
+        haystack = " ".join(
+            str(item.get(key) or "") for key in ("label", "name", "id")
+        )
+        if not haystack.strip():
+            return False
+        if cls._NON_DECLARATION_RE.search(haystack):
+            return False
+        return bool(cls._DECLARATION_RE.search(haystack))
+
+    @classmethod
+    def _looks_like_generic_secret(
+        cls,
+        item: Dict[str, Any],
+        dom: Dict[str, Any],
+    ) -> bool:
+        """Catch a bare "code"/"pin" box on a page that already has a challenge.
+
+        Portals often label the box only "Enter code" and give it a machine
+        name such as ``SignupForm[code]``.  When the same page also shows an
+        OTP or CAPTCHA challenge, that short field is the challenge answer,
+        not a profile question.
+        """
+        if not (dom.get("otpInputs") or dom.get("captchaElements")):
+            return False
+        text = " ".join(
+            str(item.get(key) or "")
+            for key in ("label", "name", "id", "placeholder")
+        ).lower()
+        if cls._NON_SECRET_CODE_RE.search(text):
+            return False
+        words = re.findall(r"[a-z]+", text)
+        return len(words) <= 4 and bool(
+            re.search(r"\b(?:code|pin|otp|verification|verify|security)\b", text)
         )
 
     @staticmethod
@@ -2852,8 +2967,8 @@ class FormPilotOrchestrator:
         ).lower()
         return bool(
             re.search(
-                r"otp|one[-\s]?time\s*(?:password|code)|verification\s*code|"
-                r"auth(?:entication)?\s*code",
+                r"otp|one[-\s]?time\s*(?:password|code|pin)|verification\s*(?:code|pin)|"
+                r"auth(?:entication)?\s*code|passcode|access\s*code|sms\s*code|email\s*code",
                 haystack,
             )
         )
@@ -2920,9 +3035,13 @@ class FormPilotOrchestrator:
                 break
             if (item.get("type") or "").lower() in {"submit", "button", "reset", "image", "hidden"}:
                 continue
-            if self._is_security_code_field(item):
+            if (
+                self._is_security_code_field(item)
+                or FormModel.human_challenge(item)
+                or self._looks_like_generic_secret(item, dom)
+            ):
                 # Handled by _handle_otp / _handle_captcha, never by the fill
-                # verifier.
+                # verifier, and never stored as a reusable fact.
                 continue
 
             label = str(item.get("label") or item.get("name") or item.get("id") or "field")
@@ -2945,7 +3064,27 @@ class FormPilotOrchestrator:
 
             sem_key, _is_verify = DOMScanner.classify_field(item)
             custom_field = False
-            if not sem_key:
+            if self._is_declaration(item) and not item.get("checked"):
+                # A consent/declaration checkbox is a legal statement, not a
+                # profile fact.  Ask every time and never store the answer.
+                value = await self._ask_for_missing_field(
+                    item,
+                    self._custom_key(item),
+                    store=False,
+                )
+                if not value:
+                    skipped.append(
+                        {
+                            "item": item,
+                            "sem_key": "",
+                            "label": label,
+                            "reason": "You did not accept this declaration.",
+                        }
+                    )
+                    continue
+                sem_key = self._custom_key(item)
+                custom_field = True
+            elif not sem_key:
                 if not self._should_ask_unknown(item):
                     skipped.append(
                         {
@@ -3000,6 +3139,24 @@ class FormPilotOrchestrator:
                         }
                     )
                     continue
+                if (
+                    instruction is not None
+                    and instruction.state == "ask_human"
+                    and not item.get("required")
+                    and not settings.ASK_OPTIONAL_FIELDS
+                ):
+                    # An optional field with no saved value stays blank.  The
+                    # human can still type it in the live browser, but a blank
+                    # middle name or guardian must not open a checkpoint.
+                    skipped.append(
+                        {
+                            "item": item,
+                            "sem_key": sem_key,
+                            "label": label,
+                            "reason": "Optional field left blank.",
+                        }
+                    )
+                    continue
                 if instruction is not None and instruction.state == "fill":
                     # Meaning already decided the value; do not re-derive it
                     # from the framework name.
@@ -3026,9 +3183,24 @@ class FormPilotOrchestrator:
                 else:
                     value = vault.find_field_value(sem_key)
                     if sem_key == "dob" and value:
-                        value = vault.get_formatted_dob("DD/MM/YYYY")
+                        # Read the format from the field itself (placeholder,
+                        # label or helper).  A native date input always takes
+                        # ISO.  Only fall back to the India-first DD/MM/YYYY
+                        # when the page gives no hint at all.
+                        expected = self._date_format_for(item)
+                        value = vault.get_formatted_dob(expected or "DD/MM/YYYY")
 
                     if not value:
+                        if not item.get("required") and not settings.ASK_OPTIONAL_FIELDS:
+                            skipped.append(
+                                {
+                                    "item": item,
+                                    "sem_key": sem_key,
+                                    "label": label,
+                                    "reason": "Optional field left blank.",
+                                }
+                            )
+                            continue
                         value = await self._ask_for_missing_field(item, sem_key)
                         if not value:
                             skipped.append(
@@ -3041,6 +3213,12 @@ class FormPilotOrchestrator:
                             )
                             continue
                         vault = self.vault_mgr.vault
+
+            # A portal account can use a different mobile/email than the
+            # global profile.  On the login page the identifier recorded for
+            # this domain wins over the global vault value.
+            if login_page and sem_key in {"mobile", "email"}:
+                value = self._portal_credential(sem_key) or value
 
             # Portals commonly lock fields after a step succeeds (for example,
             # HPSC marks the mobile/email/password fields read-only once the
@@ -3096,11 +3274,78 @@ class FormPilotOrchestrator:
                     "kind": "field",
                     "apply_ok": bool(result.get("success")),
                     "reason": str(result.get("reason") or ""),
+                    "reentered": bool(result.get("reentered")),
                 }
             )
             await asyncio.sleep(0.08)
 
+        # A child select (district after state) only gets its options after the
+        # parent changes.  One extra pass picks those up without re-filling
+        # anything that was already handled.
+        await asyncio.sleep(0.25)
+        await self._fill_dependent_selects(targets, skipped)
+
         return await self._verify_fill_targets(targets, skipped)
+
+    async def _fill_dependent_selects(
+        self,
+        targets: List[Dict[str, Any]],
+        skipped: List[Dict[str, Any]],
+    ) -> None:
+        """Fill selects whose options appeared after a parent field changed.
+
+        State -> district -> block cascades render an empty child until the
+        parent fires ``change``.  The first scan cannot plan them, so they are
+        skipped with a "does not offer an option" reason.  Re-scan once and
+        fill only those fields, with the same option matcher and no guessing.
+        """
+        pending = [
+            entry
+            for entry in skipped
+            if "does not offer an option" in str(entry.get("reason") or "").lower()
+        ]
+        if not pending:
+            return
+        try:
+            fresh = await self._scan_dom()
+        except Exception:
+            return
+        by_key: Dict[str, Dict[str, Any]] = {}
+        for item in fresh.get("inputs") or []:
+            if str(item.get("type") or "").lower() != "select":
+                continue
+            sem_key, _ = DOMScanner.classify_field(item)
+            if sem_key and item.get("options"):
+                by_key[sem_key] = item
+        if not by_key:
+            return
+        for entry in list(pending):
+            sem_key = str(entry.get("sem_key") or "")
+            item = by_key.get(sem_key)
+            if not item:
+                continue
+            value = self.vault_mgr.vault.find_field_value(sem_key)
+            if not value:
+                continue
+            matched = match_option(str(value), item.get("options") or [])
+            if not matched:
+                continue
+            result = await self._apply_field_value(item, matched)
+            targets.append(
+                {
+                    "item": item,
+                    "sem_key": sem_key,
+                    "label": str(entry.get("label") or sem_key),
+                    "value": matched,
+                    "method": result.get("method", "select"),
+                    "custom": False,
+                    "kind": "field",
+                    "apply_ok": bool(result.get("success")),
+                    "reason": str(result.get("reason") or ""),
+                    "reentered": bool(result.get("reentered")),
+                }
+            )
+            skipped.remove(entry)
 
     @staticmethod
     def _same_field(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
@@ -3318,6 +3563,10 @@ class FormPilotOrchestrator:
         verified = 0
         field_results: List[Dict[str, Any]] = []
 
+        # Portals often clear, truncate or reformat a value in an input handler
+        # a moment after typing.  Read back only after that handler has run,
+        # otherwise the first scan reports a value the page is about to drop.
+        await asyncio.sleep(0.3)
         try:
             fresh = await self._scan_dom()
         except Exception:
@@ -3329,6 +3578,12 @@ class FormPilotOrchestrator:
         # This mirrors Skyvern's read-back rule: a silent rejection gets one
         # atomic re-entry, not a loop.
         retry_indexes = [index for index, result in enumerate(results) if result.get("retryable")]
+        # A value the resolver had to type or inject after its fast fill did
+        # not stick was also re-entered, just one layer lower.  Count it once
+        # per field so the summary reports re-entry honestly either way.
+        reentered_indexes = {
+            index for index, target in enumerate(targets) if target.get("reentered")
+        }
         if retry_indexes and self.page:
             for index in retry_indexes:
                 target = targets[index]
@@ -3431,7 +3686,7 @@ class FormPilotOrchestrator:
             "failed": failed_count,
             "skipped": skipped_count,
             "reformatted": reformatted_count,
-            "retried": len(retry_indexes),
+            "retried": len(set(retry_indexes) | reentered_indexes),
             "fields": field_results,
             "verified_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
@@ -3446,7 +3701,7 @@ class FormPilotOrchestrator:
                 "failed": failed_count,
                 "skipped": skipped_count,
                 "reformatted": reformatted_count,
-                "retried": len(retry_indexes),
+                "retried": len(set(retry_indexes) | reentered_indexes),
                 "section": self.current_section,
             },
         )
@@ -3502,6 +3757,51 @@ class FormPilotOrchestrator:
         ):
             return False
         return True
+
+    @staticmethod
+    def _date_format_for(item: Dict[str, Any]) -> str:
+        """Return the date format the field itself asks for, if it says."""
+        if str(item.get("type") or "").lower() == "date":
+            return "YYYY-MM-DD"
+        hint = " ".join(
+            str(item.get(key) or "")
+            for key in ("label", "placeholder", "helperText", "aria_label")
+        )
+        return concepts.expected_date_format(hint) or ""
+
+    @staticmethod
+    def _is_skip_value(value: Any) -> bool:
+        """Recognise a human telling us the field does not apply.
+
+        Candidates often type "skip" or "N/A" into a text box when the UI has
+        no skip button.  That must never be stored as a real name or fact.
+        """
+        return str(value or "").strip().lower() in {
+            "skip",
+            "skipped",
+            "n/a",
+            "na",
+            "none",
+            "not applicable",
+            "not-applicable",
+            "-",
+            "--",
+        }
+
+    @staticmethod
+    def _mark_known_absent(concept: str) -> None:
+        """Remember that a field does not apply, so future runs do not ask."""
+        try:
+            FactBook.get_instance().set_fact(
+                concept,
+                value="",
+                known_absent=True,
+                provenance="explicit_user",
+                verification="confirmed_by_human",
+                scope={"kind": "global"},
+            )
+        except Exception:
+            traceback.print_exc()
 
     @staticmethod
     def _custom_key(item: Dict[str, Any]) -> str:
@@ -3564,7 +3864,7 @@ class FormPilotOrchestrator:
                 self.is_running = False
             return ""
         value = str(response.get("value") or response.get("text") or "").strip()
-        if not value:
+        if not value or self._is_skip_value(value):
             return ""
         self._session_values[custom_key] = value
         try:
@@ -3584,6 +3884,7 @@ class FormPilotOrchestrator:
         sem_key: str,
         *,
         concept: Optional[str] = None,
+        store: bool = True,
     ) -> str:
         label = item.get("label") or sem_key
         await self.emit_event(
@@ -3620,16 +3921,25 @@ class FormPilotOrchestrator:
         if self.live:
             self._release_live_control("The agent is driving again.")
         self.state = "RUNNING" if self.is_running else self.state
-        if response.get("action") in {"STOPPED", "TIMEOUT", "DISMISS", "SKIP"}:
-            if response.get("action") == "TIMEOUT":
+        action = str(response.get("action") or "")
+        if action in {"STOPPED", "TIMEOUT", "DISMISS", "SKIP"}:
+            if action == "TIMEOUT":
                 self.is_running = False
+            if action == "SKIP" and concept:
+                self._mark_known_absent(concept)
             return ""
-        if response.get("action") == "HANDOFF_COMPLETE":
+        if action == "HANDOFF_COMPLETE":
             return ""
         value = str(response.get("value") or response.get("text") or "").strip()
+        if value and self._is_skip_value(value):
+            # The human typed "skip" because there was no button.  Record the
+            # field as intentionally blank, never as a value.
+            if concept:
+                self._mark_known_absent(concept)
+            return ""
         if value:
             stored_as_fact = False
-            if concept:
+            if concept and store:
                 try:
                     FactBook.get_instance().set_fact(
                         concept,
@@ -3641,7 +3951,7 @@ class FormPilotOrchestrator:
                     stored_as_fact = True
                 except Exception:
                     traceback.print_exc()
-            if not stored_as_fact:
+            if store and not stored_as_fact:
                 try:
                     self.vault_mgr.set_semantic_field(sem_key, value)
                 except Exception:
@@ -4034,7 +4344,14 @@ class FormPilotOrchestrator:
             self._otp_cleared = False
             self._otp_signature = ""
 
-        selector = "#btn-send-otp, button:has-text('Send OTP'), button:has-text('Get OTP'), button:has-text('Send code')"
+        selector = (
+            "#btn-send-otp, #send-otp, #btn-send-code, #send-code, "
+            "button:has-text('Send OTP'), button:has-text('Get OTP'), "
+            "button:has-text('Generate OTP'), button:has-text('Request OTP'), "
+            "button:has-text('Resend OTP'), button:has-text('Send code'), "
+            "button:has-text('Get code'), button:has-text('Send verification'), "
+            "button:has-text('ओटीपी'), button:has-text('कोड')"
+        )
         button = None
         try:
             candidate = self.page.locator(selector).first
@@ -4631,10 +4948,11 @@ class FormPilotOrchestrator:
             if adapter.is_payment_page(self.page, dom):
                 await self._trigger_pre_payment_lock()
                 return True
-            return False
+            return await self._advance_handoff(dom)
 
         previous_step = self.current_section
-        if self._is_final_action(button):
+        last_step = self._page_looks_final(dom, button)
+        if self._is_final_action(button, last_step=last_step):
             await self._trigger_pre_payment_lock(final_action=True)
             return True
         before_signature = self._dom_signature(dom)
@@ -4724,6 +5042,63 @@ class FormPilotOrchestrator:
         )
         return True
 
+    async def _advance_handoff(self, dom: Dict[str, Any]) -> bool:
+        """Ask the human to press the control the agent could not identify.
+
+        Portals use icon-only buttons, non-English labels and custom widgets.
+        Guessing is worse than asking: the wrong control can submit the form.
+        The live browser is interactive, so the human can press it and confirm.
+        """
+        signature = self._dom_signature(dom)
+        if signature == self._advance_handoff_signature:
+            return False
+        if not self.live:
+            return False
+        self._advance_handoff_signature = signature
+        gate = {
+            "gate_type": "LIVE_HANDOFF",
+            "handoff_type": "advance",
+            "title": "Continue in the live browser",
+            "hindi_title": "Live browser mein aage badhein",
+            "description": (
+                "FormPilot could not identify the button that moves this page "
+                "forward, so it did not click anything. Use the live browser to "
+                "save or continue, then confirm below."
+            ),
+            "options": [
+                {"text": str(button.get("text") or "")}
+                for button in (dom.get("nextButtons") or [])[:6]
+                if str(button.get("text") or "").strip()
+            ],
+            "live_session": self.live.public_info() if not self.live.closed else None,
+            "can_takeover": True,
+            "instructions": [
+                "Click the save/continue button in the live browser.",
+                "Wait for the next page to load.",
+                "Then click 'I completed this step'.",
+            ],
+        }
+        self.active_gate = gate
+        self.state = "WAITING_FOR_USER"
+        self.live.set_allow_control(True, "Press the save/continue button in the live browser.")
+        await self.emit_event(
+            "DECIDE",
+            "I could not identify the continue button. Use the live browser, then confirm.",
+            "Continue button pehchana nahi gaya. Live browser mein aage badhein, phir confirm karein.",
+            gate,
+            force_screenshot=True,
+        )
+        response = await self._wait_for_user_response()
+        self.active_gate = None
+        self._release_live_control("The agent is driving again.")
+        if response.get("action") in {"STOPPED", "TIMEOUT"}:
+            self.is_running = False
+            return False
+        if response.get("action") in {"HANDOFF_COMPLETE", "CONTINUE"}:
+            self._advance_handoff_signature = ""
+            return True
+        return False
+
     # ---------------------------------------------------------------- pre-payment
 
     _FINAL_ACTION_PATTERN = re.compile(
@@ -4731,18 +5106,72 @@ class FormPilotOrchestrator:
         r"complete\s+(?:application|registration)|proceed\s+to\s+pay)\b",
         re.IGNORECASE,
     )
+    # Wording that means this page is the end of the application.  Only then
+    # do ambiguous labels such as "Save" or "Confirm" count as final.
+    _FINAL_PAGE_RE = re.compile(
+        r"\b(?:preview|declaration|final\s+(?:step|submission|review)|"
+        r"review\s+(?:your|the)\s+application|confirm\s+(?:your\s+)?details|"
+        r"terms\s*(?:and|&)\s*conditions|before\s+(?:you\s+)?submit|"
+        r"submit\s+(?:your\s+)?application)\b",
+        re.IGNORECASE,
+    )
 
     @classmethod
-    def _is_final_action(cls, button: Dict[str, Any]) -> bool:
+    def _is_final_action(
+        cls,
+        button: Dict[str, Any],
+        *,
+        last_step: bool = False,
+    ) -> bool:
         """True for a button that would submit or pay for the application.
 
         Navigation labels such as "Save & Next: Pre-Payment Review" mention
         payment but only move to another section, so they are excluded.
+        Ambiguous labels ("Save", "Confirm", "Complete") only count as final
+        on a page that already looks like the last step; otherwise a normal
+        section's Save button would trigger a false pre-payment lock.
         """
         text = str(button.get("text") or "").strip()
         if re.search(r"(?:save\s*&\s*next|save\s+and\s+next|next\s+step)", text, re.IGNORECASE):
             return False
-        return bool(cls._FINAL_ACTION_PATTERN.search(text))
+        if cls._FINAL_ACTION_PATTERN.search(text):
+            return True
+        if last_step and re.search(
+            r"\b(?:save|confirm|finish|complete|lock|freeze|accept|agree)\b",
+            text,
+            re.IGNORECASE,
+        ):
+            return True
+        return False
+
+    @classmethod
+    def _page_looks_final(cls, dom: Dict[str, Any], button: Dict[str, Any]) -> bool:
+        """Heuristic: is this page the last one before submission?
+
+        Two independent signals: the page talks like a preview/declaration,
+        or it shows a consent checkbox next to an ambiguous save/confirm
+        button.  Both are common on Indian government portals.
+        """
+        text = str(dom.get("visibleText") or "")
+        if cls._FINAL_PAGE_RE.search(text):
+            return True
+        label = str(button.get("text") or "")
+        if not re.search(r"\b(?:save|confirm|finish|complete|update)\b", label, re.IGNORECASE):
+            return False
+        for item in dom.get("inputs") or []:
+            if str(item.get("type") or "").lower() != "checkbox":
+                continue
+            haystack = " ".join(
+                str(item.get(key) or "") for key in ("label", "name", "id")
+            )
+            if re.search(
+                r"\b(?:i\s+(?:hereby\s+)?(?:agree|declare|confirm|consent|accept)|"
+                r"terms\s*(?:and|&)\s*conditions|declaration)\b",
+                haystack,
+                re.IGNORECASE,
+            ):
+                return True
+        return False
 
     @staticmethod
     def _masked_phone(value: str) -> str:

@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: formpilot-backend
+    runtime: docker
+    plan: starter
+    region: oregon
+    envVars:
+      - key: FORMPILOT_ENV
+        value: production
+      - key: FORMPILOT_DEMO_MODE
+        value: "1"
+      - key: FORMPILOT_CORS_ORIGINS
+        value: "https://*.vercel.app,http://localhost:5173"
+      - key: FORMPILOT_ENABLE_SIMULATOR
+        value: "1"

@@ -794,6 +794,10 @@ PORTAL_HTML = """<!DOCTYPE html>
 
   window.onload = function() {
     drawCaptcha();
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("view") === "new_reg") {
+      openForm("new_reg");
+    }
   };
 </script>
 </body>

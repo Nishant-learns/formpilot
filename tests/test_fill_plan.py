@@ -65,6 +65,17 @@ def test_a_known_absent_middle_name_is_left_blank_not_asked(tmp_path):
     assert "no middle name" in plan["fp-1"].reason
 
 
+def test_two_token_name_leaves_middle_name_blank(tmp_path):
+    """The exact live HPSC case: "Nishant Kumar" must not ask for a middle name."""
+    book = _book(tmp_path, CandidateVault(full_name="Nishant Kumar"))
+    perception = _perception(_field("fp-1", "Middle Name"))
+
+    plan = build_fill_plan(perception, book)
+
+    assert plan["fp-1"].state == "leave_blank"
+    assert plan["fp-1"].value == ""
+
+
 def test_name_as_matric_is_proposed_but_not_filled_without_confirmation(tmp_path):
     book = _book(tmp_path, CandidateVault(full_name="Aman Kumar Sharma"))
     perception = _perception(_field("fp-1", "Name as printed on matric certificate"))

@@ -12,6 +12,7 @@ import BiometricsStudio from './components/BiometricsStudio';
 import TinyFishSettingsModal from './components/TinyFishSettingsModal';
 import SessionStrip from './components/SessionStrip';
 import Toasts from './components/Toasts';
+import { getWsUrl } from './apiConfig';
 import { AlertTriangle, FileText, MessageSquare, ScanSearch, Terminal } from 'lucide-react';
 
 const ACTIVE_STATES = new Set(['RESOLVING', 'RUNNING', 'WAITING_FOR_USER', 'PAUSED']);
@@ -265,8 +266,7 @@ export default function App() {
   }
 
   const connectWebSocket = () => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws/cockpit`;
+    const wsUrl = getWsUrl('/ws/cockpit');
 
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;

@@ -157,3 +157,34 @@ def test_scanner_records_the_element_covering_a_button():
         assert target.covered_by.get("id") == "overlay"
 
     run_with_page(scenario)
+
+
+DATE_FORM_HTML = """
+<html><body><form>
+  <div class="row">
+    <div class="col">
+      <label class="form-label">Date of Birth</label>
+      <div class="input-group"><input type="text" placeholder="DD-MM-YYYY"></div>
+    </div>
+    <div class="col">
+      <label class="form-label">Confirm Date of Birth</label>
+      <div class="input-group"><input type="text" placeholder="DD-MM-YYYY"></div>
+    </div>
+  </div>
+</form></body></html>
+"""
+
+
+def test_a_date_placeholder_is_a_format_hint_not_the_field_label():
+    """The live HPSC form labels its date boxes only by a sibling <label>."""
+
+    async def scenario(page):
+        await page.set_content(DATE_FORM_HTML)
+        dom, _ = await DOMScanner.scan(page)
+
+        labels = [str(item.get("label") or "") for item in dom.get("inputs") or []]
+        assert "Date of Birth" in labels
+        assert "Confirm Date of Birth" in labels
+        assert "DD-MM-YYYY" not in labels
+
+    run_with_page(scenario)

@@ -12,7 +12,10 @@ import {
   HelpCircle,
 } from 'lucide-react';
 
-const DEFAULT_QUERY = 'http://127.0.0.1:8000/gov-portal-demo';
+const LIVE_TEST_PORTAL_URL = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_PRACTICE_PORTAL_URL)
+  || (typeof window !== 'undefined' && window.location?.origin ? `${window.location.origin}/gov-portal-demo` : 'http://127.0.0.1:8000/gov-portal-demo');
+
+const DEFAULT_QUERY = LIVE_TEST_PORTAL_URL;
 const LAST_QUERY_KEY = 'formpilot.lastQuery';
 
 function readSavedQuery() {
@@ -68,12 +71,12 @@ export default function PortalLauncher({ onLaunch, agentRunning, sessionOpen }) 
   const quickPills = [
     {
       label: 'Practice portal',
-      val: 'http://127.0.0.1:8000/gov-portal-demo',
+      val: LIVE_TEST_PORTAL_URL,
       desc: 'Try a full multi-step application safely. No real submission or payment.',
     },
     {
       label: 'Practice sign-in',
-      val: 'http://127.0.0.1:8000/gov-portal-demo',
+      val: LIVE_TEST_PORTAL_URL,
       desc: 'Try the returning-candidate sign-in flow with the demo account.',
     },
     {
@@ -253,6 +256,32 @@ export default function PortalLauncher({ onLaunch, agentRunning, sessionOpen }) 
                 {pill.label}
               </button>
             ))}
+          </div>
+
+          <div className="mt-3.5 flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-sky-500/20 bg-sky-950/20 px-3.5 py-2.5 text-xs">
+            <div className="flex items-center gap-2">
+              <span className="flex h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+              <span className="font-bold text-sky-200">Test Portal Ready:</span>
+              <span className="hidden sm:inline text-[11px] text-slate-400">Practice safely without touching real government portals.</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => updateQuery(LIVE_TEST_PORTAL_URL)}
+                className="rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-500/30 px-2.5 py-1 text-[11px] font-bold text-sky-300 transition-colors"
+              >
+                Load in Assistant
+              </button>
+              <a
+                href={LIVE_TEST_PORTAL_URL}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-800/80 px-2.5 py-1 text-[11px] font-medium text-slate-300 hover:bg-slate-700 hover:text-white transition-colors"
+                title="Open demo government portal in a new browser tab"
+              >
+                Open Site <ExternalLink className="h-3 w-3" />
+              </a>
+            </div>
           </div>
 
           {oracleResult && (

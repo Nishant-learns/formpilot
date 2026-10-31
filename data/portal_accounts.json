@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-10-28T16:05:18.994710+00:00",
+  "updated_at": "2026-10-30T16:54:38.833200+00:00",
   "accounts": [
     {
       "account_id": "acct-3fe3c78e1c1355a1",
@@ -9,13 +9,58 @@
       "identifier_value": "",
       "account_exists": "unknown",
       "identifiers_seen": [],
+      "login_method": "mobile_otp",
+      "registration_status": "unknown",
+      "last_known_step": "",
+      "last_path_choice": "login",
+      "conflict_evidence": "",
+      "confirmed_by_human_at": "2026-10-30T04:31:54.042832+00:00",
+      "updated_at": "2026-10-30T04:31:54.042889+00:00"
+    },
+    {
+      "account_id": "acct-ed3cf9049d7f59ec",
+      "domain": "cdn.digialm.com",
+      "identifier_type": "unknown",
+      "identifier_value": "",
+      "account_exists": "no",
+      "identifiers_seen": [],
       "login_method": "unknown",
       "registration_status": "unknown",
       "last_known_step": "",
       "last_path_choice": "login",
       "conflict_evidence": "",
-      "confirmed_by_human_at": "2026-10-28T16:05:18.994477+00:00",
-      "updated_at": "2026-10-28T16:05:18.994632+00:00"
+      "confirmed_by_human_at": "2026-10-30T11:43:59.900822+00:00",
+      "updated_at": "2026-10-30T11:43:59.900929+00:00"
+    },
+    {
+      "account_id": "acct-921bad3cb9875548",
+      "domain": "sficeast.wb.gov.in",
+      "identifier_type": "unknown",
+      "identifier_value": "",
+      "account_exists": "no",
+      "identifiers_seen": [],
+      "login_method": "unknown",
+      "registration_status": "unknown",
+      "last_known_step": "",
+      "last_path_choice": "register",
+      "conflict_evidence": "",
+      "confirmed_by_human_at": "2026-10-30T11:57:55.283645+00:00",
+      "updated_at": "2026-10-30T11:57:55.283859+00:00"
+    },
+    {
+      "account_id": "acct-4293044adc6c5dfd",
+      "domain": "127.0.0.1:8000",
+      "identifier_type": "unknown",
+      "identifier_value": "",
+      "account_exists": "unknown",
+      "identifiers_seen": [],
+      "login_method": "unknown",
+      "registration_status": "in_progress",
+      "last_known_step": "section_1",
+      "last_path_choice": "register",
+      "conflict_evidence": "",
+      "confirmed_by_human_at": "2026-10-30T16:54:38.833148+00:00",
+      "updated_at": "2026-10-30T16:54:38.833184+00:00"
     }
   ]
 }

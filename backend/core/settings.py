@@ -79,6 +79,10 @@ CORS_ORIGINS = [
     if origin.strip()
 ]
 
+# Optional fields with no saved value stay blank instead of opening a
+# checkpoint.  A two-token name has no middle name; a guardian is often absent.
+# Set this to true only when every optional field must be asked about.
+ASK_OPTIONAL_FIELDS = _env_bool("FORMPILOT_ASK_OPTIONAL_FIELDS", False)
 # Human gate timeout.  A gate that never resolves is a support incident, but a
 # real person may need many minutes.  Ten-minute pauses must not expire a gate.
 GATE_TIMEOUT_SECONDS = int(os.getenv("FORMPILOT_GATE_TIMEOUT_SECONDS", "1800"))
