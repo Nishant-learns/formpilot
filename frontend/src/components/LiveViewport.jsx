@@ -401,12 +401,12 @@ export default function LiveViewport({
 
   return (
     <div
-      className={`bg-slate-900 border border-slate-800 rounded-2xl flex flex-col overflow-hidden shadow-xl ${
-        isFullscreen ? 'fixed inset-2 z-50 bg-slate-950/95 backdrop-blur-xl border-amber-500/50 md:inset-4' : className || 'h-[640px]'
+      className={`glass-panel specular-top rounded-2xl flex flex-col overflow-hidden shadow-2xl ${
+        isFullscreen ? 'fixed inset-2 z-50 bg-[#07090e]/95 backdrop-blur-2xl border-indigo-500/50 md:inset-4' : className || 'h-[640px]'
       }`}
     >
       {/* Browser chrome */}
-      <div className="bg-slate-950 px-3 py-2 border-b border-slate-800 shrink-0">
+      <div className="bg-white/[0.02] px-3 py-2 border-b border-white/[0.08] shrink-0">
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 min-w-0">
             <div className="flex items-center gap-1.5 shrink-0">
@@ -420,7 +420,7 @@ export default function LiveViewport({
               {sessionLabel}
             </span>
             {runMode !== 'inspect' && (active || live) && (
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-800 text-amber-300 border border-slate-700 shrink-0">
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 shrink-0">
                 Section {currentSection || 1}
               </span>
             )}
@@ -432,7 +432,7 @@ export default function LiveViewport({
                 type="button"
                 onClick={handleRescan}
                 disabled={rescanning}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border border-sky-500/40 text-[11px] font-bold transition-all disabled:opacity-50"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border border-sky-500/40 text-[11px] font-bold transition-all disabled:opacity-50"
                 title="Read this page again and update the form map"
               >
                 <ScanSearch className={`w-3.5 h-3.5 ${rescanning ? 'animate-pulse' : ''}`} />
@@ -444,7 +444,7 @@ export default function LiveViewport({
                 <button
                   type="button"
                   onClick={onReturnControl}
-                  className="flex items-center gap-1.5 rounded-lg border border-sky-500/40 bg-sky-500/15 px-2.5 py-1 text-[11px] font-bold text-sky-300 transition-all hover:bg-sky-500/25"
+                  className="flex items-center gap-1.5 rounded-xl border border-sky-500/40 bg-sky-500/15 px-2.5 py-1 text-[11px] font-bold text-sky-300 transition-all hover:bg-sky-500/25"
                   title="Take the page back, re-read it, and stay paused until you continue"
                 >
                   <RefreshCw className="h-3.5 w-3.5" />
@@ -454,7 +454,7 @@ export default function LiveViewport({
                 <button
                   type="button"
                   onClick={onTakeover}
-                  className="flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/15 px-2.5 py-1 text-[11px] font-bold text-amber-300 transition-all hover:bg-amber-500/25"
+                  className="flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/15 px-2.5 py-1 text-[11px] font-bold text-amber-300 transition-all hover:bg-amber-500/25"
                   title="Pause FormPilot and control the real page yourself"
                 >
                   <MousePointer2 className="h-3.5 w-3.5" />
@@ -466,10 +466,10 @@ export default function LiveViewport({
               <button
                 type="button"
                 onClick={onPauseToggle}
-                className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition-all ${
+                className={`flex items-center gap-1.5 rounded-xl border px-2.5 py-1 text-[11px] font-bold transition-all ${
                   paused
                     ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25'
-                    : 'border-slate-700 bg-slate-800 text-slate-200 hover:bg-slate-700'
+                    : 'border-white/[0.08] bg-white/[0.04] text-slate-200 hover:bg-white/[0.08]'
                 }`}
                 title={paused ? 'Resume the agent' : 'Pause the agent at the next safe point'}
               >
@@ -481,7 +481,7 @@ export default function LiveViewport({
               <button
                 type="button"
                 onClick={onStop}
-                className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/40 text-xs font-bold transition-all"
+                className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/40 text-xs font-bold transition-all"
                 title={active ? 'Stop the application and close the browser' : 'Close the live browser'}
               >
                 <Power className="w-3.5 h-3.5" />
@@ -491,7 +491,7 @@ export default function LiveViewport({
             <button
               type="button"
               onClick={() => setIsFullscreen(!isFullscreen)}
-              className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors"
+              className="p-1.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-slate-300 border border-white/[0.08] transition-colors"
               title={isFullscreen ? 'Exit full screen' : 'Expand view'}
             >
               {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
@@ -505,7 +505,7 @@ export default function LiveViewport({
               type="button"
               onClick={() => navigate('back')}
               disabled={!canControl}
-              className="p-1.5 rounded-md bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 disabled:opacity-40"
+              className="p-1.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-slate-300 border border-white/[0.08] disabled:opacity-30 transition-all"
               title="Back"
             >
               <ArrowLeft className="w-3.5 h-3.5" />
@@ -514,7 +514,7 @@ export default function LiveViewport({
               type="button"
               onClick={() => navigate('forward')}
               disabled={!canControl}
-              className="p-1.5 rounded-md bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 disabled:opacity-40"
+              className="p-1.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-slate-300 border border-white/[0.08] disabled:opacity-30 transition-all"
               title="Forward"
             >
               <ArrowRight className="w-3.5 h-3.5" />
@@ -523,7 +523,7 @@ export default function LiveViewport({
               type="button"
               onClick={() => navigate('reload')}
               disabled={!canControl}
-              className="p-1.5 rounded-md bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 disabled:opacity-40"
+              className="p-1.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-slate-300 border border-white/[0.08] disabled:opacity-30 transition-all"
               title="Reload"
             >
               <RefreshCw className="w-3.5 h-3.5" />

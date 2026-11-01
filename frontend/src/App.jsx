@@ -14,6 +14,7 @@ import SessionStrip from './components/SessionStrip';
 import Toasts from './components/Toasts';
 import { getWsUrl, PRACTICE_PORTAL_URL } from './apiConfig';
 import { AlertTriangle, FileText, MessageSquare, ScanSearch, Terminal, X } from 'lucide-react';
+import { NeuralSparkleIcon } from './components/CustomIcons';
 
 const ACTIVE_STATES = new Set(['RESOLVING', 'RUNNING', 'WAITING_FOR_USER', 'PAUSED']);
 const TERMINAL_STATES = new Set(['STOPPED', 'FAILED', 'COMPLETED', 'AWAITING_PAYMENT', 'DONE']);
@@ -670,11 +671,10 @@ export default function App() {
   const panels = [
     {
       id: 'chat',
-      label: 'Ask FormPilot',
-      icon: MessageSquare,
+      label: 'Copilot',
+      icon: NeuralSparkleIcon,
       count: null,
-      hint: 'Questions and saved details',
-      activeClass: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
+      hint: 'Questions and real-time guidance',
     },
     {
       id: 'brief',
@@ -684,23 +684,20 @@ export default function App() {
         ? (pageBrief.sections || []).reduce((total, section) => total + (section.questions?.length || 0), 0)
         : null,
       hint: 'What this page wants',
-      activeClass: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',
     },
     {
       id: 'map',
-      label: 'Page map',
+      label: 'DOM map',
       icon: ScanSearch,
       count: (formMap?.field_count || 0) + (formMap?.gateways?.length || 0),
       hint: 'Fields, locators and recipes',
-      activeClass: 'bg-sky-500/20 text-sky-300 border-sky-500/40',
     },
     {
       id: 'stream',
-      label: 'Activity',
+      label: 'Cognition',
       icon: Terminal,
       count: events.length,
       hint: 'Step-by-step updates',
-      activeClass: 'bg-violet-500/20 text-violet-300 border-violet-500/40',
     },
   ];
 

@@ -26,8 +26,8 @@ const ACTIVE_STATES = new Set([
 
 function metricPill(label, value, tone = 'text-slate-200') {
   return (
-    <div className="flex min-w-[74px] flex-col rounded-xl border border-slate-800 bg-slate-950/70 px-3 py-1.5">
-      <span className="text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+    <div className="flex min-w-[74px] flex-col rounded-xl border border-white/[0.08] bg-black/40 px-3 py-1.5 shadow-inner">
+      <span className="text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-400">
         {label}
       </span>
       <span className={`font-mono text-xs font-bold ${tone}`}>{value}</span>
@@ -44,10 +44,10 @@ function stepState(done, active, locked) {
 
 function Step({ icon: Icon, label, detail, state, last }) {
   const styles = {
-    done: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300',
-    active: 'border-amber-400/60 bg-amber-500/15 text-amber-200 shadow-[0_0_0_3px_rgba(245,158,11,0.08)]',
-    pending: 'border-slate-700/70 bg-slate-950/60 text-slate-500',
-    locked: 'border-slate-800 bg-slate-950/40 text-slate-600',
+    done: 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300',
+    active: 'border-indigo-500/60 bg-indigo-500/20 text-indigo-200 shadow-sm',
+    pending: 'border-white/[0.08] bg-white/[0.03] text-slate-500',
+    locked: 'border-white/[0.05] bg-black/40 text-slate-600',
   };
   return (
     <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -55,7 +55,7 @@ function Step({ icon: Icon, label, detail, state, last }) {
         {state === 'done' ? <Check className="h-4 w-4" /> : state === 'locked' ? <Lock className="h-3.5 w-3.5" /> : <Icon className="h-4 w-4" />}
       </div>
       <div className="min-w-0">
-        <div className={`truncate text-[11px] font-bold ${state === 'active' ? 'text-amber-200' : state === 'done' ? 'text-emerald-200' : 'text-slate-400'}`}>
+        <div className={`truncate text-[11px] font-bold ${state === 'active' ? 'text-indigo-200' : state === 'done' ? 'text-emerald-200' : 'text-slate-400'}`}>
           {label}
         </div>
         <div className="truncate text-[9px] text-slate-500">{detail}</div>
@@ -152,12 +152,12 @@ export default function SessionStrip({
             : 'Agent working';
 
   return (
-    <section className="relative overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/80 shadow-xl">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,rgba(245,158,11,0.12),transparent_55%)]" />
+    <section className="relative overflow-hidden rounded-2xl glass-panel specular-top shadow-xl">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,rgba(99,102,241,0.12),transparent_55%)]" />
       <div className="relative flex flex-col gap-3 px-4 py-3.5 sm:px-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-3">
-            <div className={`relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border ${paused ? 'border-slate-700 bg-slate-800 text-slate-300' : 'border-amber-400/40 bg-amber-500/15 text-amber-300'}`}>
+            <div className={`relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border ${paused ? 'border-white/[0.08] bg-white/[0.04] text-slate-300' : 'border-indigo-500/40 bg-indigo-500/15 text-indigo-300'}`}>
               {inspect ? <Globe2 className="h-5 w-5" /> : <Sparkles className="h-5 w-5" />}
               {!paused && busy && (
                 <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border-2 border-slate-900 bg-emerald-400" />
@@ -168,16 +168,16 @@ export default function SessionStrip({
                 <span className={`rounded-full border px-2 py-0.5 text-[9px] font-extrabold uppercase tracking-[0.14em] ${
                   inspect
                     ? 'border-sky-500/40 bg-sky-500/10 text-sky-300'
-                    : 'border-amber-500/40 bg-amber-500/10 text-amber-300'
+                    : 'border-indigo-500/40 bg-indigo-500/10 text-indigo-300'
                 }`}>
                   {inspect ? 'Inspect only' : paused ? 'Paused' : 'Guided fill'}
                 </span>
                 {!inspect && entryLabel && (
-                  <span className="rounded-full border border-slate-700 bg-slate-800/70 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em] text-slate-300">
+                  <span className="rounded-full border border-white/[0.08] bg-white/[0.04] px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em] text-slate-300">
                     {entryLabel}
                   </span>
                 )}
-                <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+                <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">
                   {stateLabel}
                 </span>
               </div>

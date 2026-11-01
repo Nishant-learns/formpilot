@@ -533,13 +533,13 @@ function CheckpointContent({ activeGate, onSubmitResponse, onClose, onDismissGat
                     onClick={() =>
                       onSubmitResponse({ action: 'ACCOUNT_CONFLICT', choice: option.choice })
                     }
-                    className="p-3.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-amber-500/60 text-left transition-all flex items-center justify-between gap-3"
+                    className="p-3.5 rounded-2xl glass-panel hover:border-indigo-500/50 hover:bg-white/[0.04] text-left transition-all flex items-center justify-between gap-3 group shadow-sm"
                   >
                     <div>
-                      <div className="text-sm font-bold text-slate-100">{option.text}</div>
-                      <div className="text-[11px] text-slate-500 mt-0.5">{option.description}</div>
+                      <div className="text-sm font-bold text-slate-100 group-hover:text-indigo-200">{option.text}</div>
+                      <div className="text-[11px] text-slate-400 mt-0.5">{option.description}</div>
                     </div>
-                    <ArrowRight className="w-4 h-4 text-amber-400 shrink-0" />
+                    <ArrowRight className="w-4 h-4 text-slate-500 group-hover:text-indigo-400 group-hover:translate-x-1 transition-all shrink-0" />
                   </button>
                 ))}
               </div>
@@ -560,17 +560,17 @@ function CheckpointContent({ activeGate, onSubmitResponse, onClose, onDismissGat
                     key={option.value || option.method || index}
                     type="button"
                     onClick={() => handleLoginMethodChoice(option)}
-                    className="p-3.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-amber-500/60 text-left transition-all flex items-center justify-between gap-3"
+                    className="p-3.5 rounded-2xl glass-panel hover:border-indigo-500/50 hover:bg-white/[0.04] text-left transition-all flex items-center justify-between gap-3 group shadow-sm"
                   >
                     <div>
-                      <div className="text-sm font-bold text-slate-100">
+                      <div className="text-sm font-bold text-slate-100 group-hover:text-indigo-200">
                         {option.label || option.text}
                       </div>
-                      <div className="text-[11px] text-slate-500 mt-0.5">
+                      <div className="text-[11px] text-slate-400 mt-0.5">
                         {option.description || 'Use this method to sign in'}
                       </div>
                     </div>
-                    <ArrowRight className="w-4 h-4 text-amber-400 shrink-0" />
+                    <ArrowRight className="w-4 h-4 text-slate-500 group-hover:text-indigo-400 group-hover:translate-x-1 transition-all shrink-0" />
                   </button>
                 ))}
               </div>
@@ -591,17 +591,17 @@ function CheckpointContent({ activeGate, onSubmitResponse, onClose, onDismissGat
                     key={option.key || index}
                     type="button"
                     onClick={() => handleIdentifierChoice(option)}
-                    className="p-3.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-amber-500/60 text-left transition-all flex items-center justify-between gap-3"
+                    className="p-3.5 rounded-2xl glass-panel hover:border-indigo-500/50 hover:bg-white/[0.04] text-left transition-all flex items-center justify-between gap-3 group shadow-sm"
                   >
                     <div>
-                      <div className="text-sm font-bold text-slate-100">
+                      <div className="text-sm font-bold text-slate-100 group-hover:text-indigo-200">
                         {option.text || option.label || option.key}
                       </div>
-                      <div className="text-[11px] text-slate-500 mt-0.5">
+                      <div className="text-[11px] text-slate-400 mt-0.5">
                         Use this saved detail to identify the account
                       </div>
                     </div>
-                    <ArrowRight className="w-4 h-4 text-amber-400 shrink-0" />
+                    <ArrowRight className="w-4 h-4 text-slate-500 group-hover:text-indigo-400 group-hover:translate-x-1 transition-all shrink-0" />
                   </button>
                 ))}
               </div>

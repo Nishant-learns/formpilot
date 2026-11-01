@@ -1,16 +1,18 @@
 import React from 'react';
 import {
-  Bot,
   Cloud,
   FileText,
-  Image as ImageIcon,
   Pause,
   Play,
   Settings,
-  ShieldCheck,
-  Volume2,
-  VolumeX,
 } from 'lucide-react';
+import {
+  NeuralSparkleIcon,
+  SecurityShieldIcon,
+  AudioWaveformIcon,
+  BiometricFingerprintIcon,
+  CommandKeyIcon,
+} from './CustomIcons';
 
 function ReadinessRing({ percent }) {
   const value = Math.max(0, Math.min(100, Number(percent) || 0));
@@ -66,7 +68,7 @@ export default function Header({
         <div className="flex min-w-0 items-center gap-3">
           <div className="relative shrink-0">
             <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-indigo-400/30 bg-gradient-to-br from-indigo-500 via-indigo-600 to-violet-700 text-xs font-black text-white shadow-lg shadow-indigo-500/25">
-              FP
+              <NeuralSparkleIcon className="w-5 h-5" />
             </div>
             <span className={`absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-[#07090e] ${active ? 'animate-pulse bg-emerald-400' : paused ? 'bg-amber-400' : 'bg-slate-600'}`} />
           </div>
@@ -81,7 +83,7 @@ export default function Header({
               </span>
             </div>
             <p className="hidden items-center gap-1.5 text-[11px] text-slate-400 sm:flex">
-              <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
+              <SecurityShieldIcon className="h-3.5 w-3.5 text-emerald-400" />
               <span>Institutional Safety</span>
               <span className="text-slate-700">•</span>
               <span className={cloudActive ? 'text-sky-300' : 'text-slate-400'}>
@@ -163,7 +165,7 @@ export default function Header({
             }`}
             title="Spoken voice guidance"
           >
-            {voiceEnabled ? <Volume2 className="h-3.5 w-3.5 text-indigo-400" /> : <VolumeX className="h-3.5 w-3.5" />}
+            <AudioWaveformIcon active={voiceEnabled} className="h-3.5 w-3.5" />
             <span className="hidden xl:inline">{voiceEnabled ? 'Voice on' : 'Voice off'}</span>
           </button>
 
@@ -173,7 +175,7 @@ export default function Header({
             className="flex items-center gap-1.5 rounded-xl border border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.06] px-2.5 py-1.5 text-xs font-medium text-slate-300 hover:text-slate-100 transition-all shadow-sm"
             title="Photo and signature studio"
           >
-            <ImageIcon className="h-3.5 w-3.5 text-violet-400" />
+            <BiometricFingerprintIcon className="h-3.5 w-3.5 text-violet-400" />
             <span className="hidden xl:inline">Studio</span>
           </button>
 
