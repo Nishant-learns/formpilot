@@ -728,7 +728,7 @@ export default function App() {
 
   return (
     <div className="relative flex min-h-screen bg-[#07090e] font-['Plus_Jakarta_Sans',sans-serif] text-slate-100 antialiased selection:bg-indigo-500/30 selection:text-indigo-200 overflow-x-hidden">
-      <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(ellipse_80%_60%_at_50%_-15%,rgba(99,102,241,0.12),transparent_70%),radial-gradient(ellipse_60%_50%_at_100%_100%,rgba(16,185,129,0.06),transparent_60%),radial-gradient(ellipse_50%_40%_at_0%_100%,rgba(6,182,212,0.05),transparent_60%)]" />
+      <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(ellipse_80%_50%_at_50%_-10%,rgba(99,102,241,0.05),transparent_70%)]" />
 
       {/* Left Collapsible Sidebar */}
       <Sidebar
