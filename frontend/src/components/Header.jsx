@@ -47,6 +47,7 @@ export default function Header({
   runState,
   engineConfig,
   readiness,
+  onSelectNav,
   onOpenSettings,
   onOpenVault,
   onOpenBiometrics,
@@ -55,6 +56,16 @@ export default function Header({
   setVoiceEnabled,
   currentGate,
 }) {
+  const navigate = (page) => {
+    if (onSelectNav) {
+      onSelectNav(page);
+    } else {
+      if (page === 'vault' && onOpenVault) onOpenVault();
+      if (page === 'biometrics' && onOpenBiometrics) onOpenBiometrics();
+      if (page === 'settings' && onOpenSettings) onOpenSettings();
+    }
+  };
+
   const cloudActive = engineConfig?.effective_mode === 'cloud' || engineConfig?.mode === 'cloud';
   const paymentReview = currentGate?.gate_type === 'PRE_PAYMENT_SAFETY_LOCK';
   const inspectReady = runState === 'INSPECT_READY';
@@ -146,7 +157,7 @@ export default function Header({
 
           <button
             type="button"
-            onClick={onOpenVault}
+            onClick={() => navigate('vault')}
             className="flex items-center gap-2 rounded-xl border border-white/[0.09] bg-white/[0.04] hover:bg-white/[0.08] hover:border-emerald-500/30 px-2.5 py-1.5 text-xs font-semibold text-slate-200 transition-all shadow-sm"
             title={readiness ? `Profile ${readiness.percent}% ready — ${readiness.filled} of ${readiness.total} core details saved` : 'Open your saved details'}
           >
@@ -171,7 +182,7 @@ export default function Header({
 
           <button
             type="button"
-            onClick={onOpenBiometrics}
+            onClick={() => navigate('biometrics')}
             className="flex items-center gap-1.5 rounded-xl border border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.06] px-2.5 py-1.5 text-xs font-medium text-slate-300 hover:text-slate-100 transition-all shadow-sm"
             title="Photo and signature studio"
           >
@@ -181,9 +192,9 @@ export default function Header({
 
           <button
             type="button"
-            onClick={onOpenSettings}
+            onClick={() => navigate('settings')}
             className="rounded-xl border border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.06] p-2 text-slate-400 hover:text-slate-100 transition-all shadow-sm"
-            title="Connection settings"
+            title="Connection and engine settings"
           >
             <Settings className="h-4 w-4" />
           </button>

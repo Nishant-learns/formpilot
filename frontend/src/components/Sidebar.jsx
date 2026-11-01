@@ -136,17 +136,21 @@ export default function Sidebar({
         {/* 2. OneVault Identity */}
         <button
           type="button"
-          onClick={onOpenVault}
-          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl text-xs font-semibold text-slate-400 hover:text-white hover:bg-white/[0.04] border border-transparent transition-all group"
+          onClick={() => onSelectNav('vault')}
+          className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl text-xs font-semibold transition-all ${
+            activeItem === 'vault'
+              ? 'bg-indigo-500/20 text-indigo-200 border border-indigo-500/40 shadow-sm shadow-indigo-500/20'
+              : 'text-slate-400 hover:text-white hover:bg-white/[0.04] border border-transparent'
+          }`}
           title="OneVault Identity"
         >
-          <div className="w-5 h-5 flex items-center justify-center shrink-0 text-slate-400 group-hover:text-emerald-400">
-            <SecurityShieldIcon className="w-4 h-4" />
+          <div className="w-5 h-5 flex items-center justify-center shrink-0">
+            <SecurityShieldIcon className="w-4 h-4 text-emerald-400" />
           </div>
           {!collapsed && (
             <div className="flex-1 text-left flex items-center justify-between min-w-0">
               <span className="truncate">OneVault Identity</span>
-              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-white/[0.05] text-emerald-400 border border-white/[0.08] font-bold">
+              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-bold">
                 AES
               </span>
             </div>
@@ -156,12 +160,16 @@ export default function Sidebar({
         {/* 3. Biometrics Studio */}
         <button
           type="button"
-          onClick={onOpenBiometrics}
-          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl text-xs font-semibold text-slate-400 hover:text-white hover:bg-white/[0.04] border border-transparent transition-all group"
+          onClick={() => onSelectNav('biometrics')}
+          className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl text-xs font-semibold transition-all ${
+            activeItem === 'biometrics'
+              ? 'bg-indigo-500/20 text-indigo-200 border border-indigo-500/40 shadow-sm shadow-indigo-500/20'
+              : 'text-slate-400 hover:text-white hover:bg-white/[0.04] border border-transparent'
+          }`}
           title="Biometrics Studio"
         >
-          <div className="w-5 h-5 flex items-center justify-center shrink-0 text-slate-400 group-hover:text-violet-400">
-            <BiometricFaceScanIcon className="w-4 h-4" />
+          <div className="w-5 h-5 flex items-center justify-center shrink-0">
+            <BiometricFaceScanIcon className="w-4 h-4 text-violet-400" />
           </div>
           {!collapsed && (
             <div className="flex-1 text-left flex items-center justify-between min-w-0">
@@ -173,7 +181,31 @@ export default function Sidebar({
           )}
         </button>
 
-        {/* 4. Cognitive Stream */}
+        {/* 4. Merkle Audit Ledger */}
+        <button
+          type="button"
+          onClick={() => onSelectNav('runs')}
+          className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl text-xs font-semibold transition-all ${
+            activeItem === 'runs'
+              ? 'bg-indigo-500/20 text-indigo-200 border border-indigo-500/40 shadow-sm shadow-indigo-500/20'
+              : 'text-slate-400 hover:text-white hover:bg-white/[0.04] border border-transparent'
+          }`}
+          title="Merkle Audit Ledger & Run History"
+        >
+          <div className="w-5 h-5 flex items-center justify-center shrink-0">
+            <Zap className="w-4 h-4 text-amber-400" />
+          </div>
+          {!collapsed && (
+            <div className="flex-1 text-left flex items-center justify-between min-w-0">
+              <span className="truncate">Audit Ledger</span>
+              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20 font-bold">
+                SHA-256
+              </span>
+            </div>
+          )}
+        </button>
+
+        {/* 5. Cognitive Stream */}
         <button
           type="button"
           onClick={() => onSelectNav('stream')}
@@ -195,7 +227,7 @@ export default function Sidebar({
           )}
         </button>
 
-        {/* 5. DOM Field Telemetry */}
+        {/* 6. DOM Field Telemetry */}
         <button
           type="button"
           onClick={() => onSelectNav('map')}
@@ -303,13 +335,15 @@ export default function Sidebar({
       <div className="p-3 border-t border-white/[0.08] space-y-2">
         <button
           type="button"
-          onClick={onOpenSettings}
-          className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold text-slate-400 hover:text-white hover:bg-white/[0.04] transition-colors ${
-            collapsed ? 'justify-center' : ''
-          }`}
-          title="Engine & Proxy Settings"
+          onClick={() => onSelectNav('settings')}
+          className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition-colors ${
+            activeItem === 'settings'
+              ? 'bg-indigo-500/20 text-indigo-200 border border-indigo-500/40'
+              : 'text-slate-400 hover:text-white hover:bg-white/[0.04]'
+          } ${collapsed ? 'justify-center' : ''}`}
+          title="Engine & Distributed Architecture Settings"
         >
-          <Settings className="w-4 h-4 text-slate-400" />
+          <Settings className={`w-4 h-4 ${activeItem === 'settings' ? 'text-indigo-400' : 'text-slate-400'}`} />
           {!collapsed && <span>Engine Settings</span>}
         </button>
 
