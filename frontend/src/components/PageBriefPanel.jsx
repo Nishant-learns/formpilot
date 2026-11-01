@@ -82,7 +82,7 @@ export default function PageBriefPanel({ pageBrief, runState, onRefresh, refresh
 
   if (!pageBrief) {
     return (
-      <div className="glass-panel-elevated specular-top rounded-3xl p-8 text-center h-full min-h-[460px] flex flex-col items-center justify-center shadow-2xl border border-white/[0.08]">
+      <div className="glass-panel-elevated specular-top rounded-3xl p-8 text-center h-full flex flex-col items-center justify-center shadow-2xl border border-white/[0.08]">
         <div className="w-16 h-16 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mb-4 text-indigo-400 shadow-inner">
           <Brain className="w-8 h-8" />
         </div>
@@ -111,7 +111,7 @@ export default function PageBriefPanel({ pageBrief, runState, onRefresh, refresh
   const isForm = ['FORM', 'SECTION_FORM'].includes(pageBrief.page_type);
 
   return (
-    <div className="glass-panel-elevated specular-top rounded-3xl overflow-hidden flex flex-col h-full min-h-[460px] shadow-2xl border border-white/[0.08]">
+    <div className="glass-panel-elevated specular-top rounded-3xl overflow-hidden flex flex-col h-full shadow-2xl border border-white/[0.08]">
       {/* Header */}
       <div className="bg-white/[0.02] px-4 py-3 border-b border-white/[0.08] flex items-center justify-between gap-2 shrink-0">
         <div className="flex items-center gap-2.5 min-w-0">

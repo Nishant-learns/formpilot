@@ -55,6 +55,9 @@ export default function Header({
   voiceEnabled,
   setVoiceEnabled,
   currentGate,
+  copilotDocked,
+  copilotMinimized,
+  onToggleCopilot,
 }) {
   const navigate = (page) => {
     if (onSelectNav) {
@@ -198,6 +201,23 @@ export default function Header({
           >
             <Settings className="h-4 w-4" />
           </button>
+
+          {onToggleCopilot && (
+            <button
+              type="button"
+              onClick={onToggleCopilot}
+              className={`flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-xs font-semibold transition-all shadow-sm ${
+                copilotDocked && !copilotMinimized
+                  ? 'border-indigo-500/40 bg-indigo-500/15 text-indigo-200 shadow-indigo-500/10'
+                  : 'border-white/[0.08] bg-white/[0.03] text-slate-400 hover:bg-white/[0.06] hover:text-slate-200'
+              }`}
+              title={copilotDocked && !copilotMinimized ? 'Collapse Copilot inspector' : 'Expand Copilot inspector'}
+            >
+              <NeuralSparkleIcon className="h-3.5 w-3.5 text-indigo-400" />
+              <span className="hidden xl:inline">Copilot</span>
+              <span className={`w-1.5 h-1.5 rounded-full ${copilotDocked && !copilotMinimized ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
+            </button>
+          )}
         </div>
       </div>
     </header>

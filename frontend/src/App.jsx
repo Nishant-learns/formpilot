@@ -749,7 +749,7 @@ export default function App() {
       />
 
       {/* Main Workspace Stage */}
-      <div className="flex-1 flex flex-col min-w-0 h-screen overflow-y-auto">
+      <div className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
         <Header
           agentRunning={agentRunning}
           paused={paused}
@@ -761,178 +761,180 @@ export default function App() {
           voiceEnabled={voiceEnabled}
           setVoiceEnabled={setVoiceEnabled}
           currentGate={currentGate}
+          copilotDocked={copilotMode === 'docked'}
+          copilotMinimized={copilotMinimized}
+          onToggleCopilot={() => {
+            if (copilotMode === 'floating') {
+              setCopilotMode('docked');
+              setCopilotMinimized(false);
+            } else {
+              setCopilotMinimized(!copilotMinimized);
+            }
+          }}
         />
 
-        {sidebarNav === 'vault' ? (
-          <VaultPage vault={vault} onVaultUpdate={(v) => setVault(v)} notify={notify} />
-        ) : sidebarNav === 'biometrics' ? (
-          <BiometricsPage notify={notify} />
-        ) : sidebarNav === 'runs' ? (
-          <AuditLedgerPage notify={notify} onSelectRun={(id) => { setRunId(id); handleSelectNav('portal'); }} />
-        ) : sidebarNav === 'settings' ? (
-          <SettingsPage onConfigSaved={(cfg) => setEngineConfig(cfg)} notify={notify} />
-        ) : sidebarNav === 'stream' ? (
-          <CognitiveStreamPage events={events} voiceEnabled={voiceEnabled} />
-        ) : sidebarNav === 'map' ? (
-          <DomTelemetryPage formMap={formMap} recipe={recipe} runMode={runMode} onRescan={handleRescan} rescanning={rescanning} />
-        ) : (
-          <main className="relative mx-auto flex w-full max-w-[1700px] flex-1 flex-col px-3 pb-8 pt-3 sm:px-5">
-            {sessionVisible && (
-              <SessionStrip
-                runState={runState}
-                runMode={runMode}
-                currentSection={currentSection}
-                formMap={formMap}
-                recipe={recipe}
-                readiness={readiness}
-                query={query}
-                targetUrl={liveSession?.url || formMap?.url || ''}
-                elapsed={elapsed}
-                paused={paused}
-                runId={runId}
-                fillSummary={fillSummary}
-                entryMode={entryMode}
-                loginMethod={loginMethod}
-                onPauseToggle={handlePauseToggle}
-                onNewSession={handleNewSession}
-              />
-            )}
-
-            {(!sessionVisible || relaunchable) && (
-              <div className={sessionVisible ? 'mt-4' : ''}>
-                <PortalLauncher
-                  onLaunch={handleLaunch}
-                  agentRunning={agentRunning}
-                  sessionOpen={busy}
-                />
-              </div>
-            )}
-
-            {lastError && (
-              <div className="animate-fadeIn mt-3 flex items-center justify-between rounded-xl border border-red-500/35 bg-red-950/40 px-3.5 py-2 text-xs text-red-200 shadow-sm">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="font-extrabold text-red-400 shrink-0">Session Notice:</span>
-                  <span className="truncate">{lastError}</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setLastError('')}
-                  className="ml-2 rounded-lg p-1 text-red-400 hover:bg-red-500/20 hover:text-red-200 transition-colors"
-                  title="Dismiss notice"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            )}
-
-            {['PARTIAL', 'FAILED'].includes(fillSummary?.status) && (
-              <div className="mt-3 flex items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3.5 py-2.5 text-[11px] text-amber-100">
-                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
-                <span>
-                  <span className="font-bold">This form is not fully filled.</span>{' '}
-                  {fillSummary?.verified || 0} of {fillSummary?.attempted || 0} fields were verified
-                  {fillSummary?.failed ? `, ${fillSummary.failed} failed` : ''}
-                  {fillSummary?.skipped ? `, ${fillSummary.skipped} skipped` : ''}. Review the
-                  highlighted fields in the live browser; FormPilot will not report this section as
-                  filled.
-                </span>
-              </div>
-            )}
-
-            {/* Viewport and Copilot Stage */}
-            <div
-              className={
-                copilotMode === 'docked'
-                  ? 'mt-4 grid flex-1 grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(380px,430px)]'
-                  : 'mt-4 flex-1 w-full'
-              }
-            >
-              <LiveViewport
-                className={viewportHeightClass}
-                screenshot={screenshot}
-                liveSession={liveSession}
-                agentRunning={agentRunning}
-                currentSection={currentSection}
-                onStop={handleStop}
-                onRescan={handleRescan}
-                onPauseToggle={handlePauseToggle}
-                onPractice={handlePractice}
-                runMode={runMode}
-                runState={runState}
-                paused={paused}
-                takeover={takeover}
-                onTakeover={handleTakeover}
-                onReturnControl={handleReturnControl}
-                pendingGate={currentGate && gateHidden ? currentGate : null}
-                onOpenGate={() => setGateHidden(false)}
-              />
-
-              {copilotMode === 'docked' && (
-                <div className={`flex flex-col gap-3 ${viewportHeightClass}`}>
-                  <CopilotWindow
-                    mode="docked"
-                    minimized={copilotMinimized}
-                    onToggleMode={() => setCopilotMode('floating')}
-                    onToggleMinimize={() => setCopilotMinimized(!copilotMinimized)}
-                    rightTab={rightTab}
-                    setRightTab={setRightTab}
-                    panels={panels}
-                    onSendMessage={handleSendChatMessage}
-                    chatMessages={chatMessages}
-                    voiceEnabled={voiceEnabled}
-                    onClearChat={() => setChatMessages([])}
-                    entryMode={entryMode}
-                    entryOptions={entryOptions}
-                    loginMethod={loginMethod}
-                    loginIdentifier={loginIdentifier}
-                    activeGate={currentGate}
-                    pageBrief={pageBrief}
+        {/* 2-Pane / 3-Pane Workstation Stage: Center Canvas + Docked RHS Copilot */}
+        <div className="flex-1 flex min-w-0 overflow-hidden">
+          {/* Center Main Stage Canvas */}
+          <div className="flex-1 min-w-0 overflow-y-auto flex flex-col">
+            {sidebarNav === 'vault' ? (
+              <VaultPage vault={vault} onVaultUpdate={(v) => setVault(v)} notify={notify} />
+            ) : sidebarNav === 'biometrics' ? (
+              <BiometricsPage notify={notify} />
+            ) : sidebarNav === 'runs' ? (
+              <AuditLedgerPage notify={notify} onSelectRun={(id) => { setRunId(id); handleSelectNav('portal'); }} />
+            ) : sidebarNav === 'settings' ? (
+              <SettingsPage onConfigSaved={(cfg) => setEngineConfig(cfg)} notify={notify} />
+            ) : sidebarNav === 'stream' ? (
+              <CognitiveStreamPage events={events} voiceEnabled={voiceEnabled} />
+            ) : sidebarNav === 'map' ? (
+              <DomTelemetryPage formMap={formMap} recipe={recipe} runMode={runMode} onRescan={handleRescan} rescanning={rescanning} />
+            ) : (
+              <main className="relative mx-auto flex w-full max-w-[1600px] flex-1 flex-col px-3 pb-8 pt-3 sm:px-5">
+                {sessionVisible && (
+                  <SessionStrip
                     runState={runState}
-                    onRefreshBrief={handleRefreshBrief}
-                    briefRefreshing={briefRefreshing}
+                    runMode={runMode}
+                    currentSection={currentSection}
                     formMap={formMap}
                     recipe={recipe}
-                    runMode={runMode}
+                    readiness={readiness}
+                    query={query}
+                    targetUrl={liveSession?.url || formMap?.url || ''}
+                    elapsed={elapsed}
+                    paused={paused}
+                    runId={runId}
+                    fillSummary={fillSummary}
+                    entryMode={entryMode}
+                    loginMethod={loginMethod}
+                    onPauseToggle={handlePauseToggle}
+                    onNewSession={handleNewSession}
+                  />
+                )}
+
+                {(!sessionVisible || relaunchable) && (
+                  <div className={sessionVisible ? 'mt-4' : ''}>
+                    <PortalLauncher
+                      onLaunch={handleLaunch}
+                      agentRunning={agentRunning}
+                      sessionOpen={busy}
+                    />
+                  </div>
+                )}
+
+                {lastError && (
+                  <div className="animate-fadeIn mt-3 flex items-center justify-between rounded-xl border border-red-500/35 bg-red-950/40 px-3.5 py-2 text-xs text-red-200 shadow-sm">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="font-extrabold text-red-400 shrink-0">Session Notice:</span>
+                      <span className="truncate">{lastError}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setLastError('')}
+                      className="ml-2 rounded-lg p-1 text-red-400 hover:bg-red-500/20 hover:text-red-200 transition-colors"
+                      title="Dismiss notice"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                )}
+
+                {['PARTIAL', 'FAILED'].includes(fillSummary?.status) && (
+                  <div className="mt-3 flex items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3.5 py-2.5 text-[11px] text-amber-100">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+                    <span>
+                      <span className="font-bold">This form is not fully filled.</span>{' '}
+                      {fillSummary?.verified || 0} of {fillSummary?.attempted || 0} fields were verified
+                      {fillSummary?.failed ? `, ${fillSummary.failed} failed` : ''}
+                      {fillSummary?.skipped ? `, ${fillSummary.skipped} skipped` : ''}. Review the
+                      highlighted fields in the live browser; FormPilot will not report this section as
+                      filled.
+                    </span>
+                  </div>
+                )}
+
+                {/* Viewport Stage */}
+                <div className="mt-4 flex-1 w-full flex flex-col">
+                  <LiveViewport
+                    className={viewportHeightClass}
+                    screenshot={screenshot}
+                    liveSession={liveSession}
+                    agentRunning={agentRunning}
+                    currentSection={currentSection}
+                    onStop={handleStop}
                     onRescan={handleRescan}
-                    rescanning={rescanning}
-                    events={events}
+                    onPauseToggle={handlePauseToggle}
+                    onPractice={handlePractice}
+                    runMode={runMode}
+                    runState={runState}
+                    paused={paused}
+                    takeover={takeover}
+                    onTakeover={handleTakeover}
+                    onReturnControl={handleReturnControl}
+                    pendingGate={currentGate && gateHidden ? currentGate : null}
+                    onOpenGate={() => setGateHidden(false)}
                   />
                 </div>
-              )}
-            </div>
 
-            <div className="mt-4 flex flex-wrap items-center justify-between gap-2 px-1 text-[10px] text-slate-500">
-              <span className="flex items-center gap-1.5">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                FormPilot never solves CAPTCHA, auto-pays or submits on your behalf.
-              </span>
-              <span className="font-mono text-slate-600">
-                {runId ? `session ${runId}` : 'No active run'}
-              </span>
-            </div>
-          </main>
-        )}
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-2 px-1 text-[10px] text-slate-500">
+                  <span className="flex items-center gap-1.5">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                    FormPilot never solves CAPTCHA, auto-pays or submits on your behalf.
+                  </span>
+                  <span className="font-mono text-slate-600">
+                    {runId ? `session ${runId}` : 'No active run'}
+                  </span>
+                </div>
+              </main>
+            )}
 
-        <footer className="relative border-t border-slate-900 bg-slate-950/80 px-4 py-3.5 text-center text-[11px] text-slate-500">
-          <p>
-            FormPilot is an independent application assistant. It is not a government website and
-            does not submit applications or make payments on your behalf.
-          </p>
-        </footer>
+            <footer className="mt-auto relative border-t border-slate-900 bg-slate-950/80 px-4 py-3 text-center text-[11px] text-slate-500 shrink-0">
+              <p>
+                FormPilot is an independent application assistant. It is not a government website and
+                does not submit applications or make payments on your behalf.
+              </p>
+            </footer>
+          </div>
+
+          {/* Persistent RHS Copilot & Inspector Rail (Docked Mode) */}
+          {copilotMode === 'docked' && (
+            <aside
+              className={`shrink-0 border-l border-white/[0.08] bg-slate-950/50 backdrop-blur-xl flex flex-col h-full z-20 transition-all duration-300 ${
+                copilotMinimized ? 'w-14' : 'w-[390px] xl:w-[430px]'
+              }`}
+            >
+              <CopilotWindow
+                mode="docked"
+                minimized={copilotMinimized}
+                onToggleMode={() => setCopilotMode('floating')}
+                onToggleMinimize={() => setCopilotMinimized(!copilotMinimized)}
+                rightTab={rightTab}
+                setRightTab={setRightTab}
+                panels={panels}
+                onSendMessage={handleSendChatMessage}
+                chatMessages={chatMessages}
+                voiceEnabled={voiceEnabled}
+                onClearChat={() => setChatMessages([])}
+                entryMode={entryMode}
+                entryOptions={entryOptions}
+                loginMethod={loginMethod}
+                loginIdentifier={loginIdentifier}
+                activeGate={currentGate}
+                pageBrief={pageBrief}
+                runState={runState}
+                onRefreshBrief={handleRefreshBrief}
+                briefRefreshing={briefRefreshing}
+                formMap={formMap}
+                recipe={recipe}
+                runMode={runMode}
+                onRescan={handleRescan}
+                rescanning={rescanning}
+                events={events}
+              />
+            </aside>
+          )}
+        </div>
       </div>
-
-      {/* Quick Copilot Summon FAB if docked on non-portal pages */}
-      {sidebarNav !== 'portal' && copilotMode === 'docked' && (
-        <button
-          type="button"
-          onClick={() => setCopilotMode('floating')}
-          className="fixed bottom-6 right-6 z-40 flex items-center gap-2 px-3.5 py-2.5 rounded-full bg-gradient-to-r from-indigo-600 to-violet-600 text-white font-semibold text-xs shadow-xl shadow-indigo-500/25 border border-indigo-400/40 hover:scale-105 transition-all"
-          title="Open Floating Copilot"
-        >
-          <NeuralSparkleIcon className="w-4 h-4 text-white" />
-          <span>FormPilot Copilot</span>
-        </button>
-      )}
 
       {/* Floating Copilot Window (Draggable & Resizable) */}
       {copilotMode === 'floating' && (

@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
+  ChevronLeft,
+  ChevronRight,
   GripHorizontal,
   Maximize2,
   Minimize2,
@@ -92,8 +94,64 @@ export default function CopilotWindow({
     };
   }, [isDragging, size.width]);
 
-  // MINIMIZED FLOATING CAPSULE
+  // MINIMIZED STATE HANDLING
   if (minimized) {
+    if (mode === 'docked') {
+      return (
+        <div className="h-full flex flex-col items-center justify-between py-3.5 select-none bg-slate-950/80 w-14 border-l border-white/[0.08]">
+          <div className="flex flex-col items-center gap-2.5">
+            <button
+              type="button"
+              onClick={onToggleMinimize}
+              className="w-9 h-9 rounded-xl bg-indigo-500/15 hover:bg-indigo-500/25 border border-indigo-500/30 flex items-center justify-center text-indigo-400 hover:text-white transition-all shadow-sm group"
+              title="Expand RHS Copilot Panel"
+            >
+              <ChevronLeft className="w-4 h-4 group-hover:-translate-x-0.5 transition-transform" />
+            </button>
+
+            <div className="w-6 h-px bg-white/[0.08] my-1" />
+
+            {panels.map((p) => {
+              const Icon = p.icon;
+              const active = rightTab === p.id;
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => {
+                    setRightTab(p.id);
+                    onToggleMinimize();
+                  }}
+                  className={`relative w-9 h-9 rounded-xl flex items-center justify-center transition-all ${
+                    active
+                      ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 shadow-sm'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.06]'
+                  }`}
+                  title={`${p.label}: ${p.hint}`}
+                >
+                  <Icon className="w-4 h-4" />
+                  {active && (
+                    <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-indigo-400" />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="flex flex-col items-center gap-2">
+            <button
+              type="button"
+              onClick={onToggleMode}
+              className="w-8 h-8 rounded-lg text-slate-500 hover:text-slate-200 hover:bg-white/[0.06] flex items-center justify-center transition-colors"
+              title="Pop out into floating window"
+            >
+              <PinOff className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="fixed bottom-6 right-6 z-50 animate-fadeIn">
         <button
@@ -117,7 +175,7 @@ export default function CopilotWindow({
   const containerClasses =
     mode === 'floating'
       ? 'fixed z-40 glass-panel-elevated specular-top rounded-3xl border border-white/[0.14] shadow-2xl overflow-hidden flex flex-col glow-indigo animate-fadeIn'
-      : 'flex flex-col gap-3 h-full';
+      : 'flex flex-col h-full w-full overflow-hidden';
 
   const containerStyle =
     mode === 'floating'
@@ -198,16 +256,14 @@ export default function CopilotWindow({
           >
             {mode === 'floating' ? <Pin className="w-3.5 h-3.5" /> : <PinOff className="w-3.5 h-3.5" />}
           </button>
-          {mode === 'floating' && (
-            <button
-              type="button"
-              onClick={onToggleMinimize}
-              className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-white/[0.08] transition-colors"
-              title="Minimize to floating pill"
-            >
-              <Minimize2 className="w-3.5 h-3.5" />
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={onToggleMinimize}
+            className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-white/[0.08] transition-colors"
+            title={mode === 'docked' ? 'Collapse RHS panel' : 'Minimize to floating pill'}
+          >
+            {mode === 'docked' ? <ChevronRight className="w-3.5 h-3.5" /> : <Minimize2 className="w-3.5 h-3.5" />}
+          </button>
         </div>
       </div>
 

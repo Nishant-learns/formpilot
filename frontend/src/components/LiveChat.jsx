@@ -157,7 +157,7 @@ export default function LiveChat({
   const identifierBadge = loginIdentifier ? String(loginIdentifier).replace(/_/g, ' ') : '';
 
   return (
-    <div className="glass-panel rounded-2xl shadow-2xl flex flex-col h-full min-h-[460px] overflow-hidden">
+    <div className="glass-panel rounded-2xl flex flex-col h-full overflow-hidden">
       {/* Header */}
       <div className="p-3.5 bg-white/[0.02] border-b border-white/[0.08] flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2.5">
