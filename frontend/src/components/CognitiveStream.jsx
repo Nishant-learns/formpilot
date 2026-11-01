@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Terminal, Activity, Eye, Brain, CheckCircle2, Zap, ArrowDown } from 'lucide-react';
+import { Terminal, Activity, Eye, Brain, CheckCircle2, Zap, ArrowDown, Volume2 } from 'lucide-react';
 
 export default function CognitiveStream({ events, voiceEnabled }) {
   const scrollRef = useRef(null);
@@ -118,28 +118,28 @@ export default function CognitiveStream({ events, voiceEnabled }) {
             return (
               <div
                 key={index}
-                className="p-3 rounded-xl bg-slate-950/70 border border-slate-800/80 hover:border-slate-700 transition-colors"
+                className="animate-fadeIn p-3.5 rounded-xl bg-slate-950/80 border border-slate-800/90 hover:border-slate-700/80 transition-all shadow-sm"
               >
-                <div className="flex items-center justify-between mb-1.5 font-sans">
+                <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2">
-                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-extrabold border ${badge.color}`}>
+                    <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-extrabold border ${badge.color}`}>
                       {badge.icon}
                       <span>{badge.label}</span>
                     </span>
-                    <span className="text-[11px] text-slate-500 font-mono">
+                    <span className="text-[10px] text-slate-500 font-mono">
                       {ev.timestamp}
                     </span>
                   </div>
                 </div>
 
-                <div className="text-slate-300 text-xs font-mono leading-relaxed pl-1">
+                <div className="text-slate-200 text-xs font-sans leading-relaxed">
                   {ev.message}
                 </div>
 
                 {ev.hindi && (
-                  <div className="mt-2 pt-2 border-t border-slate-800/60 font-sans text-xs text-amber-300/90 flex items-start gap-1.5 pl-1 italic">
-                    <span className="shrink-0 not-italic font-bold text-amber-400">Voice:</span>
-                    <span>&ldquo;{ev.hindi}&rdquo;</span>
+                  <div className="mt-2.5 pt-2 border-t border-slate-800/70 text-[11px] text-amber-300/90 flex items-start gap-2 bg-amber-500/5 -mx-1 px-2.5 py-1.5 rounded-lg border border-amber-500/10">
+                    <Volume2 className="h-3.5 w-3.5 shrink-0 text-amber-400 mt-0.5" />
+                    <span className="leading-snug">&ldquo;{ev.hindi}&rdquo;</span>
                   </div>
                 )}
               </div>

@@ -13,7 +13,7 @@ import TinyFishSettingsModal from './components/TinyFishSettingsModal';
 import SessionStrip from './components/SessionStrip';
 import Toasts from './components/Toasts';
 import { getWsUrl, PRACTICE_PORTAL_URL } from './apiConfig';
-import { AlertTriangle, FileText, MessageSquare, ScanSearch, Terminal } from 'lucide-react';
+import { AlertTriangle, FileText, MessageSquare, ScanSearch, Terminal, X } from 'lucide-react';
 
 const ACTIVE_STATES = new Set(['RESOLVING', 'RUNNING', 'WAITING_FOR_USER', 'PAUSED']);
 const TERMINAL_STATES = new Set(['STOPPED', 'FAILED', 'COMPLETED', 'AWAITING_PAYMENT', 'DONE']);
@@ -756,8 +756,19 @@ export default function App() {
         )}
 
         {lastError && (
-          <div className="mt-3 rounded-xl border border-red-500/35 bg-red-500/10 px-3.5 py-2.5 text-[11px] text-red-200">
-            <span className="font-bold">Last issue:</span> {lastError}
+          <div className="animate-fadeIn mt-3 flex items-center justify-between rounded-xl border border-red-500/35 bg-red-950/40 px-3.5 py-2 text-xs text-red-200 shadow-sm">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="font-extrabold text-red-400 shrink-0">Session Notice:</span>
+              <span className="truncate">{lastError}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setLastError('')}
+              className="ml-2 rounded-lg p-1 text-red-400 hover:bg-red-500/20 hover:text-red-200 transition-colors"
+              title="Dismiss notice"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
           </div>
         )}
 

@@ -93,37 +93,34 @@ export default function Header({
 
         {/* Live state */}
         <div
-          className={`hidden items-center gap-2 rounded-full border px-3 py-1.5 text-[11px] font-semibold md:flex ${
+          className={`hidden items-center gap-2 rounded-full border px-3.5 py-1.5 text-xs font-semibold backdrop-blur-md md:flex shadow-sm ${
             paymentReview
-              ? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+              ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
               : paused
-                ? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+                ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
                 : inspectReady
-                  ? 'border-sky-500/30 bg-sky-500/10 text-sky-300'
+                  ? 'border-sky-500/40 bg-sky-500/10 text-sky-300'
                   : active
-                    ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
-                    : 'border-slate-700 bg-slate-900 text-slate-400'
+                    ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                    : 'border-slate-800 bg-slate-900/90 text-slate-300'
           }`}
         >
-          <Bot className="h-3.5 w-3.5" />
+          <span className={`h-2 w-2 rounded-full ${active ? 'bg-emerald-400 animate-pulse' : paused ? 'bg-amber-400' : finished ? 'bg-slate-500' : 'bg-emerald-400'}`} />
           <span>
             {paymentReview
               ? currentGate?.final_action === 'submission'
                 ? 'Review before submitting'
                 : 'Review before payment'
               : paused
-                ? 'Paused — take your time'
+                ? 'Paused by you'
                 : inspectReady
-                  ? 'Inspect-only · nothing touched'
+                  ? 'Inspect mode · Mapping page'
                   : finished
-                    ? 'Session finished'
+                    ? 'Session concluded'
                     : active
-                      ? 'Filling the form with you'
-                      : 'Ready when you are'}
+                      ? 'Live filling in progress'
+                      : 'AI Assistant ready'}
           </span>
-          {(active || inspectReady) && (
-            <span className={`h-1.5 w-1.5 animate-pulse rounded-full ${inspectReady ? 'bg-sky-400' : 'bg-emerald-400'}`} />
-          )}
         </div>
 
         {/* Controls */}

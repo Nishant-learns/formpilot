@@ -629,48 +629,80 @@ export default function LiveViewport({
             )}
           </div>
         ) : (
-          <div className="flex h-full items-center justify-center p-6">
-            <div className="w-full max-w-md text-center">
-              <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-slate-800 bg-slate-900 text-slate-500 shadow-inner">
-                <Eye className="h-7 w-7" />
+          <div className="flex h-full items-center justify-center p-6 sm:p-8">
+            <div className="w-full max-w-lg text-center animate-fadeIn">
+              {/* Emblem */}
+              <div className="relative mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl border border-slate-800 bg-gradient-to-b from-slate-900 to-slate-950 text-amber-400 shadow-xl shadow-amber-500/5">
+                <Globe2 className="h-8 w-8 text-amber-400/90" />
+                <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center">
+                  <span className="h-2 w-2 rounded-full bg-emerald-400 animate-ping" />
+                  <span className="absolute h-2 w-2 rounded-full bg-emerald-400" />
+                </span>
               </div>
-              <h3 className="text-sm font-bold text-slate-200">
-                {finished ? 'This session has ended' : 'No portal open yet'}
+
+              <h3 className="text-base sm:text-lg font-extrabold text-white tracking-tight">
+                {finished ? 'Application Session Concluded' : 'Interactive Browser Cockpit Ready'}
               </h3>
-              <p className="mx-auto mt-2 max-w-xs text-xs leading-relaxed text-slate-500">
+              <p className="mx-auto mt-2 max-w-sm text-xs leading-relaxed text-slate-400">
                 {finished
-                  ? 'The live browser was closed and nothing was submitted. Your saved details are unchanged — start again whenever you are ready.'
-                  : 'The real, interactive browser appears here. Open a portal to fill it with guidance, or use inspect-only to map it without touching anything.'}
+                  ? 'The live session was safely closed. No payment or final submission was made without your explicit review. Start a new session whenever you are ready.'
+                  : 'FormPilot streams a live headless Chromium instance. Enter any official portal or launch our safe practice recruitment sandbox below.'}
               </p>
 
-              <div className="mt-5 grid grid-cols-3 gap-2 text-left">
-                <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-2.5">
-                  <Globe2 className="h-3.5 w-3.5 text-sky-400" />
-                  <div className="mt-1.5 text-[10px] font-bold text-slate-300">Open</div>
-                  <div className="text-[9px] leading-tight text-slate-500">Official page loads here</div>
+              {onPractice && (
+                <div className="mt-6 flex flex-col items-center">
+                  <button
+                    type="button"
+                    onClick={onPractice}
+                    className="inline-flex items-center gap-2.5 rounded-xl border border-amber-500/50 bg-gradient-to-r from-amber-500/20 via-orange-500/15 to-amber-500/20 px-5 py-2.5 text-xs sm:text-sm font-extrabold text-amber-200 shadow-lg shadow-amber-500/10 transition-all hover:border-amber-400 hover:from-amber-500/30 hover:to-orange-500/25 active:scale-95"
+                  >
+                    <Play className="h-4 w-4 fill-current text-amber-400" />
+                    <span>Launch Practice Recruitment Portal</span>
+                  </button>
+                  <span className="mt-1.5 text-[10px] text-slate-500">
+                    Safe mock environment with demo OTP &amp; OTR registration
+                  </span>
                 </div>
-                <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-2.5">
-                  <Sparkles className="h-3.5 w-3.5 text-amber-400" />
-                  <div className="mt-1.5 text-[10px] font-bold text-slate-300">Fill</div>
-                  <div className="text-[9px] leading-tight text-slate-500">Profile values, step by step</div>
+              )}
+
+              {/* 3 Value Pillars */}
+              <div className="mt-7 grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-left">
+                <div className="rounded-xl border border-slate-800/80 bg-slate-900/60 p-3 transition-colors hover:border-slate-700">
+                  <div className="flex items-center gap-2">
+                    <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-sky-500/10 text-sky-400">
+                      <Globe2 className="h-3.5 w-3.5" />
+                    </span>
+                    <div className="text-[11px] font-bold text-slate-200">Real Browser</div>
+                  </div>
+                  <div className="mt-1 text-[10px] leading-relaxed text-slate-400">
+                    Live screencast of official portals directly inside your assistant.
+                  </div>
                 </div>
-                <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-2.5">
-                  <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
-                  <div className="mt-1.5 text-[10px] font-bold text-slate-300">Review</div>
-                  <div className="text-[9px] leading-tight text-slate-500">You handle checks and submit</div>
+
+                <div className="rounded-xl border border-slate-800/80 bg-slate-900/60 p-3 transition-colors hover:border-slate-700">
+                  <div className="flex items-center gap-2">
+                    <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-amber-500/10 text-amber-400">
+                      <Sparkles className="h-3.5 w-3.5" />
+                    </span>
+                    <div className="text-[11px] font-bold text-slate-200">Profile-Aware</div>
+                  </div>
+                  <div className="mt-1 text-[10px] leading-relaxed text-slate-400">
+                    Fills matching personal and educational records from your vault.
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-slate-800/80 bg-slate-900/60 p-3 transition-colors hover:border-slate-700">
+                  <div className="flex items-center gap-2">
+                    <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-400">
+                      <ShieldCheck className="h-3.5 w-3.5" />
+                    </span>
+                    <div className="text-[11px] font-bold text-slate-200">Zero Auto-Pay</div>
+                  </div>
+                  <div className="mt-1 text-[10px] leading-relaxed text-slate-400">
+                    Payment, OTP, and final submission gates always stay in your control.
+                  </div>
                 </div>
               </div>
-
-              {onPractice && (
-                <button
-                  type="button"
-                  onClick={onPractice}
-                  className="mt-5 inline-flex items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/15 px-4 py-2 text-xs font-bold text-amber-300 transition-colors hover:bg-amber-500/25"
-                >
-                  <Play className="h-3.5 w-3.5" />
-                  Try the practice portal
-                </button>
-              )}
             </div>
           </div>
         )}
