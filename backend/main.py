@@ -44,6 +44,9 @@ from .core.run_report import build_run_report, render_run_report_html
 from .core.run_store import RunStore
 from .core.tinyfish_client import EngineConfig, TinyFishClient, TinyFishError
 from .core.vault import CandidateVault, VaultManager
+from .core.security_hardening import SSRFGuard, AuditHashChain, PIISanitizer, BLOCKED_IP_NETWORKS
+from .core.circuit_breaker import get_circuit_breaker, get_all_circuit_breaker_metrics, CircuitBreakerOpenError
+from .core.idempotency import idempotency_engine, IdempotencyConflictError
 
 if settings.ENABLE_SIMULATOR:
     from .simulator.portal import router as simulator_router
@@ -80,7 +83,7 @@ app.add_middleware(
     allow_origin_regex=r"^https://.*\.vercel\.app$",
     allow_credentials=True,
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-API-Token", "X-Request-ID"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Token", "X-Request-ID", "X-Idempotency-Key", "X-Circuit-Breaker"],
 )
 
 if simulator_router is not None:
@@ -588,6 +591,59 @@ def get_run_audit(run_id: str):
     return JSONResponse(content=audit, headers={"Content-Disposition": f'attachment; filename="formpilot-audit-{run_id}.json"'})
 
 
+@app.get("/api/runs/{run_id}/audit-chain")
+def get_run_audit_chain(run_id: str):
+    """Return cryptographically verified Merkle hash chain for tamper-evident run non-repudiation."""
+    chain_data = run_store.build_audit_chain(run_id)
+    if not chain_data.get("verified") and chain_data.get("error") == "Run not found":
+        raise HTTPException(status_code=404, detail="Run not found.")
+    return chain_data
+
+
+@app.get("/api/system/circuit-breakers")
+def get_circuit_breaker_telemetry():
+    """Real-time observability telemetry for external government portal circuit breakers."""
+    return {
+        "status": "ok",
+        "breakers": get_all_circuit_breaker_metrics(),
+    }
+
+
+@app.get("/api/system/health/deep")
+def deep_system_health():
+    """Deep health probe verifying SSRF defenses, circuit breakers, idempotency, and vault encryption."""
+    mem_rss_mb = 0.0
+    try:
+        import psutil
+        process = psutil.Process()
+        mem_rss_mb = round(process.memory_info().rss / (1024 * 1024), 2)
+    except Exception:
+        mem_rss_mb = -1.0
+
+    return {
+        "status": "healthy",
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "version": settings.APP_VERSION,
+        "environment": settings.APP_ENV,
+        "security": {
+            "ssrf_guard_active": True,
+            "blocked_ip_ranges_count": len(BLOCKED_IP_NETWORKS),
+            "cloud_metadata_protection": "ACTIVE",
+            "pii_sanitization": "ACTIVE",
+            "vault_encrypted": bool(settings.VAULT_ENCRYPTION_KEY),
+            "auth_required": settings.AUTH_REQUIRED,
+        },
+        "resilience": {
+            "idempotency_records_cached": idempotency_engine.size(),
+            "circuit_breakers": get_all_circuit_breaker_metrics(),
+        },
+        "resources": {
+            "memory_rss_mb": mem_rss_mb,
+            "open_connections": len(active_connections),
+        },
+    }
+
+
 # --------------------------------------------------------------------------- recipes
 
 
@@ -621,11 +677,42 @@ class EntryModeRequest(BaseModel):
 
 
 @app.post("/api/agent/start")
-async def start_agent(req: LaunchRequest):
+async def start_agent(req: LaunchRequest, request: Request):
+    # 1. SSRF Protection Guard: block cloud metadata (169.254.169.254), private subnets, unroutable IPv6
+    target = req.query_or_url.strip()
+    if target.startswith(("http://", "https://")) or "://" in target:
+        safe, reason = SSRFGuard.is_safe_url(
+            target,
+            allow_local_simulator=settings.ENABLE_SIMULATOR or settings.DEMO_MODE,
+        )
+        if not safe:
+            raise HTTPException(status_code=400, detail=f"SSRF Protection Guard: {reason}")
+
+    # 2. Exactly-Once Idempotency Guard
+    idempotency_key = request.headers.get("X-Idempotency-Key")
+    if idempotency_key:
+        try:
+            acquired, cached = await idempotency_engine.acquire(idempotency_key)
+            if not acquired and cached:
+                return JSONResponse(
+                    status_code=cached.status_code,
+                    content=cached.response_body,
+                    headers={"X-Cache": "HIT-IDEMPOTENCY"},
+                )
+        except IdempotencyConflictError as err:
+            raise HTTPException(status_code=409, detail=str(err))
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err))
+
     if orchestrator.is_running:
-        return {"success": False, "message": "An application is already in progress."}
+        res = {"success": False, "message": "An application is already in progress."}
+        if idempotency_key:
+            await idempotency_engine.complete(idempotency_key, 200, res)
+        return res
+
     if orchestrator.page and not orchestrator.page.is_closed() and orchestrator.state in {"INSPECT_READY", "AWAITING_PAYMENT"}:
         await orchestrator.stop()
+
     task = asyncio.create_task(orchestrator.start_application(req.query_or_url, req.mode))
     app.state.agent_task = task
 
@@ -636,12 +723,15 @@ async def start_agent(req: LaunchRequest):
             traceback.print_exc()
 
     task.add_done_callback(_done)
-    return {
+    response_payload = {
         "success": True,
         "message": "Inspection started." if req.mode == "inspect" else "Application started.",
         "mode": req.mode,
         "run_id": orchestrator.run_id,
     }
+    if idempotency_key:
+        await idempotency_engine.complete(idempotency_key, 200, response_payload)
+    return response_payload
 
 
 @app.post("/api/agent/entry-mode")

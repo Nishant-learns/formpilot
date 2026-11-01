@@ -262,6 +262,40 @@ export default function Sidebar({
               </span>
             )}
           </div>
+
+          <div
+            className={`flex items-center gap-3 px-3 py-2 rounded-xl text-xs text-slate-400 ${
+              collapsed ? 'justify-center' : 'justify-between'
+            }`}
+            title="SSRF Defense: Cloud metadata (169.254.169.254) and private subnet boundary active"
+          >
+            <div className="flex items-center gap-2.5 min-w-0">
+              <ShieldCheck className="w-4 h-4 text-cyan-400 shrink-0" />
+              {!collapsed && <span className="truncate">SSRF Guard</span>}
+            </div>
+            {!collapsed && (
+              <span className="text-[9px] font-mono text-cyan-300 bg-cyan-500/10 px-1.5 py-0.5 rounded border border-cyan-500/20 font-bold">
+                Enforced
+              </span>
+            )}
+          </div>
+
+          <div
+            className={`flex items-center gap-3 px-3 py-2 rounded-xl text-xs text-slate-400 ${
+              collapsed ? 'justify-center' : 'justify-between'
+            }`}
+            title="Merkle Audit Hash Chain: Cryptographic non-repudiation ledger"
+          >
+            <div className="flex items-center gap-2.5 min-w-0">
+              <Zap className="w-4 h-4 text-violet-400 shrink-0" />
+              {!collapsed && <span className="truncate">Merkle Ledger</span>}
+            </div>
+            {!collapsed && (
+              <span className="text-[9px] font-mono text-violet-300 bg-violet-500/10 px-1.5 py-0.5 rounded border border-violet-500/20 font-bold">
+                SHA-256
+              </span>
+            )}
+          </div>
         </div>
       </nav>
 

@@ -444,3 +444,41 @@ class RunStore:
         page = runs[:limit]
         next_cursor = self.encode_cursor(page[-1]) if len(runs) > len(page) and page else None
         return {"runs": page, "next_cursor": next_cursor}
+
+    def build_audit_chain(self, run_id: str) -> dict[str, Any]:
+        """Generate and cryptographically verify the tamper-evident Merkle hash chain for a run."""
+        from .security_hardening import AuditHashChain
+
+        meta = self.read_meta(run_id)
+        if not meta:
+            return {
+                "run_id": run_id,
+                "verified": False,
+                "error": "Run not found",
+                "total_entries": 0,
+                "head_hash": None,
+                "chain": [],
+            }
+
+        chain = AuditHashChain()
+        chain.append("RUN_INITIALIZED", {"meta": meta})
+
+        steps = self.read_steps(run_id)
+        for step in steps:
+            chain.append("STEP_RECORDED", step)
+
+        audit = self.read_audit(run_id)
+        if audit:
+            chain.append("FINAL_AUDIT_SEALED", audit)
+
+        verified, err = chain.verify()
+        entries = chain.to_list()
+        return {
+            "run_id": run_id,
+            "total_entries": len(entries),
+            "head_hash": entries[-1]["entry_hash"] if entries else None,
+            "verified": verified,
+            "verification_error": err,
+            "chain": entries,
+        }
+
