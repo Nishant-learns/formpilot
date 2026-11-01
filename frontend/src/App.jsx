@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Header from './components/Header';
+import Sidebar from './components/Sidebar';
+import CopilotWindow from './components/CopilotWindow';
 import PortalLauncher from './components/PortalLauncher';
 import LiveViewport from './components/LiveViewport';
 import CognitiveStream from './components/CognitiveStream';
@@ -89,6 +91,12 @@ export default function App() {
   const [isVaultOpen, setIsVaultOpen] = useState(false);
   const [isBiometricsOpen, setIsBiometricsOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+  // Layout architecture & windowing state
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [copilotMode, setCopilotMode] = useState('docked'); // 'docked' | 'floating'
+  const [copilotMinimized, setCopilotMinimized] = useState(false);
+  const [sidebarNav, setSidebarNav] = useState('portal');
 
   const wsRef = useRef(null);
   const gateKeyRef = useRef('');
@@ -701,143 +709,163 @@ export default function App() {
     },
   ];
 
+  const handleSelectNav = (item) => {
+    setSidebarNav(item);
+    if (item === 'portal') {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } else if (item === 'vault') {
+      setIsVaultOpen(true);
+    } else if (item === 'biometrics') {
+      setIsBiometricsOpen(true);
+    } else if (item === 'stream') {
+      setRightTab('stream');
+      if (copilotMinimized) setCopilotMinimized(false);
+    } else if (item === 'map') {
+      setRightTab('map');
+      if (copilotMinimized) setCopilotMinimized(false);
+    }
+  };
+
   return (
-    <div className="relative flex min-h-screen flex-col bg-[#07090e] font-['Plus_Jakarta_Sans',sans-serif] text-slate-100 antialiased selection:bg-indigo-500/30 selection:text-indigo-200">
+    <div className="relative flex min-h-screen bg-[#07090e] font-['Plus_Jakarta_Sans',sans-serif] text-slate-100 antialiased selection:bg-indigo-500/30 selection:text-indigo-200 overflow-x-hidden">
       <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(ellipse_80%_60%_at_50%_-15%,rgba(99,102,241,0.12),transparent_70%),radial-gradient(ellipse_60%_50%_at_100%_100%,rgba(16,185,129,0.06),transparent_60%),radial-gradient(ellipse_50%_40%_at_0%_100%,rgba(6,182,212,0.05),transparent_60%)]" />
 
-      <Header
+      {/* Left Collapsible Sidebar */}
+      <Sidebar
+        collapsed={sidebarCollapsed}
+        onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+        activeItem={sidebarNav}
+        onSelectNav={handleSelectNav}
+        sessionVisible={sessionVisible}
         agentRunning={agentRunning}
-        paused={paused}
-        runState={runState}
-        engineConfig={engineConfig}
+        liveSession={liveSession}
+        formMap={formMap}
         readiness={readiness}
-        onOpenSettings={() => setIsSettingsOpen(true)}
+        currentGate={currentGate}
         onOpenVault={() => setIsVaultOpen(true)}
         onOpenBiometrics={() => setIsBiometricsOpen(true)}
-        onPauseToggle={handlePauseToggle}
-        voiceEnabled={voiceEnabled}
-        setVoiceEnabled={setVoiceEnabled}
-        currentGate={currentGate}
+        onOpenSettings={() => setIsSettingsOpen(true)}
+        vault={vault}
       />
 
-      <main className="relative mx-auto flex w-full max-w-[1560px] flex-1 flex-col px-3 pb-8 pt-4 sm:px-5">
-        {sessionVisible && (
-          <SessionStrip
-            runState={runState}
-            runMode={runMode}
-            currentSection={currentSection}
-            formMap={formMap}
-            recipe={recipe}
-            readiness={readiness}
-            query={query}
-            targetUrl={liveSession?.url || formMap?.url || ''}
-            elapsed={elapsed}
-            paused={paused}
-            runId={runId}
-            fillSummary={fillSummary}
-            entryMode={entryMode}
-            loginMethod={loginMethod}
-            onPauseToggle={handlePauseToggle}
-            onNewSession={handleNewSession}
-          />
-        )}
+      {/* Main Workspace Stage */}
+      <div className="flex-1 flex flex-col min-w-0 h-screen overflow-y-auto">
+        <Header
+          agentRunning={agentRunning}
+          paused={paused}
+          runState={runState}
+          engineConfig={engineConfig}
+          readiness={readiness}
+          onOpenSettings={() => setIsSettingsOpen(true)}
+          onOpenVault={() => setIsVaultOpen(true)}
+          onOpenBiometrics={() => setIsBiometricsOpen(true)}
+          onPauseToggle={handlePauseToggle}
+          voiceEnabled={voiceEnabled}
+          setVoiceEnabled={setVoiceEnabled}
+          currentGate={currentGate}
+        />
 
-        {(!sessionVisible || relaunchable) && (
-          <div className={sessionVisible ? 'mt-4' : ''}>
-            <PortalLauncher
-              onLaunch={handleLaunch}
-              agentRunning={agentRunning}
-              sessionOpen={busy}
+        <main className="relative mx-auto flex w-full max-w-[1700px] flex-1 flex-col px-3 pb-8 pt-3 sm:px-5">
+          {sessionVisible && (
+            <SessionStrip
+              runState={runState}
+              runMode={runMode}
+              currentSection={currentSection}
+              formMap={formMap}
+              recipe={recipe}
+              readiness={readiness}
+              query={query}
+              targetUrl={liveSession?.url || formMap?.url || ''}
+              elapsed={elapsed}
+              paused={paused}
+              runId={runId}
+              fillSummary={fillSummary}
+              entryMode={entryMode}
+              loginMethod={loginMethod}
+              onPauseToggle={handlePauseToggle}
+              onNewSession={handleNewSession}
             />
-          </div>
-        )}
+          )}
 
-        {lastError && (
-          <div className="animate-fadeIn mt-3 flex items-center justify-between rounded-xl border border-red-500/35 bg-red-950/40 px-3.5 py-2 text-xs text-red-200 shadow-sm">
-            <div className="flex items-center gap-2 min-w-0">
-              <span className="font-extrabold text-red-400 shrink-0">Session Notice:</span>
-              <span className="truncate">{lastError}</span>
+          {(!sessionVisible || relaunchable) && (
+            <div className={sessionVisible ? 'mt-4' : ''}>
+              <PortalLauncher
+                onLaunch={handleLaunch}
+                agentRunning={agentRunning}
+                sessionOpen={busy}
+              />
             </div>
-            <button
-              type="button"
-              onClick={() => setLastError('')}
-              className="ml-2 rounded-lg p-1 text-red-400 hover:bg-red-500/20 hover:text-red-200 transition-colors"
-              title="Dismiss notice"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        )}
+          )}
 
-        {['PARTIAL', 'FAILED'].includes(fillSummary?.status) && (
-          <div className="mt-3 flex items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3.5 py-2.5 text-[11px] text-amber-100">
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
-            <span>
-              <span className="font-bold">This form is not fully filled.</span>{' '}
-              {fillSummary?.verified || 0} of {fillSummary?.attempted || 0} fields were verified
-              {fillSummary?.failed ? `, ${fillSummary.failed} failed` : ''}
-              {fillSummary?.skipped ? `, ${fillSummary.skipped} skipped` : ''}. Review the
-              highlighted fields in the live browser; FormPilot will not report this section as
-              filled.
-            </span>
-          </div>
-        )}
-
-        <div className="mt-4 grid flex-1 grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(380px,430px)]">
-          <LiveViewport
-            className={viewportHeightClass}
-            screenshot={screenshot}
-            liveSession={liveSession}
-            agentRunning={agentRunning}
-            currentSection={currentSection}
-            onStop={handleStop}
-            onRescan={handleRescan}
-            onPauseToggle={handlePauseToggle}
-            onPractice={handlePractice}
-            runMode={runMode}
-            runState={runState}
-            paused={paused}
-            takeover={takeover}
-            onTakeover={handleTakeover}
-            onReturnControl={handleReturnControl}
-            pendingGate={currentGate && gateHidden ? currentGate : null}
-            onOpenGate={() => setGateHidden(false)}
-          />
-
-          <div className={`flex flex-col gap-3 ${viewportHeightClass}`}>
-            <div className="flex shrink-0 flex-col gap-2 rounded-2xl glass-panel p-1.5 sm:flex-row sm:items-center sm:justify-between shadow-lg">
-              <div className="flex items-center gap-1 overflow-x-auto no-scrollbar w-full">
-                {panels.map((panel) => {
-                  const Icon = panel.icon;
-                  const active = rightTab === panel.id;
-                  return (
-                    <button
-                      key={panel.id}
-                      type="button"
-                      onClick={() => setRightTab(panel.id)}
-                      className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-bold transition-all ${
-                        active
-                          ? 'border-indigo-500/40 bg-indigo-500/20 text-indigo-200 shadow-sm'
-                          : 'border-transparent text-slate-400 hover:bg-white/[0.04] hover:text-slate-200'
-                      }`}
-                    >
-                      <Icon className="h-3.5 w-3.5" />
-                      <span>{panel.label}</span>
-                      {panel.count !== null && (
-                        <span className={`rounded-full px-1.5 py-0.2 font-mono text-[10px] ${active ? 'bg-indigo-950/80 text-indigo-300' : 'bg-white/[0.05] text-slate-500'}`}>
-                          {panel.count}
-                        </span>
-                      )}
-                      {panel.id === 'chat' && <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />}
-                    </button>
-                  );
-                })}
+          {lastError && (
+            <div className="animate-fadeIn mt-3 flex items-center justify-between rounded-xl border border-red-500/35 bg-red-950/40 px-3.5 py-2 text-xs text-red-200 shadow-sm">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="font-extrabold text-red-400 shrink-0">Session Notice:</span>
+                <span className="truncate">{lastError}</span>
               </div>
+              <button
+                type="button"
+                onClick={() => setLastError('')}
+                className="ml-2 rounded-lg p-1 text-red-400 hover:bg-red-500/20 hover:text-red-200 transition-colors"
+                title="Dismiss notice"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
             </div>
+          )}
 
-            <div className="min-h-0 flex-1">
-              {rightTab === 'chat' && (
-                <LiveChat
+          {['PARTIAL', 'FAILED'].includes(fillSummary?.status) && (
+            <div className="mt-3 flex items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3.5 py-2.5 text-[11px] text-amber-100">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+              <span>
+                <span className="font-bold">This form is not fully filled.</span>{' '}
+                {fillSummary?.verified || 0} of {fillSummary?.attempted || 0} fields were verified
+                {fillSummary?.failed ? `, ${fillSummary.failed} failed` : ''}
+                {fillSummary?.skipped ? `, ${fillSummary.skipped} skipped` : ''}. Review the
+                highlighted fields in the live browser; FormPilot will not report this section as
+                filled.
+              </span>
+            </div>
+          )}
+
+          {/* Viewport and Copilot Stage */}
+          <div
+            className={
+              copilotMode === 'docked'
+                ? 'mt-4 grid flex-1 grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(380px,430px)]'
+                : 'mt-4 flex-1 w-full'
+            }
+          >
+            <LiveViewport
+              className={viewportHeightClass}
+              screenshot={screenshot}
+              liveSession={liveSession}
+              agentRunning={agentRunning}
+              currentSection={currentSection}
+              onStop={handleStop}
+              onRescan={handleRescan}
+              onPauseToggle={handlePauseToggle}
+              onPractice={handlePractice}
+              runMode={runMode}
+              runState={runState}
+              paused={paused}
+              takeover={takeover}
+              onTakeover={handleTakeover}
+              onReturnControl={handleReturnControl}
+              pendingGate={currentGate && gateHidden ? currentGate : null}
+              onOpenGate={() => setGateHidden(false)}
+            />
+
+            {copilotMode === 'docked' && (
+              <div className={`flex flex-col gap-3 ${viewportHeightClass}`}>
+                <CopilotWindow
+                  mode="docked"
+                  minimized={copilotMinimized}
+                  onToggleMode={() => setCopilotMode('floating')}
+                  onToggleMinimize={() => setCopilotMinimized(!copilotMinimized)}
+                  rightTab={rightTab}
+                  setRightTab={setRightTab}
+                  panels={panels}
                   onSendMessage={handleSendChatMessage}
                   chatMessages={chatMessages}
                   voiceEnabled={voiceEnabled}
@@ -847,52 +875,71 @@ export default function App() {
                   loginMethod={loginMethod}
                   loginIdentifier={loginIdentifier}
                   activeGate={currentGate}
-                />
-              )}
-              {rightTab === 'brief' && (
-                <PageBriefPanel
                   pageBrief={pageBrief}
                   runState={runState}
-                  onRefresh={handleRefreshBrief}
-                  refreshing={briefRefreshing}
-                />
-              )}
-              {rightTab === 'map' && (
-                <FormMapPanel
+                  onRefreshBrief={handleRefreshBrief}
+                  briefRefreshing={briefRefreshing}
                   formMap={formMap}
                   recipe={recipe}
                   runMode={runMode}
                   onRescan={handleRescan}
                   rescanning={rescanning}
-                />
-              )}
-              {rightTab === 'stream' && (
-                <CognitiveStream
                   events={events}
-                  voiceEnabled={voiceEnabled}
                 />
-              )}
-            </div>
+              </div>
+            )}
           </div>
-        </div>
 
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-2 px-1 text-[10px] text-slate-500">
-          <span className="flex items-center gap-1.5">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-            FormPilot never solves CAPTCHA, auto-pays or submits on your behalf.
-          </span>
-          <span className="font-mono text-slate-600">
-            {runId ? `session ${runId}` : 'No active run'}
-          </span>
-        </div>
-      </main>
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-2 px-1 text-[10px] text-slate-500">
+            <span className="flex items-center gap-1.5">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+              FormPilot never solves CAPTCHA, auto-pays or submits on your behalf.
+            </span>
+            <span className="font-mono text-slate-600">
+              {runId ? `session ${runId}` : 'No active run'}
+            </span>
+          </div>
+        </main>
 
-      <footer className="relative border-t border-slate-900 bg-slate-950/80 px-4 py-3.5 text-center text-[11px] text-slate-500">
-        <p>
-          FormPilot is an independent application assistant. It is not a government website and
-          does not submit applications or make payments on your behalf.
-        </p>
-      </footer>
+        <footer className="relative border-t border-slate-900 bg-slate-950/80 px-4 py-3.5 text-center text-[11px] text-slate-500">
+          <p>
+            FormPilot is an independent application assistant. It is not a government website and
+            does not submit applications or make payments on your behalf.
+          </p>
+        </footer>
+      </div>
+
+      {/* Floating Copilot Window (Draggable & Resizable) */}
+      {copilotMode === 'floating' && (
+        <CopilotWindow
+          mode="floating"
+          minimized={copilotMinimized}
+          onToggleMode={() => setCopilotMode('docked')}
+          onToggleMinimize={() => setCopilotMinimized(!copilotMinimized)}
+          rightTab={rightTab}
+          setRightTab={setRightTab}
+          panels={panels}
+          onSendMessage={handleSendChatMessage}
+          chatMessages={chatMessages}
+          voiceEnabled={voiceEnabled}
+          onClearChat={() => setChatMessages([])}
+          entryMode={entryMode}
+          entryOptions={entryOptions}
+          loginMethod={loginMethod}
+          loginIdentifier={loginIdentifier}
+          activeGate={currentGate}
+          pageBrief={pageBrief}
+          runState={runState}
+          onRefreshBrief={handleRefreshBrief}
+          briefRefreshing={briefRefreshing}
+          formMap={formMap}
+          recipe={recipe}
+          runMode={runMode}
+          onRescan={handleRescan}
+          rescanning={rescanning}
+          events={events}
+        />
+      )}
 
       {/* Modals and review checkpoints */}
       <HumanCheckpointModal
