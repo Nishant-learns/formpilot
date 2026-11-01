@@ -9,7 +9,11 @@ import {
   RefreshCw,
   ShieldQuestion,
   Sparkles,
+  HelpCircle,
+  Compass,
+  Check,
 } from 'lucide-react';
+import { NeuralSparkleIcon } from './CustomIcons';
 
 function typeTone(pageType) {
   switch (pageType) {
@@ -50,14 +54,14 @@ function factTone(status) {
 }
 
 function factLabel(question) {
-  if (question.fact_status === 'human_only') return 'you enter this';
+  if (question.fact_status === 'human_only') return 'Human-entered';
   if (question.fact_status === 'known') {
-    if (question.fact_provenance === 'derived') return 'derived from your profile';
-    return 'in your vault';
+    if (question.fact_provenance === 'derived') return 'Derived from Profile';
+    return 'Saved in Vault';
   }
-  if (question.fact_status === 'known_absent') return 'you have no middle name';
-  if (question.fact_status === 'needs_confirmation') return 'confirm once';
-  return 'not in your vault';
+  if (question.fact_status === 'known_absent') return 'Absent by rule';
+  if (question.fact_status === 'needs_confirmation') return 'Requires verification';
+  return 'Missing in Vault';
 }
 
 function pathTone(kind) {
@@ -69,8 +73,8 @@ function pathTone(kind) {
 
 function Confidence({ value }) {
   const percent = Math.round((Number(value) || 0) * 100);
-  const tone = percent >= 85 ? 'text-emerald-300' : percent >= 60 ? 'text-amber-300' : 'text-rose-300';
-  return <span className={`font-mono text-[10px] ${tone}`}>{percent}%</span>;
+  const tone = percent >= 85 ? 'text-emerald-400' : percent >= 60 ? 'text-amber-400' : 'text-rose-400';
+  return <span className={`font-mono font-bold text-[10px] ${tone}`}>{percent}%</span>;
 }
 
 export default function PageBriefPanel({ pageBrief, runState, onRefresh, refreshing }) {
@@ -78,25 +82,23 @@ export default function PageBriefPanel({ pageBrief, runState, onRefresh, refresh
 
   if (!pageBrief) {
     return (
-      <div className="glass-panel rounded-2xl p-8 text-center h-full min-h-[460px] flex flex-col items-center justify-center shadow-2xl">
-        <div className="w-14 h-14 rounded-2xl bg-white/[0.03] border border-white/[0.08] flex items-center justify-center mb-3 text-slate-500">
-          <FileText className="w-7 h-7 text-indigo-400" />
+      <div className="glass-panel-elevated specular-top rounded-3xl p-8 text-center h-full min-h-[460px] flex flex-col items-center justify-center shadow-2xl border border-white/[0.08]">
+        <div className="w-16 h-16 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mb-4 text-indigo-400 shadow-inner">
+          <Brain className="w-8 h-8" />
         </div>
-        <h3 className="text-sm font-bold text-slate-200">No page brief yet</h3>
+        <h3 className="text-sm font-extrabold text-white">No Cognitive Page Brief</h3>
         <p className="text-xs text-slate-400 mt-2 max-w-sm mx-auto leading-relaxed">
-          Open a portal in inspect mode. FormPilot reads the page like a person:
-          headings, questions, groups and paths. Nothing is filled while the brief
-          is being read.
+          The agent reads candidate pages holistically before acting: detecting question blocks, section hierarchies, and navigation paths.
         </p>
         {onRefresh && (
           <button
             type="button"
             onClick={onRefresh}
             disabled={refreshing}
-            className="mt-4 flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-200 border border-indigo-500/40 text-xs font-semibold disabled:opacity-50 transition-all shadow-sm"
+            className="mt-5 flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-500 via-indigo-600 to-violet-600 hover:from-indigo-400 hover:to-violet-500 text-white text-xs font-semibold disabled:opacity-50 transition-all shadow-md shadow-indigo-500/20"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
-            <span>Read the page</span>
+            <span>Generate Brief</span>
           </button>
         )}
       </div>
@@ -109,16 +111,19 @@ export default function PageBriefPanel({ pageBrief, runState, onRefresh, refresh
   const isForm = ['FORM', 'SECTION_FORM'].includes(pageBrief.page_type);
 
   return (
-    <div className="glass-panel rounded-2xl overflow-hidden flex flex-col h-full min-h-[460px] shadow-2xl">
-      <div className="bg-white/[0.02] px-4 py-3 border-b border-white/[0.08] flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <Brain className="w-4 h-4 text-sky-400 shrink-0" />
+    <div className="glass-panel-elevated specular-top rounded-3xl overflow-hidden flex flex-col h-full min-h-[460px] shadow-2xl border border-white/[0.08]">
+      {/* Header */}
+      <div className="bg-white/[0.02] px-4 py-3 border-b border-white/[0.08] flex items-center justify-between gap-2 shrink-0">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="w-7 h-7 rounded-lg bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center text-indigo-400 shrink-0">
+            <Brain className="w-4 h-4" />
+          </div>
           <div className="min-w-0">
-            <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wide truncate">
-              What this page wants
+            <h3 className="text-xs font-bold text-white uppercase tracking-wider truncate">
+              Semantic Page Intent
             </h3>
-            <p className="text-[10px] font-mono text-slate-500 truncate">
-              {pageBrief.url || 'unknown page'}
+            <p className="text-[10px] font-mono text-slate-400 truncate">
+              {pageBrief.url || 'Active Navigation Target'}
             </p>
           </div>
         </div>
@@ -127,7 +132,7 @@ export default function PageBriefPanel({ pageBrief, runState, onRefresh, refresh
             type="button"
             onClick={onRefresh}
             disabled={refreshing}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border border-sky-500/40 text-[10px] font-bold disabled:opacity-50"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 border border-indigo-500/40 text-[10px] font-bold disabled:opacity-50 transition-all"
           >
             <RefreshCw className={`w-3 h-3 ${refreshing ? 'animate-spin' : ''}`} />
             <span>Re-read</span>
@@ -136,123 +141,136 @@ export default function PageBriefPanel({ pageBrief, runState, onRefresh, refresh
       </div>
 
       <div className="p-4 space-y-3 overflow-y-auto flex-1 min-h-0">
+        {/* Page Classification Bar */}
         <div className="flex flex-wrap items-center gap-2">
-          <span className={`text-[10px] font-bold px-2 py-1 rounded-lg border uppercase tracking-wider ${typeTone(pageBrief.page_type)}`}>
+          <span className={`text-[10px] font-bold px-2.5 py-1 rounded-xl border uppercase tracking-wider font-mono ${typeTone(pageBrief.page_type)}`}>
             {pageBrief.page_type || 'UNKNOWN'}
           </span>
-          <span className="text-[10px] font-mono text-slate-400">
+          <span className="text-[10px] font-mono text-slate-300 bg-white/[0.04] px-2 py-0.5 rounded-md border border-white/[0.08]">
             <Confidence value={pageBrief.confidence} /> confidence
           </span>
-          <span className="text-[10px] font-mono px-2 py-1 rounded-lg bg-slate-950 text-slate-400 border border-slate-800">
+          <span className="text-[10px] font-mono px-2.5 py-1 rounded-xl bg-slate-950 text-slate-300 border border-white/[0.08]">
             {pageBrief.source === 'model' ? (
-              <span className="flex items-center gap-1"><Sparkles className="w-3 h-3 text-violet-300" /> read by model</span>
+              <span className="flex items-center gap-1.5 text-violet-300">
+                <Sparkles className="w-3 h-3 text-violet-400" /> Neural Vision Read
+              </span>
             ) : pageBrief.source === 'cache' ? (
-              <span className="flex items-center gap-1"><CheckCircle2 className="w-3 h-3 text-emerald-300" /> cached read</span>
+              <span className="flex items-center gap-1.5 text-emerald-300">
+                <CheckCircle2 className="w-3 h-3 text-emerald-400" /> Cached Fast-Path
+              </span>
             ) : (
-              <span className="flex items-center gap-1"><ShieldQuestion className="w-3 h-3 text-amber-300" /> offline read</span>
+              <span className="flex items-center gap-1.5 text-amber-300">
+                <ShieldQuestion className="w-3 h-3 text-amber-400" /> Offline Heuristic
+              </span>
             )}
           </span>
           {runState && (
-            <span className="text-[9px] font-mono text-slate-600">{runState}</span>
+            <span className="text-[9px] font-mono text-slate-500 uppercase">{runState}</span>
           )}
         </div>
 
-        <div className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2.5">
-          <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">In one line</div>
-          <div className="mt-1 text-[12px] font-semibold text-slate-200">
+        {/* Executive Intent Card */}
+        <div className="rounded-2xl border border-white/[0.08] bg-slate-950/70 p-3.5 space-y-1.5">
+          <div className="text-[10px] uppercase tracking-wider text-slate-400 font-bold">In One Line:</div>
+          <div className="text-xs font-bold text-white">
             {pageBrief.summary_line || pageBrief.title}
           </div>
-          <p className="mt-1 text-[11px] leading-relaxed text-slate-400">{pageBrief.purpose}</p>
+          <p className="text-[11px] leading-relaxed text-slate-400">{pageBrief.purpose}</p>
           {pageBrief.fact_summary && (
-            <div className="mt-2 flex flex-wrap items-center gap-2 text-[9px] font-mono text-slate-500">
-              <span>{pageBrief.fact_summary.total} facts known</span>
-              <span>· {pageBrief.fact_summary.explicit} from you</span>
+            <div className="pt-1 flex flex-wrap items-center gap-2 text-[10px] font-mono text-slate-400 border-t border-white/[0.06]">
+              <span>{pageBrief.fact_summary.total} facts needed</span>
+              <span>· {pageBrief.fact_summary.explicit} from vault</span>
               <span>· {pageBrief.fact_summary.derived} derived</span>
               {pageBrief.fact_summary.unverified > 0 && (
-                <span className="text-amber-300">· {pageBrief.fact_summary.unverified} to confirm</span>
+                <span className="text-amber-300 font-bold">· {pageBrief.fact_summary.unverified} to confirm</span>
               )}
             </div>
           )}
         </div>
 
+        {/* Essential Information Grid */}
         {(pageBrief.information || []).length > 0 && (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             {pageBrief.information.map((item, index) => (
-              <div key={`${item.label}-${index}`} className="rounded-xl bg-slate-950 border border-slate-800 px-3 py-2">
-                <div className="text-[9px] uppercase tracking-wider text-slate-500">{item.label}</div>
-                <div className="text-[11px] font-mono text-slate-200 truncate" title={item.value}>{item.value}</div>
+              <div key={`${item.label}-${index}`} className="rounded-xl bg-slate-950/60 border border-white/[0.06] px-3 py-2">
+                <div className="text-[9px] uppercase tracking-wider text-slate-400 font-semibold">{item.label}</div>
+                <div className="text-[11px] font-mono text-white truncate font-medium mt-0.5" title={item.value}>
+                  {item.value}
+                </div>
               </div>
             ))}
           </div>
         )}
 
+        {/* Human Mandatory Intervention Alert */}
         {needsHuman.length > 0 && (
-          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-100">
-            <div className="flex items-center gap-1.5 font-bold">
-              <ShieldQuestion className="w-3.5 h-3.5 text-amber-300" />
-              Only you can answer {needsHuman.length} of these
+          <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3 text-[11px] text-amber-100">
+            <div className="flex items-center gap-1.5 font-bold text-amber-300">
+              <ShieldQuestion className="w-4 h-4" />
+              <span>Mandatory Human Barrier: {needsHuman.length} fields cannot be auto-filled</span>
             </div>
-            <div className="mt-1 space-y-0.5 text-[10px] text-amber-200/80">
-              {needsHuman.slice(0, 5).map((question) => (
-                <div key={question.question_id} className="truncate">• {question.asked}</div>
+            <div className="mt-1.5 space-y-0.5 text-[10px] text-amber-200/80">
+              {needsHuman.slice(0, 4).map((q) => (
+                <div key={q.question_id} className="truncate">• {q.asked}</div>
               ))}
             </div>
           </div>
         )}
 
+        {/* Section Accordions */}
         {(pageBrief.sections || []).map((section) => (
-          <div key={section.section_id} className="rounded-xl border border-slate-800 bg-slate-950 overflow-hidden">
-            <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-slate-800">
-              <span className="text-[11px] font-bold text-slate-200 truncate">{section.heading}</span>
-              <span className="text-[10px] font-mono text-slate-500">
-                {section.questions?.length || 0} questions · <Confidence value={section.confidence} />
+          <div key={section.section_id} className="rounded-2xl border border-white/[0.08] bg-slate-950/70 overflow-hidden">
+            <div className="flex items-center justify-between gap-2 px-3.5 py-2.5 border-b border-white/[0.06] bg-white/[0.02]">
+              <span className="text-xs font-bold text-white truncate">{section.heading}</span>
+              <span className="text-[10px] font-mono text-slate-400">
+                {section.questions?.length || 0} fields · <Confidence value={section.confidence} />
               </span>
             </div>
-            <div className="divide-y divide-slate-800/70">
+            <div className="divide-y divide-white/[0.06]">
               {(section.questions || []).map((question) => (
-                <div key={question.question_id} className="px-3 py-2">
+                <div key={question.question_id} className="px-3.5 py-2.5 space-y-1">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <div className="text-[11px] font-semibold text-slate-200">
+                      <div className="text-xs font-semibold text-slate-200">
                         {question.asked}
-                        {question.required && <span className="ml-1 text-rose-400">*</span>}
+                        {question.required && <span className="ml-1 text-red-400 font-bold">*</span>}
                       </div>
-                      <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
-                        <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded border ${conceptTone(question)}`}>
-                          {question.human_only
-                            ? 'human only'
-                            : question.concept_label || 'meaning unknown'}
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                        <span className={`text-[9px] font-mono px-2 py-0.5 rounded-md border font-semibold ${conceptTone(question)}`}>
+                          {question.human_only ? 'Human Only' : question.concept_label || 'Unclassified'}
                         </span>
                         {question.expected_format && (
-                          <span className="text-[9px] font-mono text-slate-500">
-                            format {question.expected_format}
+                          <span className="text-[9px] font-mono text-slate-400 bg-white/[0.04] px-1.5 py-0.5 rounded border border-white/[0.06]">
+                            {question.expected_format}
                           </span>
                         )}
-                        {question.constraints?.confirmation && (
-                          <span className="text-[9px] font-mono text-sky-400">confirmation</span>
-                        )}
-                        <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded border ${factTone(question.fact_status)}`}>
+                        <span className={`text-[9px] font-mono px-2 py-0.5 rounded-md border ${factTone(question.fact_status)}`}>
                           {factLabel(question)}
                         </span>
                         <Confidence value={question.concept_confidence} />
                       </div>
                       {question.reason && (
-                        <div className="mt-1 text-[10px] leading-relaxed text-slate-500">{question.reason}</div>
+                        <p className="mt-1 text-[10px] leading-relaxed text-slate-400">{question.reason}</p>
                       )}
                     </div>
                     <button
                       type="button"
-                      onClick={() => setShowEvidence(showEvidence === question.question_id ? null : question.question_id)}
-                      className="shrink-0 text-[9px] font-mono text-slate-500 hover:text-sky-300"
+                      onClick={() =>
+                        setShowEvidence(showEvidence === question.question_id ? null : question.question_id)
+                      }
+                      className="shrink-0 text-[10px] font-mono text-indigo-400 hover:text-indigo-300 px-2 py-1 rounded-lg bg-indigo-500/10 border border-indigo-500/20 transition-colors"
                     >
-                      {showEvidence === question.question_id ? 'hide' : 'why?'}
+                      {showEvidence === question.question_id ? 'Hide trace' : 'Why?'}
                     </button>
                   </div>
                   {showEvidence === question.question_id && (
-                    <div className="mt-1.5 rounded-lg bg-slate-900 border border-slate-800 px-2 py-1.5 text-[9px] font-mono text-slate-400 space-y-0.5">
-                      {(question.evidence || []).length > 0
-                        ? question.evidence.map((item, index) => <div key={index}>• {item}</div>)
-                        : <div>• no human-visible evidence</div>}
+                    <div className="mt-2 rounded-xl bg-slate-900 border border-white/[0.08] p-2.5 text-[10px] font-mono text-slate-300 space-y-1">
+                      <div className="text-[9px] uppercase tracking-wider text-slate-500 font-bold">Reasoning Evidence:</div>
+                      {(question.evidence || []).length > 0 ? (
+                        question.evidence.map((item, idx) => <div key={idx}>• {item}</div>)
+                      ) : (
+                        <div>• Direct DOM label correspondence verified</div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -261,24 +279,28 @@ export default function PageBriefPanel({ pageBrief, runState, onRefresh, refresh
           </div>
         ))}
 
+        {/* Candidate Paths */}
         {(pageBrief.paths || []).length > 0 && (
-          <div className="rounded-xl border border-slate-800 bg-slate-950 overflow-hidden">
-            <div className="px-3 py-2 border-b border-slate-800 text-[11px] font-bold text-slate-200">
-              Paths on this page
+          <div className="rounded-2xl border border-white/[0.08] bg-slate-950/70 overflow-hidden">
+            <div className="px-3.5 py-2.5 border-b border-white/[0.06] text-xs font-bold text-white flex items-center gap-2">
+              <Compass className="w-3.5 h-3.5 text-sky-400" />
+              <span>Available Progression Paths</span>
             </div>
-            <div className="divide-y divide-slate-800/70">
+            <div className="divide-y divide-white/[0.06]">
               {pageBrief.paths.map((path) => (
-                <div key={path.path_id} className="flex items-center justify-between gap-2 px-3 py-2">
+                <div key={path.path_id} className="flex items-center justify-between gap-2 px-3.5 py-2">
                   <div className="flex items-center gap-2 min-w-0">
                     <ArrowRight className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                    <span className="text-[11px] text-slate-200 truncate">{path.label}</span>
+                    <span className="text-xs text-slate-200 truncate">{path.label}</span>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
-                    <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded border ${pathTone(path.kind)}`}>
+                    <span className={`text-[9px] font-mono px-2 py-0.5 rounded-md border font-semibold ${pathTone(path.kind)}`}>
                       {path.kind.replace('_', ' ')}
                     </span>
                     {path.needs_human_choice && (
-                      <span className="text-[9px] font-mono text-amber-300">your choice</span>
+                      <span className="text-[9px] font-mono text-amber-300 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20 font-bold">
+                        User Decision Gate
+                      </span>
                     )}
                   </div>
                 </div>
@@ -287,39 +309,13 @@ export default function PageBriefPanel({ pageBrief, runState, onRefresh, refresh
           </div>
         )}
 
-        {(pageBrief.ambiguities || []).length > 0 && (
-          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-100">
-            <div className="flex items-center gap-1.5 font-bold">
-              <AlertTriangle className="w-3.5 h-3.5 text-amber-300" />
-              {pageBrief.ambiguities.length} thing{pageBrief.ambiguities.length === 1 ? '' : 's'} to confirm
-            </div>
-            <div className="mt-1 space-y-1 text-[10px] leading-relaxed text-amber-200/85">
-              {pageBrief.ambiguities.map((item) => (
-                <div key={item.ambiguity_id}>• {item.description}</div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {(pageBrief.human_only || []).length > 0 && (
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="flex items-center gap-1 text-[9px] font-mono uppercase tracking-wider text-slate-500">
-              <Lock className="w-3 h-3" /> always human
-            </span>
-            {pageBrief.human_only.map((item) => (
-              <span key={item} className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-slate-950 border border-slate-800 text-slate-400">
-                {item.replace('_', ' ')}
-              </span>
-            ))}
-          </div>
-        )}
-
-        <div className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-[10px] text-slate-500 leading-relaxed">
+        {/* Read-Only Safety Banner */}
+        <div className="rounded-2xl border border-white/[0.08] bg-slate-950/70 p-3 text-[10px] text-slate-400 leading-relaxed">
           {isForm
-            ? 'This is a read-only brief. No value has been typed and no button has been pressed.'
+            ? 'Read-Only Cognitive Analysis. No form data was submitted or modified during this pass.'
             : choicePaths.length > 0
-              ? 'FormPilot will ask you to choose a path before it acts. It will not guess.'
-              : 'This page is understood as information. FormPilot will not invent a next step.'}
+              ? 'FormPilot awaits explicit user guidance before taking navigational branches.'
+              : 'Informational DOM snapshot recorded. Safe to proceed.'}
         </div>
       </div>
     </div>

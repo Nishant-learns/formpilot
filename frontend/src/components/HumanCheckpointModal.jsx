@@ -24,6 +24,7 @@ import {
   Upload,
   X,
 } from 'lucide-react';
+import { SecurityShieldIcon, BiometricFingerprintIcon, BiometricFaceScanIcon } from './CustomIcons';
 
 const LIVE_GATES = new Set(['LIVE_HANDOFF', 'LIVE_PHOTO', 'FILE_UPLOAD', 'UNKNOWN_FIELD']);
 
@@ -112,6 +113,47 @@ function CheckpointContent({ activeGate, onSubmitResponse, onClose, onDismissGat
   const [photoPreview, setPhotoPreview] = useState('');
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState('');
+  const [otpBoxes, setOtpBoxes] = useState(['', '', '', '', '', '']);
+  const [captchaZoomed, setCaptchaZoomed] = useState(false);
+  const otpInputRefs = useRef([]);
+
+  useEffect(() => {
+    if (otpVal) {
+      const chars = otpVal.slice(0, 6).split('');
+      const next = Array.from({ length: 6 }, (_, i) => chars[i] || '');
+      setOtpBoxes(next);
+    }
+  }, [otpVal]);
+
+  const handleDigitChange = (index, value) => {
+    const digit = value.replace(/\D/g, '').slice(-1);
+    const nextBoxes = [...otpBoxes];
+    nextBoxes[index] = digit;
+    setOtpBoxes(nextBoxes);
+    const combined = nextBoxes.join('');
+    setOtpVal(combined);
+
+    if (digit && index < 5) {
+      otpInputRefs.current[index + 1]?.focus();
+    }
+  };
+
+  const handleDigitKeyDown = (index, e) => {
+    if (e.key === 'Backspace' && !otpBoxes[index] && index > 0) {
+      otpInputRefs.current[index - 1]?.focus();
+    }
+  };
+
+  const handleDigitPaste = (e) => {
+    e.preventDefault();
+    const pasted = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, 6);
+    if (!pasted) return;
+    const nextBoxes = Array.from({ length: 6 }, (_, i) => pasted[i] || '');
+    setOtpBoxes(nextBoxes);
+    setOtpVal(pasted);
+    const nextIndex = Math.min(pasted.length, 5);
+    otpInputRefs.current[nextIndex]?.focus();
+  };
 
   const videoRef = useRef(null);
   const streamRef = useRef(null);
@@ -833,14 +875,24 @@ function CheckpointContent({ activeGate, onSubmitResponse, onClose, onDismissGat
           {activeGate.gate_type === 'CAPTCHA_SOLVE' && (
             <form onSubmit={handleCaptchaSubmit} className="space-y-4">
               <p className="text-xs text-slate-300">{activeGate.description}</p>
-              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 flex flex-col md:flex-row items-center gap-4 justify-center">
+              <div className="p-4 rounded-2xl bg-slate-950/90 border border-white/[0.1] flex flex-col md:flex-row items-center gap-4 justify-center shadow-inner">
                 {activeGate.captcha_image ? (
-                  <div className="p-2 rounded-lg bg-slate-900 border border-slate-700 shadow-inner">
+                  <div className="relative group p-2 rounded-xl bg-slate-900 border border-slate-700/80 shadow-inner flex items-center justify-center">
                     <img
                       src={activeGate.captcha_image}
                       alt="Security check characters"
-                      className="max-h-20 object-contain rounded"
+                      className={`object-contain rounded transition-all duration-200 ${
+                        captchaZoomed ? 'max-h-36 scale-125 my-2' : 'max-h-20'
+                      }`}
                     />
+                    <button
+                      type="button"
+                      onClick={() => setCaptchaZoomed(!captchaZoomed)}
+                      className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded-md bg-slate-950/80 hover:bg-slate-800 text-slate-300 border border-slate-700 text-[10px] font-mono font-bold"
+                      title={captchaZoomed ? 'Zoom out' : 'Zoom in'}
+                    >
+                      {captchaZoomed ? '1x' : '2x'}
+                    </button>
                   </div>
                 ) : (
                   <div className="text-xs text-slate-500">
@@ -853,8 +905,8 @@ function CheckpointContent({ activeGate, onSubmitResponse, onClose, onDismissGat
                     value={captchaVal}
                     onChange={(event) => setCaptchaVal(event.target.value)}
                     autoFocus
-                    placeholder="Enter the characters"
-                    className="w-full px-4 py-3 rounded-xl bg-slate-900 border border-slate-700 focus:border-amber-500 text-center text-lg font-mono font-bold tracking-widest text-amber-300 outline-none"
+                    placeholder="Enter characters"
+                    className="w-full px-4 py-3 rounded-xl bg-slate-900/90 border-2 border-amber-500/50 focus:border-amber-400 text-center text-xl font-mono font-black tracking-widest text-amber-300 outline-none uppercase shadow-lg shadow-amber-950/20"
                   />
                 </div>
               </div>
@@ -871,7 +923,7 @@ function CheckpointContent({ activeGate, onSubmitResponse, onClose, onDismissGat
                 <button
                   type="submit"
                   disabled={!captchaVal.trim()}
-                  className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-sm flex items-center gap-2 disabled:opacity-50"
+                  className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-sm flex items-center gap-2 disabled:opacity-50 transition-all shadow-md shadow-emerald-500/20"
                 >
                   <CheckCircle2 className="w-4 h-4" />
                   <span>Submit and continue</span>
@@ -1017,17 +1069,25 @@ function CheckpointContent({ activeGate, onSubmitResponse, onClose, onDismissGat
                 </div>
               </div>
 
-              <div className="flex flex-col items-center gap-2">
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  maxLength={8}
-                  value={otpVal}
-                  onChange={(event) => setOtpVal(event.target.value)}
-                  autoFocus
-                  placeholder="Enter the code"
-                  className="w-64 px-4 py-3 rounded-xl bg-slate-950 border-2 border-emerald-500/60 focus:border-emerald-400 text-center text-2xl font-mono font-extrabold tracking-widest text-emerald-300 outline-none shadow-lg shadow-emerald-500/10"
-                />
+              <div className="flex flex-col items-center gap-3 py-2">
+                <div className="flex items-center gap-2 sm:gap-3 justify-center">
+                  {otpBoxes.map((digit, idx) => (
+                    <input
+                      key={idx}
+                      ref={(el) => (otpInputRefs.current[idx] = el)}
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      maxLength={1}
+                      value={digit}
+                      onChange={(e) => handleDigitChange(idx, e.target.value)}
+                      onKeyDown={(e) => handleDigitKeyDown(idx, e)}
+                      onPaste={handleDigitPaste}
+                      autoFocus={idx === 0}
+                      className="w-11 h-14 sm:w-12 sm:h-16 text-center text-2xl font-mono font-black rounded-2xl bg-slate-950/90 border-2 border-emerald-500/50 focus:border-emerald-400 focus:bg-emerald-950/20 text-emerald-300 outline-none transition-all shadow-lg shadow-emerald-950/40"
+                    />
+                  ))}
+                </div>
                 {hasLive && (
                   <button
                     type="button"
@@ -1315,12 +1375,25 @@ function CheckpointContent({ activeGate, onSubmitResponse, onClose, onDismissGat
           {/* Safety handover: payment or final submission */}
           {activeGate.gate_type === 'PRE_PAYMENT_SAFETY_LOCK' && (
             <div className="space-y-4">
-              <div className="p-4 rounded-2xl bg-red-500/10 border-2 border-red-500/50 text-red-200">
-                <div className="flex items-center gap-2 text-xs font-extrabold text-red-400 uppercase tracking-wide">
-                  <ShieldAlert className="w-5 h-5" />
-                  <span>{activeGate.final_action === 'submission' ? 'Nothing was submitted' : 'Payment was not started'}</span>
+              <div className="p-5 rounded-2xl bg-gradient-to-b from-red-950/40 via-red-950/20 to-slate-950 border-2 border-red-500/50 text-red-200 shadow-xl shadow-red-950/30">
+                <div className="flex items-center gap-3">
+                  <div className="w-11 h-11 rounded-2xl bg-red-500/20 border border-red-500/40 flex items-center justify-center text-red-300 shadow-inner shrink-0">
+                    <SecurityShieldIcon className="w-6 h-6 text-red-400" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-500/20 text-red-300 border border-red-500/30 uppercase tracking-widest font-mono">
+                        Cryptographic Safety Barrier
+                      </span>
+                    </div>
+                    <h4 className="text-sm font-extrabold text-white mt-0.5">
+                      {activeGate.final_action === 'submission' ? 'Zero-Autopilot Submission Lock' : 'Zero-Touch Payment Safety Lock'}
+                    </h4>
+                  </div>
                 </div>
-                <p className="text-xs text-red-300/90 mt-2 leading-relaxed">{activeGate.description}</p>
+                <p className="text-xs text-red-200/90 mt-3 leading-relaxed">
+                  {activeGate.description}
+                </p>
               </div>
 
               {hasLive && (
