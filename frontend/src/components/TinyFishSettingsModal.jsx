@@ -191,23 +191,23 @@ function SettingsContent({ onClose, onConfigSaved }) {
   ];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-fadeIn">
-      <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-2xl w-full shadow-2xl overflow-hidden flex flex-col">
-        <div className="px-6 py-4 bg-slate-950 border-b border-slate-800 flex items-center justify-between shrink-0">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#07090e]/80 backdrop-blur-xl animate-fadeIn">
+      <div className="glass-panel-elevated specular-top border border-white/[0.12] rounded-3xl max-w-2xl w-full shadow-2xl overflow-hidden flex flex-col">
+        <div className="px-6 py-4 bg-white/[0.02] border-b border-white/[0.08] flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-cyan-500/20 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
+            <div className="w-10 h-10 rounded-xl bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center text-indigo-300">
               <Cloud className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base font-extrabold text-white">Connection settings</h2>
+              <h2 className="text-base font-extrabold text-white">Engine &amp; Engine Settings</h2>
               <p className="text-xs text-slate-400">
-                Choose where the browser runs and manage the TinyFish connection.
+                Choose runtime execution target and API key credentials.
               </p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200"
+            className="p-2 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-slate-400 hover:text-slate-200 transition-colors"
             title="Close settings"
           >
             <X className="w-4 h-4" />
@@ -508,17 +508,17 @@ function SettingsContent({ onClose, onConfigSaved }) {
           </div>
         </div>
 
-        <div className="px-6 py-4 bg-slate-950 border-t border-slate-800 flex justify-end gap-3 shrink-0">
+        <div className="px-6 py-4 bg-white/[0.02] border-t border-white/[0.08] flex justify-end gap-3 shrink-0">
           <button
             onClick={onClose}
-            className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold"
+            className="px-4 py-2 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-slate-300 text-xs font-semibold border border-white/[0.08] transition-all"
           >
             Cancel
           </button>
           <button
             onClick={handleSave}
             disabled={saving}
-            className="px-6 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-400 hover:to-blue-400 text-slate-950 text-xs font-extrabold shadow-lg shadow-cyan-500/20 disabled:opacity-50"
+            className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-indigo-500 via-indigo-600 to-violet-600 hover:from-indigo-400 hover:to-violet-500 text-white text-xs font-semibold shadow-lg shadow-indigo-500/20 disabled:opacity-50 transition-all"
           >
             {saving ? 'Saving…' : 'Save settings'}
           </button>

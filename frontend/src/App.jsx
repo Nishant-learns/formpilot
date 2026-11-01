@@ -705,8 +705,8 @@ export default function App() {
   ];
 
   return (
-    <div className="relative flex min-h-screen flex-col bg-slate-950 font-['Plus_Jakarta_Sans',sans-serif] text-slate-100">
-      <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(ellipse_70%_50%_at_50%_-10%,rgba(245,158,11,0.07),transparent),radial-gradient(ellipse_50%_40%_at_100%_100%,rgba(14,165,233,0.05),transparent)]" />
+    <div className="relative flex min-h-screen flex-col bg-[#07090e] font-['Plus_Jakarta_Sans',sans-serif] text-slate-100 antialiased selection:bg-indigo-500/30 selection:text-indigo-200">
+      <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(ellipse_80%_60%_at_50%_-15%,rgba(99,102,241,0.12),transparent_70%),radial-gradient(ellipse_60%_50%_at_100%_100%,rgba(16,185,129,0.06),transparent_60%),radial-gradient(ellipse_50%_40%_at_0%_100%,rgba(6,182,212,0.05),transparent_60%)]" />
 
       <Header
         agentRunning={agentRunning}
@@ -808,8 +808,8 @@ export default function App() {
           />
 
           <div className={`flex flex-col gap-3 ${viewportHeightClass}`}>
-            <div className="flex shrink-0 flex-col gap-2 rounded-2xl border border-slate-800 bg-slate-900 p-2 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
+            <div className="flex shrink-0 flex-col gap-2 rounded-2xl glass-panel p-1.5 sm:flex-row sm:items-center sm:justify-between shadow-lg">
+              <div className="flex items-center gap-1 overflow-x-auto no-scrollbar w-full">
                 {panels.map((panel) => {
                   const Icon = panel.icon;
                   const active = rightTab === panel.id;
@@ -818,20 +818,20 @@ export default function App() {
                       key={panel.id}
                       type="button"
                       onClick={() => setRightTab(panel.id)}
-                      className={`flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-bold transition-all ${
+                      className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-bold transition-all ${
                         active
-                          ? panel.activeClass
-                          : 'border-transparent text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+                          ? 'border-indigo-500/40 bg-indigo-500/20 text-indigo-200 shadow-sm'
+                          : 'border-transparent text-slate-400 hover:bg-white/[0.04] hover:text-slate-200'
                       }`}
                     >
                       <Icon className="h-3.5 w-3.5" />
                       <span>{panel.label}</span>
                       {panel.count !== null && (
-                        <span className={`rounded px-1 font-mono text-[9px] ${active ? 'bg-slate-950/40' : 'bg-slate-800 text-slate-500'}`}>
+                        <span className={`rounded-full px-1.5 py-0.2 font-mono text-[10px] ${active ? 'bg-indigo-950/80 text-indigo-300' : 'bg-white/[0.05] text-slate-500'}`}>
                           {panel.count}
                         </span>
                       )}
-                      {panel.id === 'chat' && <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />}
+                      {panel.id === 'chat' && <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />}
                     </button>
                   );
                 })}

@@ -157,39 +157,40 @@ export default function LiveChat({
   const identifierBadge = loginIdentifier ? String(loginIdentifier).replace(/_/g, ' ') : '';
 
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl flex flex-col h-full min-h-[460px] overflow-hidden">
-      <div className="p-3.5 bg-slate-950/80 border-b border-slate-800 flex items-center justify-between shrink-0">
+    <div className="glass-panel rounded-2xl shadow-2xl flex flex-col h-full min-h-[460px] overflow-hidden">
+      {/* Header */}
+      <div className="p-3.5 bg-white/[0.02] border-b border-white/[0.08] flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2.5">
           <div className="relative">
-            <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-amber-600 to-orange-500 flex items-center justify-center text-slate-950 font-black text-xs shadow-md">
+            <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-indigo-500 via-indigo-600 to-violet-700 flex items-center justify-center text-white font-black text-xs shadow-md shadow-indigo-500/20 border border-indigo-400/30">
               FP
             </div>
-            <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-500 rounded-full border border-slate-900 animate-pulse" />
+            <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-400 rounded-full border border-[#07090e] animate-pulse" />
           </div>
           <div>
-            <div className="flex items-center gap-1.5">
-              <h3 className="text-xs font-bold text-slate-200">Ask FormPilot</h3>
-              <span className="text-[10px] font-semibold text-emerald-400 bg-emerald-950/60 px-1.5 py-0.2 rounded border border-emerald-500/30">
-                Here to help
+            <div className="flex items-center gap-2">
+              <h3 className="text-xs font-bold text-slate-100">Ask FormPilot</h3>
+              <span className="text-[10px] font-semibold text-indigo-300 bg-indigo-500/10 px-2 py-0.5 rounded-full border border-indigo-500/30">
+                Copilot
               </span>
             </div>
             <p className="text-[11px] text-slate-400">
-              Questions, saved details, or a quick progress check
+              Instant guidance, saved details, and stage actions
             </p>
             {(entryBadge || methodBadge || identifierBadge) && (
               <div className="mt-1 flex flex-wrap items-center gap-1">
                 {entryBadge && (
-                  <span className="rounded border border-sky-500/30 bg-sky-950/60 px-1.5 py-0.5 text-[9px] font-semibold text-sky-300">
+                  <span className="rounded-full border border-sky-500/30 bg-sky-950/60 px-2 py-0.5 text-[9px] font-semibold text-sky-300">
                     {entryBadge}
                   </span>
                 )}
                 {methodBadge && (
-                  <span className="rounded border border-emerald-500/30 bg-emerald-950/60 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-300">
+                  <span className="rounded-full border border-emerald-500/30 bg-emerald-950/60 px-2 py-0.5 text-[9px] font-semibold text-emerald-300">
                     {methodBadge}
                   </span>
                 )}
                 {identifierBadge && (
-                  <span className="rounded border border-slate-600 bg-slate-800/70 px-1.5 py-0.5 text-[9px] font-semibold text-slate-300">
+                  <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[9px] font-semibold text-slate-300">
                     {identifierBadge}
                   </span>
                 )}
@@ -201,18 +202,18 @@ export default function LiveChat({
         <button
           type="button"
           onClick={() => onClearChat?.()}
-          className="p-1.5 rounded-lg text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition-colors"
+          className="p-1.5 rounded-xl text-slate-400 hover:text-slate-200 hover:bg-white/[0.06] transition-colors"
           title="Clear conversation"
         >
           <Trash2 className="w-3.5 h-3.5" />
         </button>
       </div>
 
-      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3.5 bg-slate-950/40">
+      {/* Messages Stream */}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3.5 bg-transparent">
         {aiConfigured === false && (
-          <div className="rounded-xl border border-violet-500/30 bg-violet-500/10 px-3 py-2 text-[11px] text-violet-200">
-            The AI model is not configured yet. Add a model key in Settings → AI assistant to
-            enable free-form questions and actions.
+          <div className="rounded-xl border border-indigo-500/30 bg-indigo-500/10 px-3 py-2 text-xs text-indigo-200">
+            The AI model is not configured yet. Add a model key in Settings → AI assistant to enable free-form reasoning and automated execution.
           </div>
         )}
         {messages.map((m, i) => {
@@ -225,13 +226,13 @@ export default function LiveChat({
               <div className="flex items-center gap-1.5 mb-1 text-[10px] text-slate-500">
                 {isUser ? (
                   <>
-                    <span>You</span>
+                    <span className="text-indigo-300 font-semibold">You</span>
                     <Clock className="w-2.5 h-2.5" />
                     <span>{m.time}</span>
                   </>
                 ) : (
                   <>
-                    <span className="text-amber-400 font-semibold">FormPilot</span>
+                    <span className="text-indigo-400 font-semibold">FormPilot</span>
                     <Clock className="w-2.5 h-2.5" />
                     <span>{m.time}</span>
                   </>
@@ -239,58 +240,58 @@ export default function LiveChat({
               </div>
 
               <div
-                className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-xs leading-relaxed ${
+                className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-xs leading-relaxed transition-all ${
                   isUser
-                    ? 'bg-gradient-to-r from-amber-600 via-orange-600 to-amber-500 text-slate-950 font-medium rounded-tr-none shadow-md'
-                    : 'bg-slate-900 border border-slate-800 text-slate-200 rounded-tl-none shadow-lg'
+                    ? 'bg-gradient-to-br from-indigo-600 to-indigo-700 text-white font-medium rounded-tr-sm shadow-md shadow-indigo-600/20 border border-indigo-400/30'
+                    : 'glass-panel-elevated text-slate-100 rounded-tl-sm shadow-lg'
                 }`}
               >
                 <div className="whitespace-pre-line">{m.text}</div>
 
                 {m.action_taken === 'FIELD_UPDATED' && (
-                  <div className="mt-2 pt-2 border-t border-slate-800/80 flex items-center gap-1.5 text-[11px] font-mono text-emerald-400 font-semibold">
+                  <div className="mt-2 pt-2 border-t border-white/[0.08] flex items-center gap-1.5 text-[11px] font-mono text-emerald-400 font-semibold">
                     <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
                     <span>Updated: {m.field_updated} → {m.new_value}</span>
                   </div>
                 )}
                 {m.action_taken === 'PAUSED' && (
-                  <div className="mt-2 pt-2 border-t border-slate-800/80 flex items-center gap-1.5 text-[11px] font-mono text-amber-400 font-semibold">
+                  <div className="mt-2 pt-2 border-t border-white/[0.08] flex items-center gap-1.5 text-[11px] font-mono text-amber-400 font-semibold">
                     <PauseCircle className="w-3 h-3 text-amber-400 shrink-0" />
                     <span>Application paused</span>
                   </div>
                 )}
                 {m.action_taken === 'RESUMED' && (
-                  <div className="mt-2 pt-2 border-t border-slate-800/80 flex items-center gap-1.5 text-[11px] font-mono text-emerald-400 font-semibold">
+                  <div className="mt-2 pt-2 border-t border-white/[0.08] flex items-center gap-1.5 text-[11px] font-mono text-emerald-400 font-semibold">
                     <PlayCircle className="w-3 h-3 text-emerald-400 shrink-0" />
                     <span>Application resumed</span>
                   </div>
                 )}
                 {m.action_taken === 'LIVE_SEARCH' && (
-                  <div className="mt-2 pt-2 border-t border-slate-800/80 flex items-center gap-1.5 text-[11px] font-mono text-cyan-400 font-semibold">
+                  <div className="mt-2 pt-2 border-t border-white/[0.08] flex items-center gap-1.5 text-[11px] font-mono text-cyan-400 font-semibold">
                     <Search className="w-3 h-3 text-cyan-400 shrink-0" />
                     <span>Live web results</span>
                   </div>
                 )}
                 {['ENTRY_MODE_SELECTED', 'ENTRY_MODE_REQUESTED'].includes(m.action_taken) && (
-                  <div className="mt-2 pt-2 border-t border-slate-800/80 flex items-center gap-1.5 text-[11px] font-mono text-sky-300 font-semibold">
+                  <div className="mt-2 pt-2 border-t border-white/[0.08] flex items-center gap-1.5 text-[11px] font-mono text-sky-300 font-semibold">
                     <CheckCircle2 className="w-3 h-3 text-sky-300 shrink-0" />
                     <span>Entry path: {m.entry_mode || 'selected'}</span>
                   </div>
                 )}
                 {m.action_taken === 'LOGIN_METHOD_SELECTED' && (
-                  <div className="mt-2 pt-2 border-t border-slate-800/80 flex items-center gap-1.5 text-[11px] font-mono text-emerald-300 font-semibold">
+                  <div className="mt-2 pt-2 border-t border-white/[0.08] flex items-center gap-1.5 text-[11px] font-mono text-emerald-300 font-semibold">
                     <CheckCircle2 className="w-3 h-3 text-emerald-300 shrink-0" />
                     <span>Sign-in method: {String(m.login_method || '').replace(/_/g, ' ')}</span>
                   </div>
                 )}
                 {m.action_taken === 'ACCOUNT_IDENTIFIER_SELECTED' && (
-                  <div className="mt-2 pt-2 border-t border-slate-800/80 flex items-center gap-1.5 text-[11px] font-mono text-slate-300 font-semibold">
+                  <div className="mt-2 pt-2 border-t border-white/[0.08] flex items-center gap-1.5 text-[11px] font-mono text-slate-300 font-semibold">
                     <CheckCircle2 className="w-3 h-3 text-slate-300 shrink-0" />
                     <span>Account identified by: {String(m.login_identifier || '').replace(/_/g, ' ')}</span>
                   </div>
                 )}
                 {['FILL_RECHECK', 'FILL_CONTINUE', 'FILL_INCOMPLETE'].includes(m.action_taken) && (
-                  <div className="mt-2 pt-2 border-t border-slate-800/80 flex items-center gap-1.5 text-[11px] font-mono text-amber-300 font-semibold">
+                  <div className="mt-2 pt-2 border-t border-white/[0.08] flex items-center gap-1.5 text-[11px] font-mono text-amber-300 font-semibold">
                     <AlertTriangle className="w-3 h-3 text-amber-300 shrink-0" />
                     <span>
                       {m.action_taken === 'FILL_RECHECK'
@@ -307,46 +308,48 @@ export default function LiveChat({
         })}
 
         {loading && (
-          <div className="flex items-center gap-2 text-xs text-amber-400 animate-pulse py-1">
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>FormPilot is thinking…</span>
+          <div className="flex items-center gap-2 text-xs text-indigo-400 animate-pulse py-1">
+            <Sparkles className="w-3.5 h-3.5 animate-spin" />
+            <span>FormPilot is reasoning…</span>
           </div>
         )}
       </div>
 
-      <div className="px-3 py-2 bg-slate-950/60 border-t border-slate-800/60 flex items-center gap-1.5 overflow-x-auto no-scrollbar shrink-0">
+      {/* Suggested Prompt Chips */}
+      <div className="px-3 py-2 bg-white/[0.02] border-t border-white/[0.08] flex items-center gap-1.5 overflow-x-auto no-scrollbar shrink-0">
         {chips.map((chip, idx) => (
           <button
             key={`${chip.label}-${idx}`}
             type="button"
             onClick={() => handleSend(chip.query)}
-            className="whitespace-nowrap px-2.5 py-1 rounded-lg bg-slate-800/70 hover:bg-slate-800 text-slate-300 hover:text-amber-300 text-[11px] font-medium border border-slate-700/60 transition-all shrink-0"
+            className="whitespace-nowrap px-3 py-1.5 rounded-xl bg-white/[0.04] hover:bg-indigo-500/15 text-slate-300 hover:text-indigo-200 text-xs font-medium border border-white/[0.08] hover:border-indigo-500/40 transition-all shrink-0 shadow-sm"
           >
             {chip.label}
           </button>
         ))}
       </div>
 
+      {/* Omnibox Input */}
       <form
         onSubmit={(e) => {
           e.preventDefault();
           handleSend();
         }}
-        className="p-3 bg-slate-950 border-t border-slate-800 flex items-center gap-2 shrink-0"
+        className="p-3 bg-[#07090e]/80 border-t border-white/[0.08] flex items-center gap-2 shrink-0"
       >
         <input
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Ask a question or request a change…"
-          className="flex-1 px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700/80 focus:border-amber-500 focus:ring-1 focus:ring-amber-500/40 text-slate-100 placeholder-slate-500 text-xs font-medium outline-none transition-all"
+          placeholder="Ask a question or command an update…"
+          className="flex-1 px-4 py-2.5 rounded-xl glass-input text-slate-100 placeholder-slate-500 text-xs font-medium outline-none"
         />
 
         <button
           type="submit"
           disabled={!input.trim() || loading}
-          className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 shadow-md shadow-amber-500/10 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+          className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-indigo-500 via-indigo-600 to-violet-600 hover:from-indigo-400 hover:to-violet-500 text-white font-semibold text-xs flex items-center gap-1.5 shadow-md shadow-indigo-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
         >
           <span>Send</span>
           <Send className="w-3.5 h-3.5" />

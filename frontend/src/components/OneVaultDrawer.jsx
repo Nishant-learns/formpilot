@@ -77,31 +77,31 @@ function VaultContent({ onClose }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/70 backdrop-blur-sm animate-fadeIn">
-      <div className="w-full max-w-2xl bg-slate-900 border-l border-slate-800 h-full flex flex-col shadow-2xl">
+    <div className="fixed inset-0 z-50 flex justify-end bg-[#07090e]/75 backdrop-blur-md animate-fadeIn">
+      <div className="w-full max-w-2xl glass-panel-elevated specular-top border-l border-white/[0.1] h-full flex flex-col shadow-2xl">
         
         {/* Drawer Header */}
-        <div className="px-6 py-4 bg-slate-950 border-b border-slate-800 flex items-center justify-between shrink-0">
+        <div className="px-6 py-4 bg-white/[0.02] border-b border-white/[0.08] flex items-center justify-between shrink-0">
           <div>
             <h2 className="text-base font-extrabold text-white flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-amber-400" />
-              <span>Your saved details</span>
+              <Sparkles className="w-4 h-4 text-emerald-400" />
+              <span>Identity Vault</span>
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              Reuse your details safely across applications
+              Securely store credentials and personal facts for auto-filling
             </p>
           </div>
           <div className="flex items-center gap-2">
             <button
               onClick={handleReset}
-              className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs flex items-center gap-1 border border-slate-700"
+              className="p-2 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-slate-300 text-xs flex items-center gap-1 border border-white/[0.08] transition-colors"
               title="Reset to the demo profile"
             >
               <RotateCcw className="w-3.5 h-3.5" />
             </button>
             <button
               onClick={onClose}
-              className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200"
+              className="p-2 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-slate-400 hover:text-slate-200 transition-colors"
             >
               <X className="w-4 h-4" />
             </button>
@@ -109,7 +109,7 @@ function VaultContent({ onClose }) {
         </div>
 
         {/* Tab Navigation */}
-        <div className="flex px-6 pt-3 border-b border-slate-800 bg-slate-950/50 gap-4 text-xs font-semibold">
+        <div className="flex px-6 pt-3 border-b border-white/[0.08] bg-transparent gap-4 text-xs font-semibold">
           {[
             { id: 'personal', label: '1. Personal', icon: <User className="w-3.5 h-3.5" /> },
             { id: 'contact', label: '2. Contact & address', icon: <Phone className="w-3.5 h-3.5" /> },
@@ -121,7 +121,7 @@ function VaultContent({ onClose }) {
               onClick={() => setActiveTab(tab.id)}
               className={`pb-3 flex items-center gap-1.5 border-b-2 transition-all ${
                 activeTab === tab.id
-                  ? 'border-amber-400 text-amber-300'
+                  ? 'border-indigo-400 text-indigo-200'
                   : 'border-transparent text-slate-400 hover:text-slate-200'
               }`}
             >
@@ -386,19 +386,19 @@ function VaultContent({ onClose }) {
         )}
 
         {/* Drawer Footer */}
-        <div className="px-6 py-4 bg-slate-950 border-t border-slate-800 flex items-center justify-between shrink-0">
+        <div className="px-6 py-4 bg-white/[0.02] border-t border-white/[0.08] flex items-center justify-between shrink-0">
           <span className="text-xs text-slate-500 font-mono">
-            Saved on this device
+            Zero cloud transmission · Stored on your device
           </span>
           <button
             onClick={handleSave}
             disabled={saving}
-            className="px-6 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-extrabold text-xs flex items-center gap-1.5 shadow-lg shadow-amber-500/20 disabled:opacity-50"
+            className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-indigo-500 via-indigo-600 to-violet-600 hover:from-indigo-400 hover:to-violet-500 text-white font-semibold text-xs flex items-center gap-1.5 shadow-lg shadow-indigo-500/20 disabled:opacity-50 transition-all"
           >
             {saveSuccess ? (
               <>
-                <Check className="w-4 h-4 text-emerald-950" />
-                <span>Saved!</span>
+                <Check className="w-4 h-4 text-emerald-300" />
+                <span>Saved securely!</span>
               </>
             ) : (
               <>

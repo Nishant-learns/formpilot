@@ -78,12 +78,12 @@ export default function PageBriefPanel({ pageBrief, runState, onRefresh, refresh
 
   if (!pageBrief) {
     return (
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center h-full min-h-[460px] flex flex-col items-center justify-center">
-        <div className="w-14 h-14 rounded-2xl bg-slate-950 border border-slate-800 flex items-center justify-center mb-3 text-slate-600">
-          <FileText className="w-7 h-7" />
+      <div className="glass-panel rounded-2xl p-8 text-center h-full min-h-[460px] flex flex-col items-center justify-center shadow-2xl">
+        <div className="w-14 h-14 rounded-2xl bg-white/[0.03] border border-white/[0.08] flex items-center justify-center mb-3 text-slate-500">
+          <FileText className="w-7 h-7 text-indigo-400" />
         </div>
-        <h3 className="text-sm font-bold text-slate-300">No page brief yet</h3>
-        <p className="text-xs text-slate-500 mt-2 max-w-sm mx-auto leading-relaxed">
+        <h3 className="text-sm font-bold text-slate-200">No page brief yet</h3>
+        <p className="text-xs text-slate-400 mt-2 max-w-sm mx-auto leading-relaxed">
           Open a portal in inspect mode. FormPilot reads the page like a person:
           headings, questions, groups and paths. Nothing is filled while the brief
           is being read.
@@ -93,7 +93,7 @@ export default function PageBriefPanel({ pageBrief, runState, onRefresh, refresh
             type="button"
             onClick={onRefresh}
             disabled={refreshing}
-            className="mt-4 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border border-sky-500/40 text-[11px] font-bold disabled:opacity-50"
+            className="mt-4 flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-200 border border-indigo-500/40 text-xs font-semibold disabled:opacity-50 transition-all shadow-sm"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
             <span>Read the page</span>
@@ -109,8 +109,8 @@ export default function PageBriefPanel({ pageBrief, runState, onRefresh, refresh
   const isForm = ['FORM', 'SECTION_FORM'].includes(pageBrief.page_type);
 
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden flex flex-col h-full min-h-[460px]">
-      <div className="bg-slate-950 px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-2">
+    <div className="glass-panel rounded-2xl overflow-hidden flex flex-col h-full min-h-[460px] shadow-2xl">
+      <div className="bg-white/[0.02] px-4 py-3 border-b border-white/[0.08] flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <Brain className="w-4 h-4 text-sky-400 shrink-0" />
           <div className="min-w-0">

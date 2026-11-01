@@ -321,44 +321,52 @@ function CheckpointContent({ activeGate, onSubmitResponse, onClose, onDismissGat
     <div
       className={
         docked
-          ? 'fixed inset-x-0 bottom-0 z-50 p-3 sm:inset-auto sm:right-4 sm:bottom-4 sm:w-[440px] sm:p-0'
-          : 'fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md animate-fadeIn'
+          ? 'fixed inset-x-0 bottom-0 z-50 p-3 sm:inset-auto sm:right-4 sm:bottom-4 sm:w-[460px] sm:p-0'
+          : 'fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#07090e]/80 backdrop-blur-xl animate-fadeIn'
       }
     >
       <div
-        className={`bg-slate-900 border-2 rounded-3xl w-full shadow-2xl overflow-hidden ${
+        className={`glass-panel-elevated specular-top rounded-3xl w-full shadow-2xl overflow-hidden ${
           docked
-            ? 'border-sky-500/50 max-h-[82vh] shadow-sky-950/40'
-            : 'border-amber-500/60 max-w-2xl shadow-amber-500/10'
+            ? 'border-indigo-500/40 max-h-[84vh] shadow-indigo-950/40 glow-indigo'
+            : activeGate.gate_type === 'PRE_PAYMENT_SAFETY_LOCK'
+              ? 'border-amber-500/50 max-w-2xl shadow-amber-500/10 glow-amber'
+              : 'border-white/[0.12] max-w-2xl shadow-black/80'
         }`}
       >
         {/* Header */}
         <div
           className={`px-5 py-3.5 border-b flex items-center justify-between ${
-            docked
-              ? 'bg-gradient-to-r from-sky-600/25 via-slate-900 to-slate-900 border-sky-500/30'
-              : 'bg-gradient-to-r from-amber-600/30 via-orange-600/20 to-slate-900 border-amber-500/30'
+            activeGate.gate_type === 'PRE_PAYMENT_SAFETY_LOCK'
+              ? 'bg-amber-500/10 border-amber-500/30'
+              : docked
+                ? 'bg-indigo-500/10 border-indigo-500/25'
+                : 'bg-white/[0.03] border-white/[0.08]'
           }`}
         >
           <div className="flex items-center gap-3 min-w-0">
-            <div className="w-9 h-9 rounded-xl bg-slate-950/60 border border-sky-500/30 flex items-center justify-center text-sky-300 shrink-0">
+            <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 border ${
+              activeGate.gate_type === 'PRE_PAYMENT_SAFETY_LOCK'
+                ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
+                : 'bg-indigo-500/15 border-indigo-500/30 text-indigo-300'
+            }`}>
               <GateIcon type={activeGate.gate_type} />
             </div>
             <div className="min-w-0">
               <h3 className="text-sm font-extrabold text-white truncate">{activeGate.title}</h3>
-              <p className="text-[11px] text-sky-300/90 truncate">
-                {activeGate.hindi_title || 'Please review this step'}
+              <p className="text-[11px] text-slate-400 truncate">
+                {activeGate.hindi_title || 'Please review this checkpoint'}
               </p>
             </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700 uppercase tracking-wider">
-              {hasLive ? 'Live checkpoint' : 'Your review'}
+            <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-white/[0.05] text-slate-300 border border-white/[0.08] uppercase tracking-wider">
+              {hasLive ? 'Interactive session' : 'Verification step'}
             </span>
             <button
               type="button"
               onClick={hidePanel}
-              className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+              className="p-1 rounded-xl text-slate-400 hover:text-white hover:bg-white/[0.08] transition-colors"
               title={hasLive ? 'Hide this panel. The live browser stays available.' : 'Hide this review'}
             >
               <X className="w-4 h-4" />

@@ -56,15 +56,14 @@ export default function FormMapPanel({ formMap, recipe, runMode, onRescan, resca
 
   if (!formMap) {
     return (
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center">
-        <div className="w-14 h-14 rounded-2xl bg-slate-950 border border-slate-800 flex items-center justify-center mx-auto mb-3 text-slate-600">
-          <Eye className="w-7 h-7" />
+      <div className="glass-panel rounded-2xl p-8 text-center h-full min-h-[460px] flex flex-col items-center justify-center">
+        <div className="w-14 h-14 rounded-2xl bg-white/[0.03] border border-white/[0.08] flex items-center justify-center mx-auto mb-3 text-slate-500">
+          <Eye className="w-7 h-7 text-indigo-400" />
         </div>
-        <h3 className="text-sm font-bold text-slate-300">Nothing scanned yet</h3>
-        <p className="text-xs text-slate-500 mt-2 max-w-sm mx-auto leading-relaxed">
+        <h3 className="text-sm font-bold text-slate-200">Nothing scanned yet</h3>
+        <p className="text-xs text-slate-400 mt-2 max-w-sm mx-auto leading-relaxed">
           Start a portal in inspect-only mode to see the normalized form map: fields,
-          locator strategies, page type and recipe status. No values or screenshots are stored
-          in a recipe.
+          locator strategies, page type and recipe status. No values or credentials are leaked.
         </p>
       </div>
     );
@@ -97,8 +96,8 @@ export default function FormMapPanel({ formMap, recipe, runMode, onRescan, resca
   const drift = recipe?.drift;
 
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden flex flex-col h-full min-h-[460px]">
-      <div className="bg-slate-950 px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-2">
+    <div className="glass-panel rounded-2xl overflow-hidden flex flex-col h-full min-h-[460px] shadow-2xl">
+      <div className="bg-white/[0.02] px-4 py-3 border-b border-white/[0.08] flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <ScanSearch className="w-4 h-4 text-sky-400 shrink-0" />
           <div className="min-w-0">
